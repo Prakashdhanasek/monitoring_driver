@@ -20,8 +20,7 @@ import 'core/monitor_state.dart';
 /// The 3 phases of the driver-facing flow.
 enum Phase { verifying, details, monitoring }
 
-/// Folder label (assets/reference_faces/<label>/) -> display name + id.
-/// Edit these to match your reference_faces folders.
+
 const Map<String, String> kDriverNames = {
   'Authorized_driver_1': 'Rohit',
   'Authorized_driver_2': 'Ajal',
