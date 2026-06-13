@@ -112,6 +112,11 @@ class MonitorState {
   int cameraStreamHeight = 0;
   int cameraRotation = 0;
 
+  // GPS Tracking
+  double gpsLat = 0.0;
+  double gpsLng = 0.0;
+  double vehicleSpeed = 0.0;
+
   // Alert log
   List<AlertEvent> recentAlerts = [];
   Map<String, DateTime> lastScreenshotTime = {};

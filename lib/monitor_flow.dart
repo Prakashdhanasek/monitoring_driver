@@ -15,6 +15,12 @@ import 'core/object_detector_engine.dart';
 
 
 
+import 'dart:convert';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+import 'package:http/http.dart' as http;
+import 'package:path_provider/path_provider.dart';
+import 'package:geolocator/geolocator.dart';
+
 import 'core/monitor_state.dart';
 
 /// The 3 phases of the driver-facing flow.
@@ -75,9 +81,8 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   DateTime? _lastSoundAt;
   DrowsinessLevel _prevDrowsy = DrowsinessLevel.alert;
   DistractionStatus _prevDistract = DistractionStatus.forward;
-  bool _prevPhone = false;
-  bool _prevSmoke = false;
   AuthStatus _prevAuthSound = AuthStatus.scanning;
+  final Map<String, DateTime> _lastIncidentReportAt = {};
 
   // Still face image captured at the moment of successful verification.
   Uint8List? _capturedFace;
@@ -97,8 +102,108 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     _init();
   }
 
+  Future<void> _fetchAndDownloadDrivers() async {
+    const storage = FlutterSecureStorage();
+    final deviceId = await storage.read(key: 'device_id');
+    if (deviceId == null || deviceId.isEmpty) {
+      debugPrint('[Flow] No device_id stored. Skipping API fetch.');
+      return;
+    }
+
+    try {
+      final url = Uri.parse('https://proximity-driver-api.prod-app.in/api/drivers/by-device/$deviceId');
+      debugPrint('==================================================');
+      debugPrint('[Flow] FETCH DRIVERS FOR IMEI/ID: $deviceId');
+      debugPrint('[Flow] API REQUEST URL: $url');
+      debugPrint('==================================================');
+      
+      final response = await http.get(url).timeout(const Duration(seconds: 15));
+
+      debugPrint('==================================================');
+      debugPrint('[Flow] API RESPONSE STATUS CODE: ${response.statusCode}');
+      debugPrint('[Flow] API RESPONSE BODY: ${response.body}');
+      debugPrint('==================================================');
+
+      if (response.statusCode == 200) {
+        final List<dynamic> driversList = jsonDecode(response.body);
+        if (driversList.isNotEmpty) {
+          debugPrint('[Flow] Found ${driversList.length} drivers from API. Downloading photos...');
+          // Save the raw JSON for offline usage
+          await storage.write(key: 'offline_drivers', value: response.body);
+          
+          // Download photos
+          await _downloadPhotos(driversList);
+          
+          // Clear old embeddings cache to force re-enrollment
+          await storage.delete(key: 'safe_drive_mobilefacenet_v9');
+        } else {
+          debugPrint('[Flow] No drivers returned for device $deviceId');
+        }
+      } else {
+        debugPrint('[Flow] Failed to fetch drivers. API Status: ${response.statusCode}');
+      }
+    } catch (e) {
+      debugPrint('[Flow] Error fetching/downloading drivers: $e');
+    }
+  }
+
+  Future<void> _downloadPhotos(List<dynamic> drivers) async {
+    final dir = await getApplicationDocumentsDirectory();
+    final photosDir = Directory('${dir.path}/downloaded_faces');
+    if (!await photosDir.exists()) {
+      await photosDir.create(recursive: true);
+    } else {
+      // Clear old photos
+      await photosDir.delete(recursive: true);
+      await photosDir.create(recursive: true);
+    }
+
+    const baseUrl = 'https://proximity-driver-api.prod-app.in';
+
+    for (final driver in drivers) {
+      final facePhotos = driver['facePhotos'] as List<dynamic>?;
+      if (facePhotos != null && facePhotos.isNotEmpty) {
+        for (final photo in facePhotos) {
+          final photoPath = photo['photoPath'] as String?;
+          final driverId = driver['id'] as String? ?? 'unknown';
+          final driverName = driver['fullName'] as String? ?? 'Driver';
+          
+          if (photoPath != null) {
+            try {
+              final imgUrl = Uri.parse('$baseUrl$photoPath');
+              final res = await http.get(imgUrl);
+              if (res.statusCode == 200) {
+                // Save it locally, encoding the driver info in the filename so FaceAuthEngine can read it
+                final fileName = '${driverId}__${driverName.replaceAll(' ', '_')}__${DateTime.now().millisecondsSinceEpoch}.jpg';
+                final file = File('${photosDir.path}/$fileName');
+                await file.writeAsBytes(res.bodyBytes);
+                debugPrint('[Flow] Downloaded photo for $driverName');
+              }
+            } catch (e) {
+              debugPrint('[Flow] Error downloading photo $photoPath: $e');
+            }
+          }
+        }
+      }
+    }
+  }
+
   Future<void> _init() async {
-    // 1) Load reference faces (creates + closes its own temp detector first).
+    // 0) Request location permissions upfront so GPS passes correctly.
+    try {
+      await _requestLocationPermission();
+    } catch (e) {
+      debugPrint('[Flow] Location permission error: $e');
+    }
+
+    // 1) Fetch and download driver list and photos for this device.
+    try {
+      await _fetchAndDownloadDrivers();
+    } catch (e) {
+      debugPrint('[Flow] fetch/download drivers error: $e');
+    }
+
+    // 2) Load reference faces (creates + closes its own temp detector first).
     try {
       await _authEngine.initialize();
     } catch (e) {
@@ -127,6 +232,37 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
 
     // 4) Camera.
     await _initCamera();
+  }
+
+  Future<void> _requestLocationPermission() async {
+    bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
+    if (!serviceEnabled) {
+      debugPrint('[Flow] Location services are disabled.');
+      return;
+    }
+
+    LocationPermission permission = await Geolocator.checkPermission();
+    if (permission == LocationPermission.denied) {
+      permission = await Geolocator.requestPermission();
+    }
+    
+    if (permission == LocationPermission.deniedForever) {
+      debugPrint('[Flow] Location permissions are permanently denied.');
+      return;
+    }
+
+    if (permission == LocationPermission.always || permission == LocationPermission.whileInUse) {
+      Geolocator.getPositionStream(
+        locationSettings: const LocationSettings(
+          accuracy: LocationAccuracy.high,
+          distanceFilter: 10,
+        ),
+      ).listen((Position position) {
+        _state.gpsLat = position.latitude;
+        _state.gpsLng = position.longitude;
+        _state.vehicleSpeed = position.speed > 0 ? position.speed : 0.0;
+      });
+    }
   }
 
   Future<void> _initCamera() async {
@@ -257,8 +393,14 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     if (_phase != Phase.verifying) return;
     _tripNumber++; // trip 1 on first verify, trip 2 after a completed trip, ...
     final label = _authEngine.lastMatchedLabel;
-    _driverName = kDriverNames[label] ?? 'Driver';
-    _driverId = kDriverIds[label] ?? (label ?? '—');
+    if (label != null && label.contains('|')) {
+      final parts = label.split('|');
+      _driverId = parts[0];
+      _driverName = parts[1];
+    } else {
+      _driverName = kDriverNames[label] ?? 'Driver';
+      _driverId = kDriverIds[label] ?? (label ?? '—');
+    }
     _phase = Phase.details;
     _countdown = 3;
     if (mounted) setState(() {});
@@ -290,43 +432,105 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   }
 
   // ─────────────────────────────────────────────────────────
-  // ALERT AUDIO
+  // INCIDENT REPORTING
+  // ─────────────────────────────────────────────────────────
+  Future<void> _reportIncident(String eventType, String riskLevel, double confidence) async {
+    try {
+      const storage = FlutterSecureStorage();
+      final deviceId = await storage.read(key: 'device_id');
+      if (deviceId == null || deviceId.isEmpty) return;
+
+      final url = Uri.parse('https://proximity-driver-api.prod-app.in/api/incidents');
+      final body = {
+        "deviceTabletId": deviceId,
+        "eventType": eventType,
+        "riskLevel": riskLevel,
+        "aiConfidence": confidence,
+        "vehicleSpeed": _state.vehicleSpeed,
+        "gpsLatitude": _state.gpsLat,
+        "gpsLongitude": _state.gpsLng,
+        "snapshotUrl": "",
+        "videoClipUrl": "",
+        "occurredAt": DateTime.now().toUtc().toIso8601String(),
+      };
+
+      debugPrint('==================================================');
+      debugPrint('[Flow] REPORT INCIDENT: $eventType');
+      debugPrint('[Flow] API REQUEST URL: $url');
+      debugPrint('[Flow] API REQUEST BODY: ${jsonEncode(body)}');
+      debugPrint('==================================================');
+
+      final response = await http.post(
+        url,
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode(body),
+      ).timeout(const Duration(seconds: 15));
+
+      debugPrint('==================================================');
+      debugPrint('[Flow] API RESPONSE STATUS CODE: ${response.statusCode}');
+      debugPrint('[Flow] API RESPONSE BODY: ${response.body}');
+      debugPrint('==================================================');
+    } catch (e) {
+      debugPrint('[Flow] Error reporting incident: $e');
+    }
+  }
+
+  // ─────────────────────────────────────────────────────────
+  // ALERT AUDIO & INCIDENTS
   // ─────────────────────────────────────────────────────────
   void _handleAlertSounds() {
     final now = DateTime.now();
-    final phone = _state.detectedObjects
-        .any((o) => o.label == 'phone' && o.confidence > 0.85);
-    final smoke = _state.detectedObjects
-        .any((o) => o.label == 'cigarette' && o.confidence > 0.85);
 
     bool loud = false;
     bool soft = false;
 
-    // Fire only on the TRANSITION into each warning state.
+    // 1. Fire on the TRANSITION into state-based warnings.
     if (_state.authStatus == AuthStatus.unauthorized &&
         _prevAuthSound != AuthStatus.unauthorized) {
       loud = true;
+      _reportIncident('UnauthorizedDriver', 'High', 1.0);
     }
     if (_state.drowsinessLevel == DrowsinessLevel.asleep &&
         _prevDrowsy != DrowsinessLevel.asleep) {
       loud = true;
+      _reportIncident('Drowsiness', 'High', 1.0);
     }
     if (_state.drowsinessLevel == DrowsinessLevel.drowsy &&
         _prevDrowsy == DrowsinessLevel.alert) {
       soft = true;
+      _reportIncident('Drowsiness', 'Medium', 0.8);
     }
     if (_state.distractionStatus == DistractionStatus.distracted &&
         _prevDistract == DistractionStatus.forward) {
       soft = true;
+      _reportIncident('Distraction', 'Medium', 0.8);
     }
-    if (phone && !_prevPhone) loud = true;
-    if (smoke && !_prevSmoke) loud = true;
+
+    // 2. Report ALL AI object detections dynamically at intervals.
+    for (final obj in _state.detectedObjects) {
+      if (obj.confidence > 0.85) {
+        final label = obj.label;
+        final lastTime = _lastIncidentReportAt[label];
+        // Report every 10 seconds if the incident is actively happening
+        if (lastTime == null || now.difference(lastTime).inSeconds >= 10) {
+          _lastIncidentReportAt[label] = now;
+          
+          String eventType = label;
+          if (label == 'phone') eventType = 'PhoneUsage';
+          if (label == 'cigarette') eventType = 'Smoking';
+          if (label == 'seatbelt') eventType = 'Seatbelt';
+          if (label == 'eating') eventType = 'Eating';
+          if (label == 'drinking') eventType = 'Drinking';
+
+          _reportIncident(eventType, 'High', obj.confidence);
+          loud = true;
+        }
+      }
+    }
 
     // Remember current states for next-frame transition checks.
     _prevDrowsy = _state.drowsinessLevel;
     _prevDistract = _state.distractionStatus;
-    _prevPhone = phone;
-    _prevSmoke = smoke;
     _prevAuthSound = _state.authStatus;
 
     if (!loud && !soft) return;
@@ -608,24 +812,28 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
 
   // ── VERIFYING ──
   Widget _verifyingOverlay() {
+    final isUnverified = _state.authStatus == AuthStatus.unauthorized && _state.faceCount > 0;
+
     return Container(
       color: Colors.black.withValues(alpha: 0.45),
       child: Column(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
-          const SizedBox(
+          SizedBox(
             width: 64,
             height: 64,
-            child: CircularProgressIndicator(
-              strokeWidth: 3,
-              color: Color(0xFF3B82F6),
-            ),
+            child: isUnverified
+                ? const Icon(Icons.error_outline, color: Colors.redAccent, size: 64)
+                : const CircularProgressIndicator(
+                    strokeWidth: 3,
+                    color: Color(0xFF3B82F6),
+                  ),
           ),
           const SizedBox(height: 24),
-          const Text(
-            'Verifying your face…',
+          Text(
+            isUnverified ? 'Unverified' : 'Verifying your face…',
             style: TextStyle(
-                color: Colors.white,
+                color: isUnverified ? Colors.redAccent : Colors.white,
                 fontSize: 20,
                 fontWeight: FontWeight.w600),
           ),
@@ -633,7 +841,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
           Text(
             _state.faceCount == 0
                 ? 'Look at the camera'
-                : (_state.authStatus == AuthStatus.unauthorized
+                : (isUnverified
                     ? 'Face not recognised — keep looking'
                     : 'Hold still…'),
             style: const TextStyle(color: Colors.white70, fontSize: 14),

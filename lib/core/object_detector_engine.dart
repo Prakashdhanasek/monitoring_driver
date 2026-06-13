@@ -71,7 +71,7 @@ class ObjectDetectorEngine {
       final directory = await getApplicationDocumentsDirectory();
       _docsPath = directory.path;
 
-      final modelData = await rootBundle.load('assets/models/custom_yolo.tflite');
+      final modelData = await rootBundle.load('assets/models/custom_yolo_updated.tflite');
       final labelsText = await rootBundle.loadString('assets/models/labels.txt');
       
       print('[YOLO ENGINE] Model and labels loaded from assets.');

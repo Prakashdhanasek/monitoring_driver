@@ -239,7 +239,7 @@ class FaceAuthEngine {
       for (final file in files) {
         try {
           final imageBytes = await file.readAsBytes();
-          final fileName = file.path.split('/').last;
+          final fileName = file.path.split(RegExp(r'[/\\]')).last;
           
           final inputImage = InputImage.fromFilePath(file.path);
           final faces = await tempDetector.processImage(inputImage);
@@ -249,13 +249,34 @@ class FaceAuthEngine {
             final embedding = _embedFaceFromJpeg(imageBytes, face.boundingBox);
             
             if (embedding != null) {
-              // Filename format: id_name_timestamp.jpg
-              final parts = fileName.split('_');
-              final label = parts.length >= 2 ? parts[1] : 'unknown';
+              // Filename format: id__name__timestamp.jpg (or fallback to id_name_timestamp.jpg)
+              String driverId = 'unknown';
+              String driverName = 'unknown';
+              if (fileName.contains('__')) {
+                final parts = fileName.split('__');
+                if (parts.isNotEmpty) driverId = parts[0];
+                if (parts.length >= 2) driverName = parts[1].replaceAll('_', ' ');
+              } else {
+                final parts = fileName.split('_');
+                if (parts.isNotEmpty) {
+                  driverId = parts[0];
+                  if (parts.length > 2) {
+                    driverName = parts.sublist(1, parts.length - 1).join(' ');
+                  } else if (parts.length == 2) {
+                    driverName = parts[1];
+                  }
+                }
+              }
+              driverName = driverName
+                  .replaceAll('.jpg', '')
+                  .replaceAll('.jpeg', '')
+                  .replaceAll('.png', '');
+              
+              final label = '$driverId|$driverName';
               
               embeddings.add(embedding);
-              labels.add(label.replaceAll('.jpg', '').replaceAll('.jpeg', '').replaceAll('.png', ''));
-              print('[Auth] Enrolled API photo: $fileName -> $label');
+              labels.add(label);
+              print('[Auth] Enrolled API photo: $fileName -> label: $label');
             }
           }
         } catch (e) {
