@@ -16,8 +16,8 @@ import 'monitor_state.dart';
 class FaceAuthEngine {
   final FlutterSecureStorage _storage = const FlutterSecureStorage();
 
-  // v8: forces fresh enrollment from newly added reference images.
-  static const String _keyEmbedding = 'safe_drive_mobilefacenet_v8';
+  // v9: forces fresh enrollment from newly added reference images.
+  static const String _keyEmbedding = 'safe_drive_mobilefacenet_v9';
 
   // MobileFaceNet: 112x112 RGB input → 192D embedding
   Interpreter? _faceNetInterpreter;
@@ -225,59 +225,86 @@ class FaceAuthEngine {
       ),
     );
 
-    final tempDir = await getTemporaryDirectory();
     final List<List<double>> embeddings = [];
     final List<String> labels = [];
 
-    // Dynamically load all photos from the assets/reference_faces/ folders
-    final manifest = await AssetManifest.loadFromAssetBundle(rootBundle);
-    final List<String> refAssets = manifest
-        .listAssets()
-        .where((String key) => key.startsWith('assets/reference_faces/'))
-        .where((String key) {
-      final lower = key.toLowerCase();
-      return lower.endsWith('.jpeg') ||
-          lower.endsWith('.jpg') ||
-          lower.endsWith('.png');
-    }).toList();
-
-    print('[Auth] Found ${refAssets.length} reference photos to enroll.');
-
-    for (final assetPath in refAssets) {
-      try {
-        final byteData = await rootBundle.load(assetPath);
-        final imageBytes = byteData.buffer.asUint8List();
-        final fileName = assetPath.split('/').last;
-        final tempFile = File('${tempDir.path}/$fileName');
-        await tempFile.writeAsBytes(imageBytes);
-
-        final inputImage = InputImage.fromFilePath(tempFile.path);
-        final faces = await tempDetector.processImage(inputImage);
-
-        if (faces.isNotEmpty) {
-          final face = faces.first;
-
-          // Decode JPEG using dart:image, crop & embed
-          final embedding = _embedFaceFromJpeg(imageBytes, face.boundingBox);
-
-          if (embedding != null) {
-            final label = _labelFromAsset(assetPath);
-
-            embeddings.add(embedding);
-            labels.add(label);
-
-            print(
-              '[Auth] Enrollment embedding extracted from '
-              '$fileName (192D) [$label]',
-            );
-          } else {
-            print('[Auth] Failed to extract embedding from $fileName');
+    // 1) First check for downloaded API photos
+    final appDir = await getApplicationDocumentsDirectory();
+    final downloadedDir = Directory('${appDir.path}/downloaded_faces');
+    
+    if (await downloadedDir.exists()) {
+      final files = downloadedDir.listSync().whereType<File>().toList();
+      print('[Auth] Found ${files.length} downloaded photos from API.');
+      
+      for (final file in files) {
+        try {
+          final imageBytes = await file.readAsBytes();
+          final fileName = file.path.split('/').last;
+          
+          final inputImage = InputImage.fromFilePath(file.path);
+          final faces = await tempDetector.processImage(inputImage);
+          
+          if (faces.isNotEmpty) {
+            final face = faces.first;
+            final embedding = _embedFaceFromJpeg(imageBytes, face.boundingBox);
+            
+            if (embedding != null) {
+              // Filename format: id_name_timestamp.jpg
+              final parts = fileName.split('_');
+              final label = parts.length >= 2 ? parts[1] : 'unknown';
+              
+              embeddings.add(embedding);
+              labels.add(label.replaceAll('.jpg', '').replaceAll('.jpeg', '').replaceAll('.png', ''));
+              print('[Auth] Enrolled API photo: $fileName -> $label');
+            }
           }
-        } else {
-          print('[Auth] No face detected in $fileName');
+        } catch (e) {
+          print('[Auth] Error enrolling API photo ${file.path}: $e');
         }
-      } catch (e) {
-        print('[Auth] Error enrolling from $assetPath: $e');
+      }
+    }
+
+    // 2) If no downloaded photos, fallback to assets
+    if (embeddings.isEmpty) {
+      final tempDir = await getTemporaryDirectory();
+      final manifest = await AssetManifest.loadFromAssetBundle(rootBundle);
+      final List<String> refAssets = manifest
+          .listAssets()
+          .where((String key) => key.startsWith('assets/reference_faces/'))
+          .where((String key) {
+        final lower = key.toLowerCase();
+        return lower.endsWith('.jpeg') ||
+            lower.endsWith('.jpg') ||
+            lower.endsWith('.png');
+      }).toList();
+
+      print('[Auth] Found ${refAssets.length} reference photos in assets.');
+
+      for (final assetPath in refAssets) {
+        try {
+          final byteData = await rootBundle.load(assetPath);
+          final imageBytes = byteData.buffer.asUint8List();
+          final fileName = assetPath.split('/').last;
+          final tempFile = File('${tempDir.path}/$fileName');
+          await tempFile.writeAsBytes(imageBytes);
+
+          final inputImage = InputImage.fromFilePath(tempFile.path);
+          final faces = await tempDetector.processImage(inputImage);
+
+          if (faces.isNotEmpty) {
+            final face = faces.first;
+            final embedding = _embedFaceFromJpeg(imageBytes, face.boundingBox);
+
+            if (embedding != null) {
+              final label = _labelFromAsset(assetPath);
+              embeddings.add(embedding);
+              labels.add(label);
+              print('[Auth] Enrolled asset: $fileName -> $label');
+            }
+          }
+        } catch (e) {
+          print('[Auth] Error enrolling from $assetPath: $e');
+        }
       }
     }
 
@@ -452,9 +479,10 @@ class FaceAuthEngine {
       final int srcWidth = image.width;
       final int srcHeight = image.height;
 
+      final bool isNV12 = image.planes.length == 2;
       final yPlane = image.planes[0];
       final uPlane = image.planes[1];
-      final vPlane = image.planes[2];
+      final vPlane = isNV12 ? image.planes[1] : image.planes[2];
 
       final yBytes = yPlane.bytes;
       final uBytes = uPlane.bytes;
@@ -462,7 +490,7 @@ class FaceAuthEngine {
 
       final yRowStride = yPlane.bytesPerRow;
       final uvRowStride = uPlane.bytesPerRow;
-      final uvPixelStride = uPlane.bytesPerPixel ?? 1;
+      final uvPixelStride = uPlane.bytesPerPixel ?? (isNV12 ? 2 : 1);
 
       // Ensure crop dimensions are valid
       final cw = box.width.toInt().clamp(1, 1000);
@@ -499,7 +527,9 @@ class FaceAuthEngine {
 
           final int yVal = yIdx < yBytes.length ? yBytes[yIdx] : 0;
           final int uVal = uvIdx < uBytes.length ? uBytes[uvIdx] - 128 : 0;
-          final int vVal = uvIdx < vBytes.length ? vBytes[uvIdx] - 128 : 0;
+          final int vVal = isNV12
+              ? (((uvIdx + 1) < vBytes.length) ? vBytes[uvIdx + 1] - 128 : 0)
+              : ((uvIdx < vBytes.length) ? vBytes[uvIdx] - 128 : 0);
 
           final int r = (yVal + (1.402 * vVal)).round().clamp(0, 255);
           final int g =
