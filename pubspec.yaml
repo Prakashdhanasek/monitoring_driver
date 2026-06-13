@@ -40,7 +40,11 @@ dependencies:
   image: ^4.5.4
   flutter_secure_storage: ^9.2.4
   path_provider: ^2.1.5
+  wakelock_plus: ^1.2.10
   audioplayers: ^6.4.0
+  flutter_blue_plus: ^1.32.12
+
+
 
 dev_dependencies:
   flutter_test:
@@ -66,13 +70,15 @@ flutter:
 
   # To add assets to your application, add an assets section, like this:
   assets:
-    - assets/models/custom_yolo.tflite
+    - assets/models/custom_yolo_updated.tflite
+    - assets/models/custom_yolo_eating_drinking.tflite
     - assets/models/mobile_face_net.tflite
     - assets/models/labels.txt
     - assets/reference_faces/Authorized_driver_1/
     - assets/reference_faces/Authorized_driver_2/
     - assets/reference_faces/Authorized_driver_3/
     - assets/reference_faces/Authorized_driver_4/
+    - assets/reference_faces/Authorized_driver_5/
     - assets/audio/alert_soft.mp3
     - assets/audio/alert_loud.mp3
     

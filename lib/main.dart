@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:wakelock_plus/wakelock_plus.dart';
 
 import 'monitor_flow.dart';
+import 'kiosk.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -10,6 +12,12 @@ void main() {
     DeviceOrientation.portraitUp,
     DeviceOrientation.portraitDown,
   ]);
+
+  // Turn on kiosk / lock-task mode as soon as the app starts.
+  Kiosk.start();
+  WakelockPlus.enable();
+  
+
   runApp(const DriverMonitorApp());
 }
 

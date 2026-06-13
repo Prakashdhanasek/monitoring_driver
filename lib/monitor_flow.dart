@@ -1,26 +1,26 @@
 import 'dart:async';
 import 'dart:io';
 import 'dart:typed_data';
-
 import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:google_mlkit_face_detection/google_mlkit_face_detection.dart';
 import 'package:audioplayers/audioplayers.dart';
 import 'package:image/image.dart' as img;
-
 import 'core/face_auth_engine.dart';
 import 'core/monitoring_engine.dart';
 import 'core/object_detector_engine.dart';
-
-
-
 import 'core/monitor_state.dart';
+import 'kiosk.dart';
 
 /// The 3 phases of the driver-facing flow.
 enum Phase { verifying, details, monitoring }
 
+/// Hidden admin exit PIN (tap the top-right corner 5x to enter it).
+const String kAdminPin = '1234';
 
+/// Folder label (assets/reference_faces/<label>/) -> display name + id.
+/// Edit these to match your reference_faces folders.
 const Map<String, String> kDriverNames = {
   'Authorized_driver_1': 'Rohit',
   'Authorized_driver_2': 'Ajal',
@@ -88,6 +88,10 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   bool _tripCompleted = false;
   DateTime? _noFaceSince;
   static const int _kTripEndSeconds = 30;
+
+  // Hidden admin-exit gesture (top-right corner x5 -> PIN -> leave kiosk).
+  int _exitTaps = 0;
+  DateTime? _firstExitTapAt;
 
   @override
   void initState() {
@@ -183,7 +187,11 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
           if (faces.length == 1) {
             if (_frame % 3 == 0) {
               _authEngine.processAuth(
-                  faces.first, _state, image, _getCameraRotation());
+                faces.first,
+                _state,
+                image,
+                _getCameraRotation(),
+              );
             }
             if (_state.authStatus == AuthStatus.authenticated) {
               _capturedFace = _captureFaceJpeg(image);
@@ -219,7 +227,11 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
               // Light continuous identity check (catches a driver swap mid-trip).
               if (_frame % 5 == 0) {
                 _authEngine.processAuth(
-                    face, _state, image, _getCameraRotation());
+                  face,
+                  _state,
+                  image,
+                  _getCameraRotation(),
+                );
               }
               _monitoringEngine.processFrame(face);
             }
@@ -294,10 +306,12 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   // ─────────────────────────────────────────────────────────
   void _handleAlertSounds() {
     final now = DateTime.now();
-    final phone = _state.detectedObjects
-        .any((o) => o.label == 'phone' && o.confidence > 0.85);
-    final smoke = _state.detectedObjects
-        .any((o) => o.label == 'cigarette' && o.confidence > 0.85);
+    final phone = _state.detectedObjects.any(
+      (o) => o.label == 'phone' && o.confidence > 0.85,
+    );
+    final smoke = _state.detectedObjects.any(
+      (o) => o.label == 'cigarette' && o.confidence > 0.85,
+    );
 
     bool loud = false;
     bool soft = false;
@@ -376,8 +390,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
           final int U = uvi < uBytes.length ? uBytes[uvi] - 128 : 0;
           final int V = uvi < vBytes.length ? vBytes[uvi] - 128 : 0;
           final int r = (Y + 1.402 * V).round().clamp(0, 255);
-          final int g =
-              (Y - 0.344136 * U - 0.714136 * V).round().clamp(0, 255);
+          final int g = (Y - 0.344136 * U - 0.714136 * V).round().clamp(0, 255);
           final int b = (Y + 1.772 * U).round().clamp(0, 255);
           out.setPixelRgb(x, y, r, g, b);
         }
@@ -569,6 +582,56 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   }
 
   // ─────────────────────────────────────────────────────────
+  // HIDDEN ADMIN EXIT (top-right corner tapped 5x within 3s -> PIN)
+  // ─────────────────────────────────────────────────────────
+  void _onCornerTap() {
+    final now = DateTime.now();
+    if (_firstExitTapAt == null ||
+        now.difference(_firstExitTapAt!).inSeconds > 3) {
+      _firstExitTapAt = now;
+      _exitTaps = 1;
+    } else {
+      _exitTaps++;
+    }
+    if (_exitTaps >= 5) {
+      _exitTaps = 0;
+      _firstExitTapAt = null;
+      _showExitPinDialog();
+    }
+  }
+
+  void _showExitPinDialog() {
+    final controller = TextEditingController();
+    showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Admin Exit'),
+        content: TextField(
+          controller: controller,
+          keyboardType: TextInputType.number,
+          obscureText: true,
+          autofocus: true,
+          decoration: const InputDecoration(hintText: 'Enter admin PIN'),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () {
+              final ok = controller.text == kAdminPin;
+              Navigator.pop(ctx);
+              if (ok) Kiosk.stop(); // leave lock-task / kiosk
+            },
+            child: const Text('Exit'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // ─────────────────────────────────────────────────────────
   // UI
   // ─────────────────────────────────────────────────────────
   @override
@@ -583,6 +646,17 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
           if (_phase == Phase.details) _detailsOverlay(),
           if (_phase == Phase.monitoring)
             (_tripCompleted ? _tripCompletedOverlay() : _monitoringOverlay()),
+
+          // Invisible admin-exit hotspot (top-right corner). Tap 5x -> PIN.
+          Positioned(
+            top: 0,
+            right: 0,
+            child: GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              onTap: _onCornerTap,
+              child: const SizedBox(width: 72, height: 72),
+            ),
+          ),
         ],
       ),
     );
@@ -625,17 +699,18 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
           const Text(
             'Verifying your face…',
             style: TextStyle(
-                color: Colors.white,
-                fontSize: 20,
-                fontWeight: FontWeight.w600),
+              color: Colors.white,
+              fontSize: 20,
+              fontWeight: FontWeight.w600,
+            ),
           ),
           const SizedBox(height: 8),
           Text(
             _state.faceCount == 0
                 ? 'Look at the camera'
                 : (_state.authStatus == AuthStatus.unauthorized
-                    ? 'Face not recognised — keep looking'
-                    : 'Hold still…'),
+                      ? 'Face not recognised — keep looking'
+                      : 'Hold still…'),
             style: const TextStyle(color: Colors.white70, fontSize: 14),
           ),
         ],
@@ -663,40 +738,58 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
                     shape: BoxShape.circle,
                     color: Color(0xFF16A34A),
                   ),
-                  child: const Icon(Icons.check_rounded,
-                      color: Colors.white, size: 30),
+                  child: const Icon(
+                    Icons.check_rounded,
+                    color: Colors.white,
+                    size: 30,
+                  ),
                 ),
                 const SizedBox(height: 16),
-                const Text('Identity Verified!',
-                    style: TextStyle(
-                        color: Color(0xFF16A34A),
-                        fontSize: 24,
-                        fontWeight: FontWeight.w700)),
+                const Text(
+                  'Identity Verified!',
+                  style: TextStyle(
+                    color: Color(0xFF16A34A),
+                    fontSize: 24,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
                 const SizedBox(height: 6),
-                const Text('You have been successfully verified',
-                    style: TextStyle(color: Color(0xFF6B7280), fontSize: 14)),
+                const Text(
+                  'You have been successfully verified',
+                  style: TextStyle(color: Color(0xFF6B7280), fontSize: 14),
+                ),
                 const SizedBox(height: 30),
-                const Text('Welcome back,',
-                    style: TextStyle(color: Color(0xFF6B7280), fontSize: 15)),
+                const Text(
+                  'Welcome back,',
+                  style: TextStyle(color: Color(0xFF6B7280), fontSize: 15),
+                ),
                 const SizedBox(height: 4),
-                Text(_driverName,
-                    style: const TextStyle(
-                        color: Color(0xFF111827),
-                        fontSize: 26,
-                        fontWeight: FontWeight.w700)),
+                Text(
+                  _driverName,
+                  style: const TextStyle(
+                    color: Color(0xFF111827),
+                    fontSize: 26,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
                 const SizedBox(height: 14),
                 Container(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 18, vertical: 8),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 18,
+                    vertical: 8,
+                  ),
                   decoration: BoxDecoration(
                     color: const Color(0xFF3B82F6).withValues(alpha: 0.10),
                     borderRadius: BorderRadius.circular(20),
                   ),
-                  child: Text('Driver ID: $_driverId',
-                      style: const TextStyle(
-                          color: Color(0xFF2563EB),
-                          fontSize: 14,
-                          fontWeight: FontWeight.w600)),
+                  child: Text(
+                    'Driver ID: $_driverId',
+                    style: const TextStyle(
+                      color: Color(0xFF2563EB),
+                      fontSize: 14,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
                 ),
               ],
             ),
@@ -745,8 +838,11 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
           shape: BoxShape.circle,
           color: Color(0xFFE5E7EB),
         ),
-        child: const Icon(Icons.person_rounded,
-            size: 90, color: Color(0xFF9CA3AF)),
+        child: const Icon(
+          Icons.person_rounded,
+          size: 90,
+          color: Color(0xFF9CA3AF),
+        ),
       );
     }
 
@@ -787,12 +883,14 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     const green = Color(0xFF22C55E);
     const amber = Color(0xFFF59E0B);
     Widget dot(Color col, double s) => Container(
-        width: s,
-        height: s,
-        decoration: BoxDecoration(color: col, shape: BoxShape.circle));
+      width: s,
+      height: s,
+      decoration: BoxDecoration(color: col, shape: BoxShape.circle),
+    );
     Widget dia(Color col, double s) => Transform.rotate(
-        angle: 0.785398,
-        child: Container(width: s, height: s, color: col));
+      angle: 0.785398,
+      child: Container(width: s, height: s, color: col),
+    );
     return [
       Positioned(left: 8, top: 64, child: dia(blue, 9)),
       Positioned(left: 30, top: 112, child: dot(green, 6)),
@@ -811,11 +909,13 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   Widget _monitoringOverlay() {
     return SafeArea(
       child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          _topStatusBar(),
+          _monitorStatusBar(),
           if (_noFaceSince != null && !_tripCompleted) _noDriverCountdown(),
           const Spacer(),
-          _bottomBanners(),
+          _monitorBanner(),
+          _monitorDiag(),
         ],
       ),
     );
@@ -825,8 +925,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   /// current trip auto-completes (_kTripEndSeconds).
   Widget _noDriverCountdown() {
     final elapsed = DateTime.now().difference(_noFaceSince!).inSeconds;
-    final remaining =
-        (_kTripEndSeconds - elapsed).clamp(0, _kTripEndSeconds);
+    final remaining = (_kTripEndSeconds - elapsed).clamp(0, _kTripEndSeconds);
     return Container(
       margin: const EdgeInsets.fromLTRB(12, 0, 12, 0),
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
@@ -844,25 +943,35 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
               shape: BoxShape.circle,
               border: Border.all(color: const Color(0xFFF59E0B), width: 3),
             ),
-            child: Text('$remaining',
-                style: const TextStyle(
-                    color: Colors.white,
-                    fontSize: 18,
-                    fontWeight: FontWeight.w700)),
+            child: Text(
+              '$remaining',
+              style: const TextStyle(
+                color: Colors.white,
+                fontSize: 18,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
           ),
           const SizedBox(width: 12),
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                const Text('No driver detected',
-                    style: TextStyle(
-                        color: Colors.white,
-                        fontSize: 15,
-                        fontWeight: FontWeight.w700)),
-                Text('Ending Trip $_tripNumber in ${remaining}s',
-                    style: const TextStyle(
-                        color: Color(0xFFFCD34D), fontSize: 13)),
+                const Text(
+                  'No driver detected',
+                  style: TextStyle(
+                    color: Colors.white,
+                    fontSize: 15,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+                Text(
+                  'Ending Trip $_tripNumber in ${remaining}s',
+                  style: const TextStyle(
+                    color: Color(0xFFFCD34D),
+                    fontSize: 13,
+                  ),
+                ),
               ],
             ),
           ),
@@ -871,56 +980,54 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     );
   }
 
-  Widget _topStatusBar() {
-    // Primary driver state
-    Color c;
-    String label;
-    if (_state.authStatus == AuthStatus.unauthorized) {
-      c = const Color(0xFF7F1D1D);
-      label = '🚫 UNAUTHORIZED DRIVER';
-    } else if (_state.authStatus == AuthStatus.multipleFaces) {
-      c = const Color(0xFFEA580C);
-      label = '⚠ MULTIPLE PEOPLE';
-    } else if (_noFaceSince != null) {
-      c = const Color(0xFF6B7280);
-      label = 'WAITING FOR DRIVER';
-    } else if (_state.drowsinessLevel == DrowsinessLevel.asleep) {
-      c = const Color(0xFFDC2626);
-      label = '⚠ WAKE UP!';
-    } else if (_state.drowsinessLevel == DrowsinessLevel.drowsy) {
-      c = const Color(0xFFD97706);
-      label = 'DROWSINESS DETECTED';
-    } else if (_state.distractionStatus == DistractionStatus.distracted) {
-      c = const Color(0xFFD97706);
-      label = 'EYES ON THE ROAD';
-    } else if (!_state.calibrated) {
-      c = const Color(0xFF2563EB);
-      label = 'CALIBRATING…';
-    } else {
-      c = const Color(0xFF16A34A);
-      label = 'MONITORING ACTIVE';
-    }
+  // Top info bar (driving_hud_view style): live dot + calibration + trip.
+  Widget _monitorStatusBar() {
+    final calText = _state.calibrated
+        ? 'CAL ✓'
+        : 'Calibrating ${_state.calibrationFrame}/${MonitoringEngine.kCalibrationFrames}';
+    final calColor = _state.calibrated ? Colors.greenAccent : Colors.amber;
 
     return Container(
       margin: const EdgeInsets.all(12),
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+      padding: const EdgeInsets.fromLTRB(14, 10, 14, 10),
       decoration: BoxDecoration(
-        color: c.withValues(alpha: 0.92),
+        color: Colors.black.withValues(alpha: 0.55),
         borderRadius: BorderRadius.circular(14),
       ),
       child: Row(
         children: [
-          const Icon(Icons.monitor_heart_rounded, color: Colors.white, size: 20),
-          const SizedBox(width: 10),
-          Expanded(
-            child: Text(label,
-                style: const TextStyle(
-                    color: Colors.white,
-                    fontSize: 16,
-                    fontWeight: FontWeight.w700)),
+          Container(
+            width: 9,
+            height: 9,
+            decoration: const BoxDecoration(
+              shape: BoxShape.circle,
+              color: Color(0xFF4ADE80),
+            ),
           ),
-          Text('Trip $_tripNumber · $_driverName',
-              style: const TextStyle(color: Colors.white70, fontSize: 13)),
+          const SizedBox(width: 8),
+          const Text(
+            'MONITORING',
+            style: TextStyle(
+              color: Colors.white,
+              fontSize: 13,
+              fontWeight: FontWeight.w700,
+              letterSpacing: 0.6,
+            ),
+          ),
+          const SizedBox(width: 10),
+          Text(
+            calText,
+            style: TextStyle(
+              color: calColor,
+              fontSize: 12,
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+          const Spacer(),
+          Text(
+            'Trip $_tripNumber · $_driverName',
+            style: const TextStyle(color: Colors.white70, fontSize: 12),
+          ),
         ],
       ),
     );
@@ -942,22 +1049,32 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
                   shape: BoxShape.circle,
                   color: Color(0xFF16A34A),
                 ),
-                child: const Icon(Icons.check_circle_outline_rounded,
-                    color: Colors.white, size: 52),
+                child: const Icon(
+                  Icons.check_circle_outline_rounded,
+                  color: Colors.white,
+                  size: 52,
+                ),
               ),
               const SizedBox(height: 22),
-              Text('Trip $_tripNumber Completed',
-                  style: const TextStyle(
-                      color: Color(0xFF111827),
-                      fontSize: 24,
-                      fontWeight: FontWeight.w700)),
+              Text(
+                'Trip $_tripNumber Completed',
+                style: const TextStyle(
+                  color: Color(0xFF111827),
+                  fontSize: 24,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
               const SizedBox(height: 10),
               const Padding(
                 padding: EdgeInsets.symmetric(horizontal: 40),
                 child: Text(
                   'Driver left the seat. Waiting for the next driver to start the next trip…',
                   textAlign: TextAlign.center,
-                  style: TextStyle(color: Color(0xFF6B7280), fontSize: 14, height: 1.4),
+                  style: TextStyle(
+                    color: Color(0xFF6B7280),
+                    fontSize: 14,
+                    height: 1.4,
+                  ),
                 ),
               ),
               const SizedBox(height: 26),
@@ -965,7 +1082,9 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
                 width: 30,
                 height: 30,
                 child: CircularProgressIndicator(
-                    strokeWidth: 3, color: Color(0xFF3B82F6)),
+                  strokeWidth: 3,
+                  color: Color(0xFF3B82F6),
+                ),
               ),
             ],
           ),
@@ -974,40 +1093,121 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     );
   }
 
-  Widget _bottomBanners() {
-    final phone = _state.detectedObjects
-        .any((o) => o.label == 'phone' && o.confidence > 0.85);
-    final smoke = _state.detectedObjects
-        .any((o) => o.label == 'cigarette' && o.confidence > 0.85);
+  // Big full-width detection banner (driving_hud_view style). Shows the most
+  // important active state: unauthorized / multiple / asleep / phone /
+  // cigarette / seatbelt / drowsy / distraction. Hidden when all is well.
+  Widget _monitorBanner() {
+    final phone = _state.detectedObjects.any(
+      (o) => o.label == 'phone' && o.confidence > 0.85,
+    );
+    final smoke = _state.detectedObjects.any(
+      (o) => o.label == 'cigarette' && o.confidence > 0.85,
+    );
 
-    final chips = <Widget>[];
-    if (phone) chips.add(_chip('📱 PHONE DETECTED', const Color(0xFFDC2626)));
-    if (smoke) chips.add(_chip('🚬 SMOKING DETECTED', const Color(0xFFDC2626)));
-    chips.add(_state.seatbeltBuckled
-        ? _chip('SEATBELT ON', const Color(0xFF16A34A))
-        : _chip('SEATBELT OFF', const Color(0xFF6B7280)));
+    Color? bg;
+    String? text;
+    Color fg = Colors.white;
+
+    if (_state.authStatus == AuthStatus.unauthorized) {
+      bg = const Color(0xFF7F1D1D);
+      text = '🚫  UNAUTHORIZED DRIVER  🚫';
+    } else if (_state.authStatus == AuthStatus.multipleFaces) {
+      bg = const Color(0xFFEA580C);
+      text = '⚠  MULTIPLE PEOPLE DETECTED  ⚠';
+    } else if (_state.drowsinessLevel == DrowsinessLevel.asleep) {
+      bg = const Color(0xFFDC2626);
+      text = '⚠  WAKE UP!  ⚠';
+    } else if (phone) {
+      bg = const Color(0xFF7E22CE);
+      text = '📵  PHONE DETECTED';
+    } else if (smoke) {
+      bg = const Color(0xFF7E22CE);
+      text = '🚬  SMOKING DETECTED';
+    } else if (_state.drowsinessLevel == DrowsinessLevel.drowsy) {
+      bg = const Color(0xFFD97706);
+      text = '⚠  DROWSINESS DETECTED  ⚠';
+    } else if (_state.distractionStatus == DistractionStatus.distracted) {
+      bg = const Color(0xFFEAB308);
+      fg = Colors.black;
+      text = '⚠  EYES ON THE ROAD  ⚠';
+    } else if (_state.seatbeltBuckled) {
+      bg = const Color(0xFF16A34A);
+      text = '🔒  SEATBELT ON';
+    }
+
+    if (bg == null || text == null) return const SizedBox.shrink();
 
     return Container(
-      margin: const EdgeInsets.all(12),
-      child: Wrap(
-        alignment: WrapAlignment.center,
-        spacing: 8,
-        runSpacing: 8,
-        children: chips,
+      width: double.infinity,
+      margin: const EdgeInsets.symmetric(horizontal: 12),
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: bg.withValues(alpha: 0.95),
+        borderRadius: BorderRadius.circular(16),
+      ),
+      child: Text(
+        text,
+        textAlign: TextAlign.center,
+        style: TextStyle(color: fg, fontSize: 18, fontWeight: FontWeight.w800),
       ),
     );
   }
 
-  Widget _chip(String text, Color color) {
+  // Small live diagnostics strip (EAR / HEAD / STATUS) like driving_hud_view.
+  // Remove this from the monitoring column if you want a cleaner screen.
+  Widget _monitorDiag() {
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+      margin: const EdgeInsets.all(12),
+      padding: const EdgeInsets.fromLTRB(12, 10, 12, 12),
       decoration: BoxDecoration(
-        color: color.withValues(alpha: 0.92),
-        borderRadius: BorderRadius.circular(12),
+        color: Colors.black.withValues(alpha: 0.75),
+        borderRadius: BorderRadius.circular(14),
       ),
-      child: Text(text,
-          style: const TextStyle(
-              color: Colors.white, fontSize: 14, fontWeight: FontWeight.w700)),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          _diagRow(
+            'EAR',
+            'L:${_state.leftEar.toStringAsFixed(3)}  R:${_state.rightEar.toStringAsFixed(3)}  Thr:${_state.earThreshold.toStringAsFixed(3)}',
+          ),
+          _diagRow(
+            'HEAD',
+            'Yaw:${_state.yaw.toStringAsFixed(1)}°  Pitch:${_state.pitch.toStringAsFixed(1)}°',
+          ),
+          _diagRow(
+            'STATUS',
+            '${_state.drowsinessLevel.name.toUpperCase()} | ${_state.distractionStatus.name.toUpperCase()}',
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _diagRow(String label, String value) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 2),
+      child: Row(
+        children: [
+          SizedBox(
+            width: 56,
+            child: Text(
+              label,
+              style: const TextStyle(
+                color: Colors.cyanAccent,
+                fontSize: 11,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+          ),
+          Expanded(
+            child: Text(
+              value,
+              style: const TextStyle(color: Colors.white70, fontSize: 11),
+            ),
+          ),
+        ],
+      ),
     );
   }
 }
