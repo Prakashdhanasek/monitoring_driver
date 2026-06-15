@@ -2,13 +2,14 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 
-import 'monitor_flow.dart';
+import 'views/device_enrollment_screen.dart';
 import 'kiosk.dart';
 
-void main() {
+void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  
   // Driver-facing: portrait only, keep it simple.
-  SystemChrome.setPreferredOrientations([
+  await SystemChrome.setPreferredOrientations([
     DeviceOrientation.portraitUp,
     DeviceOrientation.portraitDown,
   ]);
@@ -29,8 +30,7 @@ class DriverMonitorApp extends StatelessWidget {
     return const MaterialApp(
       title: 'Driver Monitor',
       debugShowCheckedModeBanner: false,
-      // App opens straight into the camera -> verify -> monitoring flow.
-      home: MonitorFlow(),
+      home: DeviceEnrollmentScreen(),
     );
   }
 }

@@ -27,6 +27,7 @@ class IsolateFrameMessage {
   final int yRowStride;
   final int uvRowStride;
   final int uvPixelStride;
+  final bool isNV12;
   final bool facePresent;
   final String driverId;
   final String documentsDirectoryPath;
@@ -35,7 +36,7 @@ class IsolateFrameMessage {
     required this.width, required this.height, required this.rotation,
     required this.yPlane, required this.uPlane, required this.vPlane,
     required this.yRowStride, required this.uvRowStride, required this.uvPixelStride,
-    required this.facePresent, required this.driverId, required this.documentsDirectoryPath,
+    required this.isNV12, required this.facePresent, required this.driverId, required this.documentsDirectoryPath,
   });
 }
 
@@ -70,7 +71,7 @@ class ObjectDetectorEngine {
       final directory = await getApplicationDocumentsDirectory();
       _docsPath = directory.path;
 
-      final modelData = await rootBundle.load('assets/models/custom_yolo.tflite');
+      final modelData = await rootBundle.load('assets/models/custom_yolo_updated.tflite');
       final labelsText = await rootBundle.loadString('assets/models/labels.txt');
       
       print('[YOLO ENGINE] Model and labels loaded from assets.');
@@ -106,10 +107,12 @@ class ObjectDetectorEngine {
     _isProcessingFrame = true;
     _state = state;
 
+    final bool isNV12 = image.planes.length == 2;
     final msg = IsolateFrameMessage(
       width: image.width, height: image.height, rotation: rotation,
-      yPlane: image.planes[0].bytes, uPlane: image.planes[1].bytes, vPlane: image.planes[2].bytes,
-      yRowStride: image.planes[0].bytesPerRow, uvRowStride: image.planes[1].bytesPerRow, uvPixelStride: image.planes[1].bytesPerPixel ?? 1,
+      yPlane: image.planes[0].bytes, uPlane: image.planes[1].bytes, vPlane: isNV12 ? image.planes[1].bytes : image.planes[2].bytes,
+      yRowStride: image.planes[0].bytesPerRow, uvRowStride: image.planes[1].bytesPerRow, uvPixelStride: image.planes[1].bytesPerPixel ?? (isNV12 ? 2 : 1),
+      isNV12: isNV12,
       facePresent: state.faceCount > 0,
       driverId: 'Driver_Active',
       documentsDirectoryPath: _docsPath ?? '',
@@ -346,7 +349,9 @@ void _convertImage(IsolateFrameMessage msg, dynamic inputBuffer, Uint8List rgbBy
 
       final int y = msg.yPlane[yIdx];
       final int u = msg.uPlane[uvIdx] - 128;
-      final int v = msg.vPlane[uvIdx] - 128;
+      final int v = msg.isNV12 
+          ? (((uvIdx + 1) < msg.vPlane.length) ? msg.vPlane[uvIdx + 1] - 128 : 0)
+          : ((uvIdx < msg.vPlane.length) ? msg.vPlane[uvIdx] - 128 : 0);
 
       final int r = (y + (1.402 * v)).round().clamp(0, 255);
       final int g = (y - (0.344136 * u) - (0.714136 * v)).round().clamp(0, 255);

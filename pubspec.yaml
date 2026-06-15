@@ -45,6 +45,10 @@ dependencies:
   flutter_blue_plus: ^1.32.12
 
 
+  http: ^1.2.0
+  device_info_plus: ^10.1.0
+  permission_handler: ^11.0.1
+  geolocator: ^13.0.0
 
 dev_dependencies:
   flutter_test:
@@ -70,14 +74,7 @@ flutter:
 
   # To add assets to your application, add an assets section, like this:
   assets:
-    - assets/models/custom_yolo.tflite
-    - assets/models/mobile_face_net.tflite
-    - assets/models/labels.txt
-    - assets/reference_faces/Authorized_driver_1/
-    - assets/reference_faces/Authorized_driver_2/
-    - assets/reference_faces/Authorized_driver_3/
-    - assets/reference_faces/Authorized_driver_4/
-    - assets/reference_faces/Authorized_driver_5/
+    - assets/models/
     - assets/audio/alert_soft.mp3
     - assets/audio/alert_loud.mp3
     
