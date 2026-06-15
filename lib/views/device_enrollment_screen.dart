@@ -8,8 +8,8 @@ import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:http/http.dart' as http;
 import 'package:device_info_plus/device_info_plus.dart';
 import 'package:permission_handler/permission_handler.dart';
-import 'package:hive_flutter/hive_flutter.dart';
 
+import '../services/settings_service.dart';
 import '../monitor_flow.dart';
 
 class DeviceEnrollmentScreen extends StatefulWidget {
@@ -21,6 +21,7 @@ class DeviceEnrollmentScreen extends StatefulWidget {
 
 class _DeviceEnrollmentScreenState extends State<DeviceEnrollmentScreen> {
   final FlutterSecureStorage _storage = const FlutterSecureStorage();
+  final SettingsService _settings = SettingsService();
   
   bool _isLoading = true;
   String _statusMessage = "Initializing device details...";
@@ -40,21 +41,18 @@ class _DeviceEnrollmentScreenState extends State<DeviceEnrollmentScreen> {
   }
 
   Future<String> _getDeviceImei() async {
-    final settingsBox = Hive.box('settingsBox');
-    
-    // 1. Try to read a previously registered/stored 15-digit IMEI from Hive
-    String? storedImei = settingsBox.get('device_id');
+    // 1. Try to read from SettingsService (Hive)
+    if (_settings.hasValidImei()) {
+      final imei = _settings.getDeviceId()!;
+      debugPrint('[Enroll] Found existing valid 15-digit IMEI: $imei');
+      return imei;
+    }
     
     // 1b. Migration: Check secure storage if Hive is empty
-    if (storedImei == null || storedImei.length != 15 || !RegExp(r'^\d+$').hasMatch(storedImei)) {
-      storedImei = await _storage.read(key: 'device_id');
-      if (storedImei != null && storedImei.length == 15 && RegExp(r'^\d+$').hasMatch(storedImei)) {
-        settingsBox.put('device_id', storedImei); // Migrate
-      }
-    }
-
+    final storedImei = await _storage.read(key: 'device_id');
     if (storedImei != null && storedImei.length == 15 && RegExp(r'^\d+$').hasMatch(storedImei)) {
-      debugPrint('[Enroll] Found existing valid 15-digit IMEI: $storedImei');
+      _settings.saveDeviceId(storedImei);
+      debugPrint('[Enroll] Migrated IMEI from SecureStorage: $storedImei');
       return storedImei;
     }
 
@@ -80,7 +78,7 @@ class _DeviceEnrollmentScreenState extends State<DeviceEnrollmentScreen> {
     // Validate the retrieved hardware IMEI (must be exactly 15 digits)
     if (hardwareImei != null && hardwareImei.length == 15 && RegExp(r'^\d+$').hasMatch(hardwareImei)) {
       debugPrint('[Enroll] Successfully retrieved hardware IMEI: $hardwareImei');
-      settingsBox.put('device_id', hardwareImei);
+      _settings.saveDeviceId(hardwareImei);
       await _storage.write(key: 'device_id', value: hardwareImei);
       return hardwareImei;
     }
@@ -94,7 +92,7 @@ class _DeviceEnrollmentScreenState extends State<DeviceEnrollmentScreen> {
     }
     final mockImei = buffer.toString();
     
-    settingsBox.put('device_id', mockImei);
+    _settings.saveDeviceId(mockImei);
     await _storage.write(key: 'device_id', value: mockImei);
     debugPrint('[Enroll] Generated persistent mock IMEI: $mockImei');
     return mockImei;
@@ -161,20 +159,23 @@ class _DeviceEnrollmentScreenState extends State<DeviceEnrollmentScreen> {
         final Map<String, dynamic> resData = jsonDecode(response.body);
         final registeredId = resData['deviceId'] as String? ?? deviceId;
         
+        _settings.saveDeviceId(registeredId);
+        _settings.saveDeviceInfo(model: deviceModel, osVersion: osVersion);
+        _settings.markRegistered();
         await _storage.write(key: 'device_id', value: registeredId);
         debugPrint('[Enroll] Device registered successfully. ID: $registeredId');
       } else {
         debugPrint('[Enroll] Registration returned status code: ${response.statusCode}');
-        // Store our deviceId as fallback
+        _settings.saveDeviceId(deviceId);
         await _storage.write(key: 'device_id', value: deviceId);
       }
     } catch (e) {
       debugPrint('[Enroll] Registration connection error: $e');
-      // If offline, ensure there's at least a fallback ID in storage
-      String? storedId = await _storage.read(key: 'device_id');
-      if (storedId == null) {
-        storedId = 'device_${DateTime.now().millisecondsSinceEpoch}';
-        await _storage.write(key: 'device_id', value: storedId);
+      // If offline, ensure there's at least a fallback ID
+      if (_settings.getDeviceId() == null) {
+        final fallbackId = 'device_${DateTime.now().millisecondsSinceEpoch}';
+        _settings.saveDeviceId(fallbackId);
+        await _storage.write(key: 'device_id', value: fallbackId);
       }
     } finally {
       if (mounted) {

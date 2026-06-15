@@ -7,22 +7,18 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:google_mlkit_face_detection/google_mlkit_face_detection.dart';
 import 'package:audioplayers/audioplayers.dart';
-import 'package:hive/hive.dart';
 import 'package:image/image.dart' as img;
 
 import 'core/face_auth_engine.dart';
 import 'core/monitoring_engine.dart';
 import 'core/object_detector_engine.dart';
-
-
-
-import 'dart:convert';
-import 'package:flutter_secure_storage/flutter_secure_storage.dart';
-import 'package:http/http.dart' as http;
-import 'package:path_provider/path_provider.dart';
-import 'package:geolocator/geolocator.dart';
-
 import 'core/monitor_state.dart';
+
+import 'services/settings_service.dart';
+import 'services/drivers_service.dart';
+import 'services/incidents_service.dart';
+
+import 'package:geolocator/geolocator.dart';
 
 /// The 3 phases of the driver-facing flow.
 enum Phase { verifying, details, monitoring }
@@ -58,6 +54,15 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   final ObjectDetectorEngine _objectDetector = ObjectDetectorEngine();
   late final MonitoringEngine _monitoringEngine;
   final MonitorState _state = MonitorState();
+
+  // ── Hive Services ──
+  final SettingsService _settings = SettingsService();
+  final DriversService _driversService = DriversService();
+  final IncidentsService _incidentsService = IncidentsService();
+
+  // ── Connectivity tracking ──
+  bool _isOnline = true;
+  Timer? _connectivityTimer;
 
   // Flow
   Phase _phase = Phase.verifying;
@@ -103,15 +108,45 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     WidgetsBinding.instance.addObserver(this);
     _monitoringEngine = MonitoringEngine(_state);
     _init();
-    
+
     _syncTimer = Timer.periodic(const Duration(seconds: 30), (_) {
       _syncIncidentsTask();
     });
+
+    // Check connectivity every 5 seconds
+    _connectivityTimer = Timer.periodic(const Duration(seconds: 5), (_) {
+      _checkConnectivity();
+    });
+    _checkConnectivity();
+  }
+
+  Future<void> _checkConnectivity() async {
+    try {
+      final result = await InternetAddress.lookup('proximity-driver-api.prod-app.in')
+          .timeout(const Duration(seconds: 3));
+      final online = result.isNotEmpty && result[0].rawAddress.isNotEmpty;
+      if (online != _isOnline) {
+        _isOnline = online;
+        if (mounted) setState(() {});
+        debugPrint('[Flow] Connectivity changed: ${_isOnline ? "ONLINE" : "OFFLINE"}');
+        // Auto-sync immediately when we come back online
+        if (_isOnline) {
+          _syncIncidentsTask();
+        }
+      }
+    } catch (_) {
+      if (_isOnline) {
+        _isOnline = false;
+        if (mounted) setState(() {});
+        debugPrint('[Flow] Connectivity changed: OFFLINE');
+      }
+    }
   }
 
   @override
   void dispose() {
     _syncTimer?.cancel();
+    _connectivityTimer?.cancel();
     _countdownTimer?.cancel();
     WidgetsBinding.instance.removeObserver(this);
     _camera?.dispose();
@@ -122,111 +157,14 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   }
 
   Future<void> _fetchAndDownloadDrivers() async {
-    final settingsBox = Hive.box('settingsBox');
-    final driversBox = Hive.box('driversBox');
-    
-    final deviceId = settingsBox.get('device_id');
+    final deviceId = _settings.getDeviceId();
     if (deviceId == null || deviceId.isEmpty) {
       debugPrint('[Flow] No device_id stored. Skipping API fetch.');
       return;
     }
-
-    try {
-      final url = Uri.parse('https://proximity-driver-api.prod-app.in/api/drivers/by-device/$deviceId');
-      debugPrint('==================================================');
-      debugPrint('[Flow] FETCH DRIVERS FOR IMEI/ID: $deviceId');
-      debugPrint('[Flow] API REQUEST URL: $url');
-      debugPrint('==================================================');
-      
-      final response = await http.get(url).timeout(const Duration(seconds: 15));
-
-      debugPrint('==================================================');
-      debugPrint('[Flow] API RESPONSE STATUS CODE: ${response.statusCode}');
-      debugPrint('[Flow] API RESPONSE BODY: ${response.body}');
-      debugPrint('==================================================');
-
-      if (response.statusCode == 200) {
-        final List<dynamic> driversList = jsonDecode(response.body);
-        if (driversList.isNotEmpty) {
-          debugPrint('[Flow] Found ${driversList.length} drivers from API. Downloading photos...');
-          // Save the raw JSON for offline usage
-          driversBox.put('offline_drivers', response.body);
-          
-          // Download photos
-          await _downloadPhotos(driversList);
-          
-          // Clear old embeddings cache to force re-enrollment
-          const storage = FlutterSecureStorage();
-          await storage.delete(key: 'safe_drive_mobilefacenet_v9');
-        } else {
-          debugPrint('[Flow] No drivers returned for device $deviceId. Clearing old cache.');
-          
-          // Clear JSON cache
-          driversBox.delete('offline_drivers');
-          
-          // Clear downloaded photos
-          final dir = await getApplicationDocumentsDirectory();
-          final photosDir = Directory('${dir.path}/downloaded_faces');
-          if (await photosDir.exists()) {
-            await photosDir.delete(recursive: true);
-          }
-          
-          // Clear embeddings cache
-          const storage = FlutterSecureStorage();
-          await storage.delete(key: 'safe_drive_mobilefacenet_v9');
-        }
-      } else {
-        debugPrint('[Flow] Failed to fetch drivers. API Status: ${response.statusCode}');
-      }
-    } catch (e) {
-      debugPrint('[Flow] Error fetching drivers (offline?): $e');
-      final cachedDrivers = driversBox.get('offline_drivers');
-      if (cachedDrivers != null) {
-        debugPrint('[Flow] Loading cached drivers from Hive fallback.');
-      }
-    }
+    await _driversService.fetchAndCacheDrivers(deviceId);
   }
 
-  Future<void> _downloadPhotos(List<dynamic> drivers) async {
-    final dir = await getApplicationDocumentsDirectory();
-    final photosDir = Directory('${dir.path}/downloaded_faces');
-    if (!await photosDir.exists()) {
-      await photosDir.create(recursive: true);
-    } else {
-      // Clear old photos
-      await photosDir.delete(recursive: true);
-      await photosDir.create(recursive: true);
-    }
-
-    const baseUrl = 'https://proximity-driver-api.prod-app.in';
-
-    for (final driver in drivers) {
-      final facePhotos = driver['facePhotos'] as List<dynamic>?;
-      if (facePhotos != null && facePhotos.isNotEmpty) {
-        for (final photo in facePhotos) {
-          final photoPath = photo['photoPath'] as String?;
-          final driverId = driver['id'] as String? ?? 'unknown';
-          final driverName = driver['fullName'] as String? ?? 'Driver';
-          
-          if (photoPath != null) {
-            try {
-              final imgUrl = Uri.parse('$baseUrl$photoPath');
-              final res = await http.get(imgUrl);
-              if (res.statusCode == 200) {
-                // Save it locally, encoding the driver info in the filename so FaceAuthEngine can read it
-                final fileName = '${driverId}__${driverName.replaceAll(' ', '_')}__${DateTime.now().millisecondsSinceEpoch}.jpg';
-                final file = File('${photosDir.path}/$fileName');
-                await file.writeAsBytes(res.bodyBytes);
-                debugPrint('[Flow] Downloaded photo for $driverName');
-              }
-            } catch (e) {
-              debugPrint('[Flow] Error downloading photo $photoPath: $e');
-            }
-          }
-        }
-      }
-    }
-  }
 
   Future<void> _init() async {
     // 0) Request location permissions upfront so GPS passes correctly.
@@ -285,7 +223,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     if (permission == LocationPermission.denied) {
       permission = await Geolocator.requestPermission();
     }
-    
+
     if (permission == LocationPermission.deniedForever) {
       debugPrint('[Flow] Location permissions are permanently denied.');
       return;
@@ -476,31 +414,18 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   // ─────────────────────────────────────────────────────────
   Future<void> _reportIncident(String eventType, String riskLevel, double confidence) async {
     try {
-      final settingsBox = Hive.box('settingsBox');
-      final deviceId = settingsBox.get('device_id');
+      final deviceId = _settings.getDeviceId();
       if (deviceId == null || deviceId.isEmpty) return;
 
-      final body = {
-        "deviceTabletId": deviceId,
-        "eventType": eventType,
-        "riskLevel": riskLevel,
-        "aiConfidence": confidence,
-        "vehicleSpeed": _state.vehicleSpeed,
-        "gpsLatitude": _state.gpsLat,
-        "gpsLongitude": _state.gpsLng,
-        "snapshotUrl": "",
-        "videoClipUrl": "",
-        "occurredAt": DateTime.now().toUtc().toIso8601String(),
-      };
-
-      final incidentsBox = Hive.box('incidentsBox');
-      final incidentKey = DateTime.now().millisecondsSinceEpoch.toString();
-      incidentsBox.put(incidentKey, jsonEncode(body));
-
-      debugPrint('==================================================');
-      debugPrint('[Flow] QUEUED INCIDENT OFFLINE: $eventType');
-      debugPrint('[Flow] API REQUEST BODY: ${jsonEncode(body)}');
-      debugPrint('==================================================');
+      _incidentsService.queueIncident(
+        deviceTabletId: deviceId,
+        eventType: eventType,
+        riskLevel: riskLevel,
+        aiConfidence: confidence,
+        vehicleSpeed: _state.vehicleSpeed,
+        gpsLatitude: _state.gpsLat,
+        gpsLongitude: _state.gpsLng,
+      );
     } catch (e) {
       debugPrint('[Flow] Error queueing incident: $e');
     }
@@ -508,34 +433,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
 
   Future<void> _syncIncidentsTask() async {
     if (!mounted) return;
-    final incidentsBox = Hive.box('incidentsBox');
-    if (incidentsBox.isEmpty) return;
-
-    final url = Uri.parse('https://proximity-driver-api.prod-app.in/api/incidents');
-    final keys = incidentsBox.keys.toList();
-
-    for (final key in keys) {
-      final String? jsonBody = incidentsBox.get(key);
-      if (jsonBody == null) continue;
-
-      try {
-        final response = await http.post(
-          url,
-          headers: {'Content-Type': 'application/json'},
-          body: jsonBody,
-        ).timeout(const Duration(seconds: 15));
-
-        if (response.statusCode == 200 || response.statusCode == 201) {
-          debugPrint('[Sync] Successfully uploaded incident: $key');
-          incidentsBox.delete(key);
-        } else {
-          debugPrint('[Sync] Failed to upload incident $key. Status: ${response.statusCode}');
-        }
-      } catch (e) {
-        debugPrint('[Sync] Offline/Error syncing incident $key: $e');
-        break; // Stop loop if offline to prevent spamming failed requests
-      }
-    }
+    await _incidentsService.syncPendingIncidents();
   }
 
   // ─────────────────────────────────────────────────────────
@@ -577,7 +475,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
         // Report every 10 seconds if the incident is actively happening
         if (lastTime == null || now.difference(lastTime).inSeconds >= 10) {
           _lastIncidentReportAt[label] = now;
-          
+
           String eventType = label;
           if (label == 'phone') eventType = 'PhoneUsage';
           if (label == 'cigarette') eventType = 'Smoking';
@@ -1071,9 +969,55 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       child: Column(
         children: [
           _topStatusBar(),
+          _connectivityBanner(),
           if (_noFaceSince != null && !_tripCompleted) _noDriverCountdown(),
           const Spacer(),
           _bottomBanners(),
+        ],
+      ),
+    );
+  }
+
+  /// Shows offline/online status and pending incident count.
+  Widget _connectivityBanner() {
+    final pending = _incidentsService.pendingCount;
+    if (_isOnline && pending == 0) return const SizedBox.shrink();
+
+    final Color bgColor;
+    final IconData icon;
+    final String text;
+
+    if (!_isOnline) {
+      bgColor = const Color(0xFFDC2626);
+      icon = Icons.wifi_off_rounded;
+      text = pending > 0
+          ? 'OFFLINE · $pending events queued'
+          : 'OFFLINE · Events saving locally';
+    } else {
+      // Online but still has pending items = syncing
+      bgColor = const Color(0xFF2563EB);
+      icon = Icons.sync_rounded;
+      text = 'SYNCING · $pending events uploading...';
+    }
+
+    return Container(
+      margin: const EdgeInsets.symmetric(horizontal: 12),
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+      decoration: BoxDecoration(
+        color: bgColor.withValues(alpha: 0.92),
+        borderRadius: BorderRadius.circular(10),
+      ),
+      child: Row(
+        children: [
+          Icon(icon, color: Colors.white, size: 18),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(text,
+                style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 12,
+                    fontWeight: FontWeight.w600)),
+          ),
         ],
       ),
     );
