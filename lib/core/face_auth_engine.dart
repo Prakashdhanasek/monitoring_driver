@@ -35,9 +35,9 @@ class FaceAuthEngine {
   String? lastMatchedLabel;
 
   // Balanced threshold:
-  // 0.72 was too strict and caused all faces to fail.
-  // 0.95 allows valid reference drivers while still blocking many unknown faces.
-  static const double kAuthThreshold = 1.08;
+  // 0.90 is strict security for real faces.
+  // 1.10 is more relaxed to allow testing with photos on screens (which add glare/distortion).
+  static const double kAuthThreshold = 1.10;
 
   int _consecutiveMatch = 0;
   int _consecutiveMiss = 0;
