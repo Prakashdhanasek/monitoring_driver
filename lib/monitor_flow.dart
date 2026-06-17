@@ -17,6 +17,7 @@ import 'core/monitor_state.dart';
 import 'services/settings_service.dart';
 import 'services/drivers_service.dart';
 import 'services/incidents_service.dart';
+import 'services/telemetry_service.dart';
 
 import 'package:geolocator/geolocator.dart';
 
@@ -47,10 +48,12 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   final SettingsService _settings = SettingsService();
   final DriversService _driversService = DriversService();
   final IncidentsService _incidentsService = IncidentsService();
+  final TelemetryService _telemetryService = TelemetryService();
 
   // ── Connectivity tracking ──
   bool _isOnline = true;
   Timer? _connectivityTimer;
+  Timer? _telemetryTimer;
 
   // Flow
   Phase _phase = Phase.verifying;
@@ -109,6 +112,11 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       _checkConnectivity();
     });
     _checkConnectivity();
+
+    // Send location telemetry every 3 seconds
+    _telemetryTimer = Timer.periodic(const Duration(seconds: 3), (_) {
+      _sendTelemetryTask();
+    });
   }
 
   Future<void> _checkConnectivity() async {
@@ -142,6 +150,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   void dispose() {
     _syncTimer?.cancel();
     _connectivityTimer?.cancel();
+    _telemetryTimer?.cancel();
     _countdownTimer?.cancel();
     WidgetsBinding.instance.removeObserver(this);
     _camera?.dispose();
@@ -245,7 +254,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       ).listen((Position position) {
         _state.gpsLat = position.latitude;
         _state.gpsLng = position.longitude;
-        _state.vehicleSpeed = position.speed > 0 ? position.speed : 0.0;
+        _state.vehicleSpeed = position.speed > 0 ? (position.speed * 3.6) : 0.0;
       });
     }
   }
@@ -469,6 +478,26 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     if (!mounted) return;
     debugPrint('[Flow] Triggering sync of pending incidents (connection: ${_isOnline ? "ONLINE" : "OFFLINE"})...');
     await _incidentsService.syncPendingIncidents();
+  }
+
+  Future<void> _sendTelemetryTask() async {
+    if (!mounted) return;
+    final deviceId = _settings.getDeviceId();
+    if (deviceId == null || deviceId.isEmpty) {
+      return;
+    }
+    // Only attempt to send telemetry if online
+    if (!_isOnline) {
+      debugPrint('[Telemetry] Skipping location telemetry (Device is offline)');
+      return;
+    }
+
+    await _telemetryService.sendLocationTelemetry(
+      deviceTabletId: deviceId,
+      latitude: _state.gpsLat,
+      longitude: _state.gpsLng,
+      speed: _state.vehicleSpeed,
+    );
   }
 
   // ─────────────────────────────────────────────────────────

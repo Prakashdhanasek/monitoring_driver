@@ -40,7 +40,7 @@ class IncidentsService {
       'eventType': eventType,
       'riskLevel': riskLevel,
       'aiConfidence': (aiConfidence * 100).toInt(),
-      'vehicleSpeed': 80,
+      'vehicleSpeed': vehicleSpeed.toInt(),
       'gpsLatitude': gpsLatitude,
       'gpsLongitude': gpsLongitude,
       'snapshotUrl': snapshotUrl.isEmpty ? 'string' : snapshotUrl,
