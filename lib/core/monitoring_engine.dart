@@ -1091,6 +1091,11 @@ class MonitoringEngine {
         if (_sunglassNullFrames > 25) {
           state.monitorMode = MonitorMode.sunglasses;
         }
+
+        // Keep the driver in an open-eye state when eye landmarks disappear briefly.
+        state.eyesOpenSince ??= now;
+        state.eyesClosedSince = null;
+        state.lastEyeStateOpen = true;
       }
       if (state.monitorMode == MonitorMode.sunglasses) {
         _processMar(face, now);

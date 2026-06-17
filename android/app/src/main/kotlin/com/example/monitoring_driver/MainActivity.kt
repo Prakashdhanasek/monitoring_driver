@@ -19,7 +19,7 @@ class MainActivity : FlutterActivity() {
 
 
     companion object {
-        private const val WIFI_SSID = "Tommy's Phone"   //  (case-sensitive)
+        private const val WIFI_SSID = "Tommy's Phone"   // exact peru (case-sensitive)
         private const val WIFI_PASSWORD = "********"      // $ -> \$ (Kotlin safe)
     }
 

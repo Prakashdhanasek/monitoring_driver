@@ -67,13 +67,13 @@
 //     try {
 //       print('\n=========================================');
 //       print('[YOLO ENGINE] Starting Initialization...');
-      
+
 //       final directory = await getApplicationDocumentsDirectory();
 //       _docsPath = directory.path;
 
 //       final modelData = await rootBundle.load('assets/models/custom_yolo_updated.tflite');
 //       final labelsText = await rootBundle.loadString('assets/models/labels.txt');
-      
+
 //       print('[YOLO ENGINE] Model and labels loaded from assets.');
 
 //       _isolate = await Isolate.spawn(
@@ -141,13 +141,13 @@
 
 //       if (detected.label.isNotEmpty) {
 //         state.consecutiveDistractions[label] = (state.consecutiveDistractions[label] ?? 0) + 1;
-        
+
 //         if (state.consecutiveDistractions[label]! >= 15) {
 //           final lastCooldown = state.distractionCooldowns[label];
 //           if (lastCooldown == null || now.difference(lastCooldown).inSeconds >= 30) {
 //             state.distractionCooldowns[label] = now;
 //             state.totalDistractionCount++;
-            
+
 //             state.addAlert(AlertEvent(
 //               type: 'flag_distraction_$label',
 //               message: 'FLAG: DISTRACTION - ${label.toUpperCase()} DETECTED (>85% for 15 frames)',
@@ -211,14 +211,14 @@
 //       mainSendPort.send('Diagnostics: GPU delegate failed -> CPU fallback ($e)');
 //     }
 //     final labels = initMessage.labelsText.split('\n').map((e) => e.trim()).where((e) => e.isNotEmpty).toList();
-    
+
 //     final inputTensor = interpreter.getInputTensor(0);
 //     final outputTensor = interpreter.getOutputTensor(0);
-    
+
 //     final int targetH = inputTensor.shape[1];
 //     final int targetW = inputTensor.shape[2];
 //     final bool isQuantized = inputTensor.type == TensorType.uint8 || inputTensor.type == TensorType.int8;
-    
+
 //     mainSendPort.send('Diagnostics: Target ${targetW}x$targetH | Quantized: $isQuantized');
 
 //     final dynamic inputBuffer;
@@ -239,14 +239,14 @@
 //       if (message is IsolateFrameMessage) {
 //         final stopwatch = Stopwatch()..start();
 //         _convertImage(message, inputBuffer, rgbBytes, targetW, targetH, isQuantized);
-        
+
 //         inputTensor.setTo(inputBuffer.buffer.asUint8List());
 //         interpreter.invoke();
 
 //         final outputData = Float32List.sublistView(outputTensor.data);
 //         final numBoxes = outputTensor.shape[2];
 //         final numClasses = outputTensor.shape[1] - 4;
-        
+
 //         final rawDetections = _parse(outputData, labels, numBoxes, numClasses, targetW, targetH);
 //         stopwatch.stop();
 //         final inferenceTime = stopwatch.elapsedMilliseconds;
@@ -349,7 +349,7 @@
 
 //       final int y = msg.yPlane[yIdx];
 //       final int u = msg.uPlane[uvIdx] - 128;
-//       final int v = msg.isNV12 
+//       final int v = msg.isNV12
 //           ? (((uvIdx + 1) < msg.vPlane.length) ? msg.vPlane[uvIdx + 1] - 128 : 0)
 //           : ((uvIdx < msg.vPlane.length) ? msg.vPlane[uvIdx] - 128 : 0);
 
@@ -389,7 +389,7 @@
 //       final cy = output[1 * numBoxes + col];
 //       final w = output[2 * numBoxes + col];
 //       final h = output[3 * numBoxes + col];
-      
+
 //       // This model already outputs NORMALIZED (0-1) coordinates, so do NOT
 //       // divide by target size again. (Confirmed: box channel max ~= 1.0.)
 //       // Stay robust: only rescale if some export hands back pixel-scale values.
@@ -413,9 +413,6 @@
 //   }
 //   return found;
 // }
-
-
-
 
 // import 'dart:isolate';
 // import 'dart:typed_data';
@@ -1030,8 +1027,6 @@
 //   return filtered;
 // }
 
-
-
 import 'dart:isolate';
 import 'dart:typed_data';
 import 'dart:math';
@@ -1045,8 +1040,10 @@ import 'monitor_state.dart';
 
 class IsolateInitMessage {
   final SendPort sendPort;
-  final Uint8List primaryModelBytes;   // custom_yolo.tflite  — 3-class (phone/cigarette/seatbelt)
-  final Uint8List secondaryModelBytes; // custom_yolo_updated.tflite — 5-class (eating/drinking)
+  final Uint8List
+  primaryModelBytes; // custom_yolo.tflite  — 3-class (phone/cigarette/seatbelt)
+  final Uint8List
+  secondaryModelBytes; // custom_yolo_updated.tflite — 5-class (eating/drinking)
   final String documentsDirectoryPath;
   IsolateInitMessage(
     this.sendPort,
@@ -1065,10 +1062,18 @@ class IsolateFrameMessage {
   final String documentsDirectoryPath;
 
   IsolateFrameMessage({
-    required this.width, required this.height, required this.rotation,
-    required this.yPlane, required this.uPlane, required this.vPlane,
-    required this.yRowStride, required this.uvRowStride, required this.uvPixelStride,
-    required this.facePresent, required this.driverId, required this.documentsDirectoryPath,
+    required this.width,
+    required this.height,
+    required this.rotation,
+    required this.yPlane,
+    required this.uPlane,
+    required this.vPlane,
+    required this.yRowStride,
+    required this.uvRowStride,
+    required this.uvPixelStride,
+    required this.facePresent,
+    required this.driverId,
+    required this.documentsDirectoryPath,
   });
 }
 
@@ -1110,13 +1115,16 @@ class ObjectDetectorEngine {
       final directory = await getApplicationDocumentsDirectory();
       _docsPath = directory.path;
 
-      // PRIMARY: Backup 3-class model — phone/cigarette/seatbelt (PROVEN to work)
-      final primaryData =
-          await rootBundle.load('assets/backup_models/custom_yolo.tflite');
+      // PRIMARY: 3-class model — phone/cigarette/seatbelt
+      // Use the actual packaged asset location.
+      final primaryData = await rootBundle.load(
+        'assets/models/custom_yolo.tflite',
+      );
 
       // SECONDARY: 5-class model — we use this ONLY for eating/drinking classes
-      final secondaryData =
-          await rootBundle.load('assets/models/custom_yolo_updated.tflite');
+      final secondaryData = await rootBundle.load(
+        'assets/models/custom_yolo_updated.tflite',
+      );
 
       _isolate = await Isolate.spawn(
         _yoloIsolateEntryPoint,
@@ -1132,7 +1140,9 @@ class ObjectDetectorEngine {
         if (message is SendPort) {
           _isolateSendPort = message;
           _isInitialized = true;
-          print('[YOLO ENGINE] Dual-Model Isolate ONLINE. Primary=3-class Secondary=5-class');
+          print(
+            '[YOLO ENGINE] Dual-Model Isolate ONLINE. Primary=3-class Secondary=5-class',
+          );
         } else if (message is IsolateResultMessage) {
           if (!message.isEvidenceDump) {
             _isProcessingFrame = false;
@@ -1147,8 +1157,10 @@ class ObjectDetectorEngine {
                 message.startsWith('INIT:') ||
                 message.startsWith('DEBUG') ||
                 message.startsWith('RUN_ERROR')) {
-              _state!.yoloIsolateStatus =
-                  message.substring(0, message.length.clamp(0, 60));
+              _state!.yoloIsolateStatus = message.substring(
+                0,
+                message.length.clamp(0, 60),
+              );
             }
           }
         }
@@ -1159,7 +1171,8 @@ class ObjectDetectorEngine {
   }
 
   void processFrame(CameraImage image, MonitorState state, int rotation) {
-    if (!_isInitialized || _isolateSendPort == null || _isProcessingFrame) return;
+    if (!_isInitialized || _isolateSendPort == null || _isProcessingFrame)
+      return;
     _isProcessingFrame = true;
     _state = state;
     state.documentsDirectoryPath = _docsPath;
@@ -1208,10 +1221,16 @@ class ObjectDetectorEngine {
 
     // Map detections to state booleans
     // Labels order: 0=cigarette, 1=phone, 2=seatbelt, 3=eating, 4=drinking
-    state.hasEating = result.detectedObjects.any((o) => o.label == 'eating') || state.isChewing;
-    state.hasDrinking = result.detectedObjects.any((o) => o.label == 'drinking');
+    state.hasEating =
+        result.detectedObjects.any((o) => o.label == 'eating') ||
+        state.isChewing;
+    state.hasDrinking = result.detectedObjects.any(
+      (o) => o.label == 'drinking',
+    );
     state.hasPhone = result.detectedObjects.any((o) => o.label == 'phone');
-    state.hasCigarette = result.detectedObjects.any((o) => o.label == 'cigarette');
+    state.hasCigarette = result.detectedObjects.any(
+      (o) => o.label == 'cigarette',
+    );
 
     final now = DateTime.now();
     bool requestEvidenceDump = false;
@@ -1247,12 +1266,14 @@ class ObjectDetectorEngine {
           state.distractionCooldowns[label] = now;
           state.totalDistractionCount++;
 
-          state.addAlert(AlertEvent(
-            type: 'flag_distraction_$label',
-            message: 'FLAG: BANNED OBJECT - ${label.toUpperCase()} DETECTED',
-            needsScreenshot: true,
-            isMajorFlag: true,
-          ));
+          state.addAlert(
+            AlertEvent(
+              type: 'flag_distraction_$label',
+              message: 'FLAG: BANNED OBJECT - ${label.toUpperCase()} DETECTED',
+              needsScreenshot: true,
+              isMajorFlag: true,
+            ),
+          );
           requestEvidenceDump = true;
 
           // Reset to avoid repeat spam within cooldown
@@ -1268,7 +1289,9 @@ class ObjectDetectorEngine {
     }
 
     // Seatbelt persistence (5-second grace period after last detection)
-    final hasSeatbelt = result.detectedObjects.any((o) => o.label == 'seatbelt');
+    final hasSeatbelt = result.detectedObjects.any(
+      (o) => o.label == 'seatbelt',
+    );
     if (hasSeatbelt) {
       state.seatbeltBuckled = true;
       state.lastSeatbeltDetected = now;
@@ -1279,12 +1302,14 @@ class ObjectDetectorEngine {
 
     if (result.abnormalBehavior) {
       if (state.recentAlerts.where((a) => a.type == 'flag_abnormal').isEmpty) {
-        state.addAlert(AlertEvent(
-          type: 'flag_abnormal',
-          message: 'FLAG: SUDDEN ABSENCE / DISPLACEMENT',
-          needsScreenshot: true,
-          isMajorFlag: true,
-        ));
+        state.addAlert(
+          AlertEvent(
+            type: 'flag_abnormal',
+            message: 'FLAG: SUDDEN ABSENCE / DISPLACEMENT',
+            needsScreenshot: true,
+            isMajorFlag: true,
+          ),
+        );
         _isolateSendPort?.send(
           IsolateCommandDump(_docsPath ?? '', 'Driver_Active'),
         );
@@ -1306,29 +1331,33 @@ void _yoloIsolateEntryPoint(IsolateInitMessage initMessage) async {
     final options = InterpreterOptions()..threads = 2;
 
     // ── Load PRIMARY model (3-class: cigarette, phone, seatbelt) ──────────
-    final interpA = Interpreter.fromBuffer(initMessage.primaryModelBytes, options: options);
+    final interpA = Interpreter.fromBuffer(
+      initMessage.primaryModelBytes,
+      options: options,
+    );
 
     final inA = interpA.getInputTensors()[0];
     final outA = interpA.getOutputTensors()[0];
-    final shapeInA = inA.shape;   // [1, H, W, 3]
+    final shapeInA = inA.shape; // [1, H, W, 3]
     final shapeOutA = outA.shape; // [1, 7, 8400]
     final hA = shapeInA[1];
     final wA = shapeInA[2];
     final numBoxesA = shapeOutA[2]; // 8400
-    final numRowsA = shapeOutA[1];  // 7  (4 box + 3 class)
+    final numRowsA = shapeOutA[1]; // 7  (4 box + 3 class)
     const labelsA = ['cigarette', 'phone', 'seatbelt'];
     const numClassesA = 3;
 
-    mainSendPort.send(
-      'TENSOR_INFO: A=[${shapeInA}]->[${shapeOutA}] 3-class',
-    );
+    mainSendPort.send('TENSOR_INFO: A=[${shapeInA}]->[${shapeOutA}] 3-class');
 
     // ── Load SECONDARY model (5-class, eating/drinking only) ──────────────
-    final interpB = Interpreter.fromBuffer(initMessage.secondaryModelBytes, options: options);
+    final interpB = Interpreter.fromBuffer(
+      initMessage.secondaryModelBytes,
+      options: options,
+    );
 
     final inB = interpB.getInputTensors()[0];
     final outB = interpB.getOutputTensors()[0];
-    final shapeInB = inB.shape;   // [1, H, W, 3]
+    final shapeInB = inB.shape; // [1, H, W, 3]
     final shapeOutB = outB.shape; // [1, 9, 8400]
     final hB = shapeInB[1];
     final wB = shapeInB[2];
@@ -1337,15 +1366,20 @@ void _yoloIsolateEntryPoint(IsolateInitMessage initMessage) async {
     // We use ALL 5 labels from model B but only report eating/drinking
     const labelsB = ['cigarette', 'phone', 'seatbelt', 'eating', 'drinking'];
     const numClassesB = 5;
-    const eatDrinkOnly = {'eating', 'drinking'}; // Only these classes from model B
+    const eatDrinkOnly = {
+      'eating',
+      'drinking',
+    }; // Only these classes from model B
 
     mainSendPort.send(
       'TENSOR_INFO: B=[${shapeInB}]->[${shapeOutB}] 5-class (eating/drinking only)',
     );
 
     // ── Pre-allocated buffers ──────────────────────────────────────────────
-    final isQuantizedA = inA.type == TensorType.uint8 || inA.type == TensorType.int8;
-    final isQuantizedB = inB.type == TensorType.uint8 || inB.type == TensorType.int8;
+    final isQuantizedA =
+        inA.type == TensorType.uint8 || inA.type == TensorType.int8;
+    final isQuantizedB =
+        inB.type == TensorType.uint8 || inB.type == TensorType.int8;
 
     final Float32List inputFloatA = Float32List(hA * wA * 3);
     final Uint8List inputUint8A = Uint8List(hA * wA * 3);
@@ -1354,8 +1388,12 @@ void _yoloIsolateEntryPoint(IsolateInitMessage initMessage) async {
     final Uint8List rgbBytesA = Uint8List(hA * wA * 3);
     final Uint8List rgbBytesB = Uint8List(hB * wB * 3);
 
-    final Float32List outputFlatA = Float32List(numRowsA * numBoxesA); // 7*8400=58800
-    final Float32List outputFlatB = Float32List(numRowsB * numBoxesB); // 9*8400=75600
+    final Float32List outputFlatA = Float32List(
+      numRowsA * numBoxesA,
+    ); // 7*8400=58800
+    final Float32List outputFlatB = Float32List(
+      numRowsB * numBoxesB,
+    ); // 9*8400=75600
 
     final List<Uint8List> ringBufferRgb = [];
     bool prevFacePresent = true;
@@ -1373,13 +1411,15 @@ void _yoloIsolateEntryPoint(IsolateInitMessage initMessage) async {
             wA,
             hA,
           );
-          mainSendPort.send(IsolateResultMessage(
-            detectedObjects: [],
-            abnormalBehavior: false,
-            savedFolderPath: path,
-            inferenceTimeMs: 0,
-            isEvidenceDump: true,
-          ));
+          mainSendPort.send(
+            IsolateResultMessage(
+              detectedObjects: [],
+              abnormalBehavior: false,
+              savedFolderPath: path,
+              inferenceTimeMs: 0,
+              isEvidenceDump: true,
+            ),
+          );
         }
         return;
       }
@@ -1389,17 +1429,32 @@ void _yoloIsolateEntryPoint(IsolateInitMessage initMessage) async {
         final stopwatch = Stopwatch()..start();
 
         // ── Always run Model A (phone/cigarette/seatbelt) ──────────────────
-        _fastConvertImage(message, isQuantizedA ? inputUint8A : inputFloatA,
-            rgbBytesA, wA, hA, isQuantizedA);
+        _fastConvertImage(
+          message,
+          isQuantizedA ? inputUint8A : inputFloatA,
+          rgbBytesA,
+          wA,
+          hA,
+          isQuantizedA,
+        );
 
         List<DetectedObject> detectionsA = [];
         try {
           inA.setTo(isQuantizedA ? inputUint8A : inputFloatA);
           interpA.invoke();
           final rawA = outA.data.buffer.asFloat32List();
-          outputFlatA.setRange(0, rawA.length.clamp(0, outputFlatA.length), rawA);
-          detectionsA = _parseOutput(outputFlatA, labelsA, numBoxesA, numClassesA,
-              confidenceThreshold: 0.35);
+          outputFlatA.setRange(
+            0,
+            rawA.length.clamp(0, outputFlatA.length),
+            rawA,
+          );
+          detectionsA = _parseOutput(
+            outputFlatA,
+            labelsA,
+            numBoxesA,
+            numClassesA,
+            confidenceThreshold: 0.35,
+          );
         } catch (e) {
           mainSendPort.send('RUN_ERROR_A: $e');
         }
@@ -1407,17 +1462,34 @@ void _yoloIsolateEntryPoint(IsolateInitMessage initMessage) async {
         // ── Run Model B (eating/drinking) every 3rd frame ──────────────────
         List<DetectedObject> detectionsB = [];
         if (frameCount % 3 == 0) {
-          _fastConvertImage(message, isQuantizedB ? inputUint8B : inputFloatB,
-              rgbBytesB, wB, hB, isQuantizedB);
+          _fastConvertImage(
+            message,
+            isQuantizedB ? inputUint8B : inputFloatB,
+            rgbBytesB,
+            wB,
+            hB,
+            isQuantizedB,
+          );
           try {
             inB.setTo(isQuantizedB ? inputUint8B : inputFloatB);
             interpB.invoke();
             final rawB = outB.data.buffer.asFloat32List();
-            outputFlatB.setRange(0, rawB.length.clamp(0, outputFlatB.length), rawB);
+            outputFlatB.setRange(
+              0,
+              rawB.length.clamp(0, outputFlatB.length),
+              rawB,
+            );
             // Only report eating/drinking from model B
-            final allB = _parseOutput(outputFlatB, labelsB, numBoxesB, numClassesB,
-                confidenceThreshold: 0.40);
-            detectionsB = allB.where((d) => eatDrinkOnly.contains(d.label)).toList();
+            final allB = _parseOutput(
+              outputFlatB,
+              labelsB,
+              numBoxesB,
+              numClassesB,
+              confidenceThreshold: 0.40,
+            );
+            detectionsB = allB
+                .where((d) => eatDrinkOnly.contains(d.label))
+                .toList();
           } catch (e) {
             mainSendPort.send('RUN_ERROR_B: $e');
           }
@@ -1431,8 +1503,18 @@ void _yoloIsolateEntryPoint(IsolateInitMessage initMessage) async {
         // Debug every 30 frames
         String debugInfo = '';
         if (frameCount % 30 == 0) {
-          final peaksA = _buildDebugStr(outputFlatA, labelsA, numBoxesA, numClassesA);
-          final peaksB = _buildDebugStr(outputFlatB, labelsB, numBoxesB, numClassesB);
+          final peaksA = _buildDebugStr(
+            outputFlatA,
+            labelsA,
+            numBoxesA,
+            numClassesA,
+          );
+          final peaksB = _buildDebugStr(
+            outputFlatB,
+            labelsB,
+            numBoxesB,
+            numClassesB,
+          );
           final msg = 'A[$peaksA] B[$peaksB] dets=${allDetections.length}';
           mainSendPort.send('DEBUG[f$frameCount]: $msg');
           debugInfo = msg;
@@ -1443,17 +1525,21 @@ void _yoloIsolateEntryPoint(IsolateInitMessage initMessage) async {
         if (ringBufferRgb.length > 5) ringBufferRgb.removeAt(0);
 
         bool abnormal = false;
-        if (prevFacePresent && !message.facePresent && ringBufferRgb.length >= 5) {
+        if (prevFacePresent &&
+            !message.facePresent &&
+            ringBufferRgb.length >= 5) {
           abnormal = true;
         }
         prevFacePresent = message.facePresent;
 
-        mainSendPort.send(IsolateResultMessage(
-          detectedObjects: allDetections,
-          abnormalBehavior: abnormal,
-          inferenceTimeMs: stopwatch.elapsedMilliseconds,
-          debugInfo: debugInfo,
-        ));
+        mainSendPort.send(
+          IsolateResultMessage(
+            detectedObjects: allDetections,
+            abnormalBehavior: abnormal,
+            inferenceTimeMs: stopwatch.elapsedMilliseconds,
+            debugInfo: debugInfo,
+          ),
+        );
       }
     });
   } catch (e) {
@@ -1614,14 +1700,16 @@ List<DetectedObject> _parseOutput(
       final normW = output[2 * numBoxes + col];
       final normH = output[3 * numBoxes + col];
 
-      found.add(DetectedObject(
-        label: labels[bestClass],
-        confidence: maxProb,
-        x: (normCx - normW / 2.0).clamp(0.0, 1.0),
-        y: (normCy - normH / 2.0).clamp(0.0, 1.0),
-        width: normW.clamp(0.0, 1.0),
-        height: normH.clamp(0.0, 1.0),
-      ));
+      found.add(
+        DetectedObject(
+          label: labels[bestClass],
+          confidence: maxProb,
+          x: (normCx - normW / 2.0).clamp(0.0, 1.0),
+          y: (normCy - normH / 2.0).clamp(0.0, 1.0),
+          width: normW.clamp(0.0, 1.0),
+          height: normH.clamp(0.0, 1.0),
+        ),
+      );
     }
   }
 
@@ -1631,8 +1719,14 @@ List<DetectedObject> _parseOutput(
     bool isDuplicate = false;
     for (int i = 0; i < filtered.length; i++) {
       final ex = filtered[i];
-      final overlapX = max(0.0, min(obj.x + obj.width, ex.x + ex.width) - max(obj.x, ex.x));
-      final overlapY = max(0.0, min(obj.y + obj.height, ex.y + ex.height) - max(obj.y, ex.y));
+      final overlapX = max(
+        0.0,
+        min(obj.x + obj.width, ex.x + ex.width) - max(obj.x, ex.x),
+      );
+      final overlapY = max(
+        0.0,
+        min(obj.y + obj.height, ex.y + ex.height) - max(obj.y, ex.y),
+      );
       final overlapArea = overlapX * overlapY;
       final objArea = obj.width * obj.height;
 

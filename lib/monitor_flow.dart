@@ -1367,10 +1367,10 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   // cigarette / seatbelt / drowsy / distraction. Hidden when all is well.
   Widget _monitorBanner() {
     final phone = _state.detectedObjects.any(
-      (o) => o.label == 'phone' && o.confidence > 0.85,
+      (o) => o.label == 'phone' && o.confidence > 0.45,
     );
     final smoke = _state.detectedObjects.any(
-      (o) => o.label == 'cigarette' && o.confidence > 0.85,
+      (o) => o.label == 'cigarette' && o.confidence > 0.45,
     );
 
     Color? bg;
