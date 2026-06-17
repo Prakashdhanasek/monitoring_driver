@@ -37,7 +37,7 @@ class FaceAuthEngine {
   // Balanced threshold:
   // 0.72 was too strict and caused all faces to fail.
   // 0.95 allows valid reference drivers while still blocking many unknown faces.
-  static const double kAuthThreshold = 1.15; // TUNE via [AuthDBG] minDist log
+  static const double kAuthThreshold = 1.15;
 
   int _consecutiveMatch = 0;
   int _consecutiveMiss = 0;
@@ -175,7 +175,7 @@ class FaceAuthEngine {
       // If already authenticated, allow 10 frames of mismatch before kicking them out
       // to prevent false alarms from head turns. For unauthenticated, kick out fast.
       final requiredMisses =
-          state.authStatus == AuthStatus.authenticated ? 10 : kMissFrames;
+          state.authStatus == AuthStatus.authenticated ? 10 : 2;
 
       if (_consecutiveMiss >= requiredMisses) {
         state.authStatus = AuthStatus.unauthorized;
@@ -195,6 +195,17 @@ class FaceAuthEngine {
     await _enrollFromReferencePhotos();
   }
 
+
+
+Future<void> clearCache() async {
+  await _storage.delete(key: _keyEmbedding);
+  isEnrolled = false;
+  _referenceEmbeddings = [];
+  _referenceLabels = [];
+  lastMatchedLabel = null;
+  _consecutiveMatch = 0;
+  _consecutiveMiss = 0;
+}
   // ── MobileFaceNet Model Loading ────────────────────────────────────────────
 
   Future<void> _loadFaceNetModel() async {
@@ -613,3 +624,645 @@ class FaceAuthEngine {
     return sqrt(sum);
   }
 }
+
+
+// import 'dart:convert';
+// import 'dart:io';
+// import 'dart:math';
+// import 'dart:typed_data';
+
+// import 'package:camera/camera.dart';
+// import 'package:flutter/services.dart';
+// import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+// import 'package:google_mlkit_face_detection/google_mlkit_face_detection.dart';
+// import 'package:image/image.dart' as img;
+// import 'package:path_provider/path_provider.dart';
+// import 'package:tflite_flutter/tflite_flutter.dart';
+
+// import 'monitor_state.dart';
+
+// class FaceAuthEngine {
+//   final FlutterSecureStorage _storage = const FlutterSecureStorage();
+
+//   // v11: cosine-similarity + 25% crop margin. Bumped from v10 to force a fresh
+//   // re-enrollment (old embeddings were made with a different crop, so they must
+//   // be discarded).
+//   static const String _keyEmbedding = 'safe_drive_mobilefacenet_v11';
+
+//   // MobileFaceNet: 112x112 RGB input → 192D embedding
+//   Interpreter? _faceNetInterpreter;
+//   bool _modelLoaded = false;
+
+//   List<List<double>> _referenceEmbeddings = [];
+//   List<String> _referenceLabels = [];
+
+//   bool isEnrolled = false;
+
+//   // Last successfully matched folder label.
+//   // Used by FaceAuthView to show correct driver name.
+//   String? lastMatchedLabel;
+
+//   // ── COSINE SIMILARITY THRESHOLD ─────────────────────────────────────────────
+//   // Now we compare with cosine similarity (range 0..1). HIGHER = more similar.
+//   //   1.0  = identical face
+//   //   0.6  = good match (industry standard for MobileFaceNet)
+//   //   0.0  = unrelated face
+//   // This scale does NOT depend on who the person is, so the SAME value works on
+//   // every device and every driver. To verify a face, similarity must be ABOVE
+//   // this value. Adjust ONLY if real testing shows it's needed.
+//   static const double kAuthSimilarity = 0.5;
+
+//   // Margin added around the MLKit bounding box (both enrollment + live), so the
+//   // model sees the same amount of face context in both paths.
+//   static const double kCropMargin = 0.25;
+
+//   int _consecutiveMatch = 0;
+//   int _consecutiveMiss = 0;
+//   static const int kMatchFrames = 3;
+//   static const int kMissFrames = 5;
+
+//   // ── Public API ─────────────────────────────────────────────────────────────
+
+//   Future<void> initialize() async {
+//     await _loadFaceNetModel();
+
+//     try {
+//       final stored = await _storage.read(key: _keyEmbedding);
+//       if (stored != null) {
+//         final decoded = jsonDecode(stored);
+
+//         if (decoded is Map) {
+//           _referenceEmbeddings = (decoded['embeddings'] as List)
+//               .map<List<double>>((e) => List<double>.from(e as List))
+//               .toList();
+
+//           _referenceLabels = (decoded['labels'] as List)
+//               .map<String>((e) => e.toString())
+//               .toList();
+//         } else if (decoded is List) {
+//           _referenceEmbeddings = decoded
+//               .map<List<double>>((e) => List<double>.from(e as List))
+//               .toList();
+
+//           _referenceLabels =
+//               List<String>.filled(_referenceEmbeddings.length, 'unknown');
+//         }
+
+//         if (_referenceEmbeddings.isNotEmpty) {
+//           isEnrolled = true;
+//           print(
+//             '[Auth] MobileFaceNet embeddings loaded from secure storage '
+//             '(${_referenceEmbeddings.length} faces).',
+//           );
+//           return;
+//         }
+//       }
+//     } catch (e) {
+//       print('[Auth] Storage read error: $e');
+//     }
+
+//     await _enrollFromReferencePhotos();
+//   }
+
+//   /// Called every N frames with the live MLKit face and raw camera YUV bytes
+//   void processAuth(
+//     Face face,
+//     MonitorState state,
+//     CameraImage image,
+//     int rotation,
+//   ) {
+//     // Model still loading -> keep scanning.
+//     if (!_modelLoaded) {
+//       state.authStatus = AuthStatus.scanning;
+//       state.authDistance = -1.0;
+//       return;
+//     }
+//     // Model is ready but NO drivers enrolled (API data missing / incorrect).
+//     // Never authorize a random face -> show unauthorized.
+//     if (!isEnrolled || _referenceEmbeddings.isEmpty) {
+//       state.authStatus = AuthStatus.unauthorized;
+//       state.authDistance = -1.0;
+//       return;
+//     }
+
+//     // ── BIOMETRIC CONTINUITY CHECK ──────────────────────────────────────────
+//     // If we already authorized this exact tracking ID, we KNOW it is the exact same
+//     // physical driver (MLKit tracks optical flow). We can skip FaceNet completely!
+//     // This allows them to put on sunglasses, hats, or masks without getting kicked out.
+//     if (state.authStatus == AuthStatus.authenticated &&
+//         face.trackingId != null &&
+//         face.trackingId == state.authenticatedTrackingId) {
+//       // Refresh the continuous match state
+//       _consecutiveMatch = kMatchFrames;
+//       _consecutiveMiss = 0;
+//       return; // Skip heavy FaceNet embedding
+//     }
+
+//     final liveEmbedding = _embedFaceFromCameraImage(
+//       image,
+//       rotation,
+//       face.boundingBox,
+//     );
+
+//     if (liveEmbedding == null) {
+//       state.authStatus = AuthStatus.scanning;
+//       state.authDistance = -1.0;
+//       return;
+//     }
+
+//     // Find the MAXIMUM cosine similarity across all enrolled reference faces.
+//     double maxSim = -1.0;
+//     int bestIdx = -1;
+
+//     for (int i = 0; i < _referenceEmbeddings.length; i++) {
+//       final s = _cosineSimilarity(_referenceEmbeddings[i], liveEmbedding);
+//       if (s > maxSim) {
+//         maxSim = s;
+//         bestIdx = i;
+//       }
+//     }
+
+//     // Store the similarity so the on-screen diag can show it.
+//     state.authDistance = maxSim;
+
+//     final String? bestLabel =
+//         (bestIdx >= 0 && bestIdx < _referenceLabels.length)
+//             ? _referenceLabels[bestIdx]
+//             : null;
+
+//     print(
+//       '[AuthDBG] maxSim=$maxSim bestLabel=$bestLabel '
+//       'threshold=$kAuthSimilarity',
+//     );
+
+//     if (maxSim > kAuthSimilarity) {
+//       _consecutiveMatch++;
+//       _consecutiveMiss = 0;
+//       lastMatchedLabel = bestLabel;
+
+//       if (_consecutiveMatch >= kMatchFrames) {
+//         state.authStatus = AuthStatus.authenticated;
+//         state.authenticatedTrackingId =
+//             face.trackingId; // Lock on to this physical face
+//       }
+//     } else {
+//       _consecutiveMiss++;
+//       _consecutiveMatch = 0;
+//       lastMatchedLabel = null;
+
+//       // If already authenticated, allow more frames of mismatch before kicking
+//       // them out to prevent false alarms from head turns. For unauthenticated,
+//       // kick out fast.
+//       final requiredMisses =
+//           state.authStatus == AuthStatus.authenticated ? 10 : 2;
+
+//       if (_consecutiveMiss >= requiredMisses) {
+//         state.authStatus = AuthStatus.unauthorized;
+//         state.authenticatedTrackingId = null;
+//       }
+//     }
+//   }
+
+//   Future<void> resetAndReenroll() async {
+//     await _storage.delete(key: _keyEmbedding);
+//     isEnrolled = false;
+//     _referenceEmbeddings = [];
+//     _referenceLabels = [];
+//     lastMatchedLabel = null;
+//     _consecutiveMatch = 0;
+//     _consecutiveMiss = 0;
+//     await _enrollFromReferencePhotos();
+//   }
+
+//   Future<void> clearCache() async {
+//     await _storage.delete(key: _keyEmbedding);
+//     isEnrolled = false;
+//     _referenceEmbeddings = [];
+//     _referenceLabels = [];
+//     lastMatchedLabel = null;
+//     _consecutiveMatch = 0;
+//     _consecutiveMiss = 0;
+//   }
+
+//   // ── MobileFaceNet Model Loading ────────────────────────────────────────────
+
+//   Future<void> _loadFaceNetModel() async {
+//     try {
+//       final options = InterpreterOptions()..threads = 2;
+//       _faceNetInterpreter = await Interpreter.fromAsset(
+//         'assets/models/mobile_face_net.tflite',
+//         options: options,
+//       );
+//       _modelLoaded = true;
+//       final inputShape = _faceNetInterpreter!.getInputTensor(0).shape;
+//       final outputShape = _faceNetInterpreter!.getOutputTensor(0).shape;
+//       print(
+//         '[Auth] MobileFaceNet loaded. Input: $inputShape, Output: $outputShape',
+//       );
+//     } catch (e) {
+//       print('[Auth] ERROR loading MobileFaceNet: $e');
+//       _modelLoaded = false;
+//     }
+//   }
+
+//   // ── Reference Photo Enrollment ─────────────────────────────────────────────
+
+//   Future<void> _enrollFromReferencePhotos() async {
+//     if (!_modelLoaded) {
+//       print('[Auth] Cannot enroll — MobileFaceNet not loaded.');
+//       return;
+//     }
+
+//     final tempDetector = FaceDetector(
+//       options: FaceDetectorOptions(
+//         enableContours: false,
+//         enableLandmarks: false,
+//         enableTracking: false,
+//         performanceMode: FaceDetectorMode.accurate,
+//       ),
+//     );
+
+//     final List<List<double>> embeddings = [];
+//     final List<String> labels = [];
+
+//     // Enroll ONLY from the API-downloaded driver photos
+//     // (getApplicationDocumentsDirectory()/downloaded_faces/). If the API has
+//     // not provided any drivers for this device, NOTHING is enrolled, so nobody
+//     // can be authenticated — random faces are rejected as unauthorized.
+//     final docsDir = await getApplicationDocumentsDirectory();
+//     final photosDir = Directory('${docsDir.path}/downloaded_faces');
+
+//     if (!await photosDir.exists()) {
+//       print('[Auth] No downloaded_faces folder — no API drivers. Auth disabled.');
+//       await tempDetector.close();
+//       return;
+//     }
+
+//     final files = photosDir.listSync().whereType<File>().where((f) {
+//       final lower = f.path.toLowerCase();
+//       return lower.endsWith('.jpg') ||
+//           lower.endsWith('.jpeg') ||
+//           lower.endsWith('.png');
+//     }).toList();
+
+//     print('[Auth] Found ${files.length} downloaded driver photos to enroll.');
+
+//     for (final file in files) {
+//       try {
+//         final imageBytes = await file.readAsBytes();
+//         final inputImage = InputImage.fromFilePath(file.path);
+//         final faces = await tempDetector.processImage(inputImage);
+
+//         if (faces.isNotEmpty) {
+//           final embedding =
+//               _embedFaceFromJpeg(imageBytes, faces.first.boundingBox);
+//           if (embedding != null) {
+//             final label = _labelFromDownloadedFile(file.path);
+//             embeddings.add(embedding);
+//             labels.add(label);
+//             print('[Auth] Enrolled embedding (192D) [$label]');
+//           } else {
+//             print('[Auth] Failed to extract embedding from ${file.path}');
+//           }
+//         } else {
+//           print('[Auth] No face detected in ${file.path}');
+//         }
+//       } catch (e) {
+//         print('[Auth] Error enrolling from ${file.path}: $e');
+//       }
+//     }
+
+//     await tempDetector.close();
+//     print('[Auth] Temp detector closed.');
+
+//     if (embeddings.isEmpty) {
+//       print('[Auth] WARNING: No embeddings generated — auth disabled.');
+//       return;
+//     }
+
+//     _referenceEmbeddings = embeddings;
+//     _referenceLabels = labels;
+//     isEnrolled = true;
+
+//     try {
+//       await _storage.write(
+//         key: _keyEmbedding,
+//         value: jsonEncode({
+//           'embeddings': embeddings,
+//           'labels': labels,
+//         }),
+//       );
+//       print(
+//         '[Auth] ${embeddings.length} embeddings (+labels) saved to secure storage.',
+//       );
+//     } catch (e) {
+//       print('[Auth] Storage write failed: $e');
+//     }
+//   }
+
+//   /// Label from an API-downloaded filename.
+//   /// Format: <driverId>__<Driver_Name>__<timestamp>.jpg
+//   /// -> "driverId|Driver Name"  (monitor_flow splits on '|').
+//   String _labelFromDownloadedFile(String path) {
+//     final name = path.split('/').last.split('\\').last;
+//     final base = name.replaceAll(
+//         RegExp(r'\.(jpg|jpeg|png)$', caseSensitive: false), '');
+//     final parts = base.split('__');
+//     if (parts.length >= 2) {
+//       final id = parts[0];
+//       final driverName = parts[1].replaceAll('_', ' ');
+//       return '$id|$driverName';
+//     }
+//     return base;
+//   }
+
+//   /// Extracts the reference folder name from an asset path.
+//   String _labelFromAsset(String assetPath) {
+//     final parts = assetPath.split('/');
+//     final idx = parts.indexOf('reference_faces');
+
+//     if (idx >= 0 && idx + 1 < parts.length) {
+//       return parts[idx + 1];
+//     }
+
+//     return 'unknown';
+//   }
+
+//   // ── Dynamic Gallery Enrollment ─────────────────────────────────────────────
+
+//   Future<int> enrollNewDriverFromGallery(List<String> filePaths) async {
+//     if (!_modelLoaded) return 0;
+
+//     final tempDetector = FaceDetector(
+//       options: FaceDetectorOptions(
+//         enableContours: false,
+//         enableLandmarks: false,
+//         enableTracking: false,
+//         performanceMode: FaceDetectorMode.accurate,
+//       ),
+//     );
+
+//     int enrolledCount = 0;
+
+//     for (final path in filePaths) {
+//       try {
+//         final tempFile = File(path);
+//         final imageBytes = await tempFile.readAsBytes();
+
+//         final inputImage = InputImage.fromFilePath(path);
+//         final faces = await tempDetector.processImage(inputImage);
+
+//         if (faces.isNotEmpty) {
+//           final face = faces.first;
+//           final embedding = _embedFaceFromJpeg(imageBytes, face.boundingBox);
+
+//           if (embedding != null) {
+//             _referenceEmbeddings.add(embedding);
+//             _referenceLabels.add('gallery');
+//             enrolledCount++;
+//             print('[Auth] Dynamic enrollment successful from $path');
+//           }
+//         }
+//       } catch (e) {
+//         print('[Auth] Error dynamically enrolling from $path: $e');
+//       }
+//     }
+
+//     await tempDetector.close();
+
+//     if (enrolledCount > 0) {
+//       isEnrolled = true;
+
+//       try {
+//         await _storage.write(
+//           key: _keyEmbedding,
+//           value: jsonEncode({
+//             'embeddings': _referenceEmbeddings,
+//             'labels': _referenceLabels,
+//           }),
+//         );
+//         print(
+//           '[Auth] Now storing ${_referenceEmbeddings.length} total embeddings '
+//           'in secure storage.',
+//         );
+//       } catch (e) {
+//         print('[Auth] Storage write failed: $e');
+//       }
+//     }
+
+//     return enrolledCount;
+//   }
+
+//   // ── Face Embedding from JPEG bytes (enrollment) ────────────────────────────
+
+//   List<double>? _embedFaceFromJpeg(Uint8List jpegBytes, Rect box) {
+//     try {
+//       img.Image? decoded = img.decodeImage(jpegBytes);
+//       if (decoded == null) return null;
+
+//       // CRITICAL FIX: WhatsApp images have EXIF rotation. ML Kit reads the EXIF and returns
+//       // the bounding box for the *upright* image. However, dart:image decodeImage does NOT
+//       // rotate the pixels by default. We MUST bake the EXIF orientation so the pixel buffer
+//       // matches the ML Kit bounding box.
+//       decoded = img.bakeOrientation(decoded);
+
+//       // Expand the box by kCropMargin on all sides (SAME as the live path) so
+//       // the model sees the same amount of face context in both.
+//       final mx = box.width * kCropMargin;
+//       final my = box.height * kCropMargin;
+//       final cx = (box.left - mx).toInt().clamp(0, decoded.width - 1);
+//       final cy = (box.top - my).toInt().clamp(0, decoded.height - 1);
+//       final cw = (box.width + 2 * mx).toInt().clamp(1, decoded.width - cx);
+//       final ch = (box.height + 2 * my).toInt().clamp(1, decoded.height - cy);
+
+//       final cropped = img.copyCrop(
+//         decoded,
+//         x: cx,
+//         y: cy,
+//         width: cw,
+//         height: ch,
+//       );
+
+//       final resized = img.copyResize(cropped, width: 112, height: 112);
+
+//       final pixels = Float32List(112 * 112 * 3);
+//       int idx = 0;
+
+//       for (int py = 0; py < 112; py++) {
+//         for (int px = 0; px < 112; px++) {
+//           final pixel = resized.getPixel(px, py);
+
+//           // MobileFaceNet expects [-1, 1] normalized RGB
+//           pixels[idx++] = (pixel.r / 127.5) - 1.0;
+//           pixels[idx++] = (pixel.g / 127.5) - 1.0;
+//           pixels[idx++] = (pixel.b / 127.5) - 1.0;
+//         }
+//       }
+
+//       return _runFaceNet(pixels);
+//     } catch (e) {
+//       print('[Auth] JPEG embedding error: $e');
+//       return null;
+//     }
+//   }
+
+//   // ── Face Embedding from YUV camera frame (live auth) ──────────────────────
+
+//   List<double>? _embedFaceFromCameraImage(
+//     CameraImage image,
+//     int rotation,
+//     Rect box,
+//   ) {
+//     if (image.planes.isEmpty) return null;
+
+//     try {
+//       final int srcWidth = image.width;
+//       final int srcHeight = image.height;
+
+//       final yPlane = image.planes[0];
+//       final uPlane = image.planes[1];
+//       final vPlane = image.planes[2];
+
+//       final yBytes = yPlane.bytes;
+//       final uBytes = uPlane.bytes;
+//       final vBytes = vPlane.bytes;
+
+//       final yRowStride = yPlane.bytesPerRow;
+//       final uvRowStride = uPlane.bytesPerRow;
+//       final uvPixelStride = uPlane.bytesPerPixel ?? 1;
+
+//       // Expand the box by kCropMargin on all sides (SAME as the enrollment
+//       // path). We shift the origin and grow the size, then sample from there.
+//       final mx = box.width * kCropMargin;
+//       final my = box.height * kCropMargin;
+//       final double bLeft = box.left - mx;
+//       final double bTop = box.top - my;
+//       final cw = (box.width + 2 * mx).toInt().clamp(1, 1000);
+//       final ch = (box.height + 2 * my).toInt().clamp(1, 1000);
+
+//       final croppedImg = img.Image(width: cw, height: ch);
+
+//       // Extract the expanded face bounding box using YUV->RGB
+//       for (int ty = 0; ty < ch; ty++) {
+//         for (int tx = 0; tx < cw; tx++) {
+//           final rx = bLeft + tx;
+//           final ry = bTop + ty;
+
+//           int sx = 0;
+//           int sy = 0;
+
+//           if (rotation == 90) {
+//             sx = ry.toInt().clamp(0, srcWidth - 1);
+//             sy = (srcHeight - 1 - rx.toInt()).clamp(0, srcHeight - 1);
+//           } else if (rotation == 270) {
+//             sx = (srcWidth - 1 - ry.toInt()).clamp(0, srcWidth - 1);
+//             sy = rx.toInt().clamp(0, srcHeight - 1);
+//           } else if (rotation == 180) {
+//             sx = (srcWidth - 1 - rx.toInt()).clamp(0, srcWidth - 1);
+//             sy = (srcHeight - 1 - ry.toInt()).clamp(0, srcHeight - 1);
+//           } else {
+//             sx = rx.toInt().clamp(0, srcWidth - 1);
+//             sy = ry.toInt().clamp(0, srcHeight - 1);
+//           }
+
+//           final int yIdx = sy * yRowStride + sx;
+//           final int uvIdx =
+//               (sy >> 1) * uvRowStride + (sx >> 1) * uvPixelStride;
+
+//           final int yVal = yIdx < yBytes.length ? yBytes[yIdx] : 0;
+//           final int uVal = uvIdx < uBytes.length ? uBytes[uvIdx] - 128 : 0;
+//           final int vVal = uvIdx < vBytes.length ? vBytes[uvIdx] - 128 : 0;
+
+//           final int r = (yVal + (1.402 * vVal)).round().clamp(0, 255);
+//           final int g =
+//               (yVal - (0.344136 * uVal) - (0.714136 * vVal))
+//                   .round()
+//                   .clamp(0, 255);
+//           final int b = (yVal + (1.772 * uVal)).round().clamp(0, 255);
+
+//           croppedImg.setPixelRgb(tx, ty, r, g, b);
+//         }
+//       }
+
+//       // High-quality bilinear resize to exactly match the reference photo processing
+//       final resized = img.copyResize(croppedImg, width: 112, height: 112);
+
+//       final pixels = Float32List(112 * 112 * 3);
+//       int idx = 0;
+
+//       for (int py = 0; py < 112; py++) {
+//         for (int px = 0; px < 112; px++) {
+//           final pixel = resized.getPixel(px, py);
+//           pixels[idx++] = (pixel.r / 127.5) - 1.0;
+//           pixels[idx++] = (pixel.g / 127.5) - 1.0;
+//           pixels[idx++] = (pixel.b / 127.5) - 1.0;
+//         }
+//       }
+
+//       return _runFaceNet(pixels);
+//     } catch (e) {
+//       print('[Auth] YUV extraction error: $e');
+//       return null;
+//     }
+//   }
+
+//   // ── Run MobileFaceNet Inference ────────────────────────────────────────────
+
+//   List<double>? _runFaceNet(Float32List pixels) {
+//     if (!_modelLoaded || _faceNetInterpreter == null) return null;
+
+//     try {
+//       _faceNetInterpreter!.getInputTensor(0).data =
+//           pixels.buffer.asUint8List();
+
+//       _faceNetInterpreter!.invoke();
+
+//       final outputData = Float32List.sublistView(
+//         _faceNetInterpreter!.getOutputTensor(0).data,
+//       );
+
+//       // Output is [1, 192] — take first 192 values and L2 normalize
+//       final rawEmbedding =
+//           outputData.sublist(0, min(192, outputData.length)).toList();
+
+//       return _l2Normalize(rawEmbedding);
+//     } catch (e) {
+//       print('[Auth] FaceNet inference error: $e');
+//       return null;
+//     }
+//   }
+
+//   // ── L2 Normalization ───────────────────────────────────────────────────────
+
+//   List<double> _l2Normalize(List<double> vector) {
+//     double sumSq = 0.0;
+
+//     for (final v in vector) {
+//       sumSq += v * v;
+//     }
+
+//     final norm = sqrt(sumSq);
+//     if (norm == 0) return vector;
+
+//     final result = List<double>.filled(vector.length, 0.0);
+
+//     for (int i = 0; i < vector.length; i++) {
+//       result[i] = vector[i] / norm;
+//     }
+
+//     return result;
+//   }
+
+//   // ── Cosine Similarity ───────────────────────────────────────────────────────
+//   // Both vectors are already L2-normalized, so the dot product IS the cosine
+//   // similarity. Range: -1 (opposite) .. 1 (identical). Higher = more similar.
+
+//   double _cosineSimilarity(List<double> a, List<double> b) {
+//     double dot = 0.0;
+//     final len = min(a.length, b.length);
+//     for (int i = 0; i < len; i++) {
+//       dot += a[i] * b[i];
+//     }
+//     return dot;
+//   }
+// }

@@ -17,12 +17,10 @@ import io.flutter.plugin.common.MethodChannel
 class MainActivity : FlutterActivity() {
     private val channelName = "kiosk"
 
-    // ───────────────────────────────────────────────
-    // FILL IN — kiosk auto-connect cheyyеņda WiFi.
-    // ───────────────────────────────────────────────
+
     companion object {
-        private const val WIFI_SSID = "BB SF ASIANET-5G"   // exact peru (case-sensitive)
-        private const val WIFI_PASSWORD = "12345678\$"      // $ -> \$ (Kotlin safe)
+        private const val WIFI_SSID = "Tommy's Phone"   //  (case-sensitive)
+        private const val WIFI_PASSWORD = "********"      // $ -> \$ (Kotlin safe)
     }
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
@@ -98,10 +96,7 @@ class MainActivity : FlutterActivity() {
     }
 
     // ───────────────────────────────────────────────
-    // WiFi: ON + FORCE-connect to WIFI_SSID.
-    // Suggestion ColorOS-il auto-connect cheyyаത്tatkond്,
-    // WifiNetworkSpecifier vechу neരിട്ട് connect + bindProcessToNetwork
-    // (app traffic muzhuvan aa WiFi vഴи pോകum).
+   
     // ───────────────────────────────────────────────
     private fun connectToWifi() {
         if (WIFI_SSID == "YOUR_WIFI_NAME") return

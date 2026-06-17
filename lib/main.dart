@@ -2,11 +2,19 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 
+import 'package:hive_flutter/hive_flutter.dart';
+
 import 'views/device_enrollment_screen.dart';
 import 'kiosk.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  
+  // Initialize Hive and open boxes
+  await Hive.initFlutter();
+  await Hive.openBox('settingsBox');
+  await Hive.openBox('driversBox');
+  await Hive.openBox('incidentsBox');
   
   // Driver-facing: portrait only, keep it simple.
   await SystemChrome.setPreferredOrientations([

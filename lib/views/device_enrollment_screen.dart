@@ -8,6 +8,7 @@ import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:http/http.dart' as http;
 import 'package:device_info_plus/device_info_plus.dart';
 import 'package:permission_handler/permission_handler.dart';
+import 'package:hive_flutter/hive_flutter.dart';
 
 import '../monitor_flow.dart';
 
@@ -39,10 +40,21 @@ class _DeviceEnrollmentScreenState extends State<DeviceEnrollmentScreen> {
   }
 
   Future<String> _getDeviceImei() async {
-    // 1. Try to read a previously registered/stored 15-digit IMEI from secure storage
-    String? storedImei = await _storage.read(key: 'device_id');
+    final settingsBox = Hive.box('settingsBox');
+    
+    // 1. Try to read a previously registered/stored 15-digit IMEI from Hive
+    String? storedImei = settingsBox.get('device_id');
+    
+    // 1b. Migration: Check secure storage if Hive is empty
+    if (storedImei == null || storedImei.length != 15 || !RegExp(r'^\d+$').hasMatch(storedImei)) {
+      storedImei = await _storage.read(key: 'device_id');
+      if (storedImei != null && storedImei.length == 15 && RegExp(r'^\d+$').hasMatch(storedImei)) {
+        settingsBox.put('device_id', storedImei); // Migrate
+      }
+    }
+
     if (storedImei != null && storedImei.length == 15 && RegExp(r'^\d+$').hasMatch(storedImei)) {
-      debugPrint('[Enroll] Found existing valid 15-digit IMEI in storage: $storedImei');
+      debugPrint('[Enroll] Found existing valid 15-digit IMEI: $storedImei');
       return storedImei;
     }
 
@@ -68,7 +80,7 @@ class _DeviceEnrollmentScreenState extends State<DeviceEnrollmentScreen> {
     // Validate the retrieved hardware IMEI (must be exactly 15 digits)
     if (hardwareImei != null && hardwareImei.length == 15 && RegExp(r'^\d+$').hasMatch(hardwareImei)) {
       debugPrint('[Enroll] Successfully retrieved hardware IMEI: $hardwareImei');
-      // Save it to secure storage
+      settingsBox.put('device_id', hardwareImei);
       await _storage.write(key: 'device_id', value: hardwareImei);
       return hardwareImei;
     }
@@ -82,7 +94,7 @@ class _DeviceEnrollmentScreenState extends State<DeviceEnrollmentScreen> {
     }
     final mockImei = buffer.toString();
     
-    // Save it to secure storage as the device ID so it remains consistent
+    settingsBox.put('device_id', mockImei);
     await _storage.write(key: 'device_id', value: mockImei);
     debugPrint('[Enroll] Generated persistent mock IMEI: $mockImei');
     return mockImei;

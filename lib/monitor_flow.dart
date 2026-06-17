@@ -7,6 +7,7 @@ import 'package:flutter/services.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:google_mlkit_face_detection/google_mlkit_face_detection.dart';
 import 'package:audioplayers/audioplayers.dart';
+import 'package:hive/hive.dart';
 import 'package:image/image.dart' as img;
 import 'core/face_auth_engine.dart';
 import 'core/monitoring_engine.dart';
@@ -83,6 +84,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   // Hidden admin-exit gesture (top-right corner x5 -> PIN -> leave kiosk).
   int _exitTaps = 0;
   DateTime? _firstExitTapAt;
+  Timer? _syncTimer;
 
   @override
   void initState() {
@@ -90,11 +92,29 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     WidgetsBinding.instance.addObserver(this);
     _monitoringEngine = MonitoringEngine(_state);
     _init();
+    
+    _syncTimer = Timer.periodic(const Duration(seconds: 30), (_) {
+      _syncIncidentsTask();
+    });
+  }
+
+  @override
+  void dispose() {
+    _syncTimer?.cancel();
+    _countdownTimer?.cancel();
+    WidgetsBinding.instance.removeObserver(this);
+    _camera?.dispose();
+    _detector?.close();
+    _objectDetector.dispose();
+    _player.dispose();
+    super.dispose();
   }
 
   Future<void> _fetchAndDownloadDrivers() async {
-    const storage = FlutterSecureStorage();
-    final deviceId = await storage.read(key: 'device_id');
+    final settingsBox = Hive.box('settingsBox');
+    final driversBox = Hive.box('driversBox');
+    
+    final deviceId = settingsBox.get('device_id');
     if (deviceId == null || deviceId.isEmpty) {
       debugPrint('[Flow] No device_id stored. Skipping API fetch.');
       return;
@@ -119,22 +139,41 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
         if (driversList.isNotEmpty) {
           debugPrint('[Flow] Found ${driversList.length} drivers from API. Downloading photos...');
           // Save the raw JSON for offline usage
-          await storage.write(key: 'offline_drivers', value: response.body);
-
+          driversBox.put('offline_drivers', response.body);
+          
           // Download photos
           await _downloadPhotos(driversList);
 
           // Clear old embeddings cache to force re-enrollment
-          // await storage.delete(key: 'safe_drive_mobilefacenet_v9');
-          await storage.delete(key: 'safe_drive_mobilefacenet_v10');
+          // const storage = FlutterSecureStorage();
+          // await storage.delete(key: 'safe_drive_mobilefacenet_v11');
+          
         } else {
-          debugPrint('[Flow] No drivers returned for device $deviceId');
+          debugPrint('[Flow] No drivers returned for device $deviceId. Clearing old cache.');
+          
+          // Clear JSON cache
+          driversBox.delete('offline_drivers');
+          
+          // Clear downloaded photos
+          final dir = await getApplicationDocumentsDirectory();
+          final photosDir = Directory('${dir.path}/downloaded_faces');
+          if (await photosDir.exists()) {
+            await photosDir.delete(recursive: true);
+          }
+          
+          // Clear embeddings cache
+          // const storage = FlutterSecureStorage();
+          // await storage.delete(key: 'safe_drive_mobilefacenet_v11');
         }
       } else {
         debugPrint('[Flow] Failed to fetch drivers. API Status: ${response.statusCode}');
       }
     } catch (e) {
-      debugPrint('[Flow] Error fetching/downloading drivers: $e');
+      debugPrint('[Flow] Error fetching drivers (offline?): $e');
+      final cachedDrivers = driversBox.get('offline_drivers');
+      if (cachedDrivers != null) {
+        debugPrint('[Flow] Loading cached drivers from Hive fallback.');
+      }
     }
   }
 
@@ -302,7 +341,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       if (input == null) return;
 
       final all = await _detector!.processImage(input);
-      final faces = all.where((f) => f.boundingBox.width > 50).toList();
+      final faces = all.where((f) => f.boundingBox.width > 20).toList();
       _state.faceCount = faces.length;
 
       switch (_phase) {
@@ -441,11 +480,10 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   // ─────────────────────────────────────────────────────────
   Future<void> _reportIncident(String eventType, String riskLevel, double confidence) async {
     try {
-      const storage = FlutterSecureStorage();
-      final deviceId = await storage.read(key: 'device_id');
+      final settingsBox = Hive.box('settingsBox');
+      final deviceId = settingsBox.get('device_id');
       if (deviceId == null || deviceId.isEmpty) return;
 
-      final url = Uri.parse('https://proximity-driver-api.prod-app.in/api/incidents');
       final body = {
         "deviceTabletId": deviceId,
         "eventType": eventType,
@@ -459,24 +497,48 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
         "occurredAt": DateTime.now().toUtc().toIso8601String(),
       };
 
+      final incidentsBox = Hive.box('incidentsBox');
+      final incidentKey = DateTime.now().millisecondsSinceEpoch.toString();
+      incidentsBox.put(incidentKey, jsonEncode(body));
+
       debugPrint('==================================================');
-      debugPrint('[Flow] REPORT INCIDENT: $eventType');
-      debugPrint('[Flow] API REQUEST URL: $url');
+      debugPrint('[Flow] QUEUED INCIDENT OFFLINE: $eventType');
       debugPrint('[Flow] API REQUEST BODY: ${jsonEncode(body)}');
       debugPrint('==================================================');
-
-      final response = await http.post(
-        url,
-        headers: {'Content-Type': 'application/json'},
-        body: jsonEncode(body),
-      ).timeout(const Duration(seconds: 15));
-
-      debugPrint('==================================================');
-      debugPrint('[Flow] API RESPONSE STATUS CODE: ${response.statusCode}');
-      debugPrint('[Flow] API RESPONSE BODY: ${response.body}');
-      debugPrint('==================================================');
     } catch (e) {
-      debugPrint('[Flow] Error reporting incident: $e');
+      debugPrint('[Flow] Error queueing incident: $e');
+    }
+  }
+
+  Future<void> _syncIncidentsTask() async {
+    if (!mounted) return;
+    final incidentsBox = Hive.box('incidentsBox');
+    if (incidentsBox.isEmpty) return;
+
+    final url = Uri.parse('https://proximity-driver-api.prod-app.in/api/incidents');
+    final keys = incidentsBox.keys.toList();
+
+    for (final key in keys) {
+      final String? jsonBody = incidentsBox.get(key);
+      if (jsonBody == null) continue;
+
+      try {
+        final response = await http.post(
+          url,
+          headers: {'Content-Type': 'application/json'},
+          body: jsonBody,
+        ).timeout(const Duration(seconds: 15));
+
+        if (response.statusCode == 200 || response.statusCode == 201) {
+          debugPrint('[Sync] Successfully uploaded incident: $key');
+          incidentsBox.delete(key);
+        } else {
+          debugPrint('[Sync] Failed to upload incident $key. Status: ${response.statusCode}');
+        }
+      } catch (e) {
+        debugPrint('[Sync] Offline/Error syncing incident $key: $e');
+        break; // Stop loop if offline to prevent spamming failed requests
+      }
     }
   }
 
@@ -486,7 +548,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   void _handleAlertSounds() {
     final now = DateTime.now();
     final phone = _state.detectedObjects
-        .any((o) => o.label == 'phone' && o.confidence > 0.85);
+        .any((o) => o.label == 'phone' && o.confidence > 0.45);
     final smoke = _state.detectedObjects
         .any((o) => o.label == 'cigarette' && o.confidence > 0.85);
 
@@ -517,7 +579,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
 
     // 2. Report ALL AI object detections dynamically at intervals.
     for (final obj in _state.detectedObjects) {
-      if (obj.confidence > 0.85) {
+      if (obj.confidence > 0.55) {
         final label = obj.label;
         final lastTime = _lastIncidentReportAt[label];
         // Report every 10 seconds if the incident is actively happening
@@ -765,20 +827,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     }
   }
 
-  @override
-  void dispose() {
-    WidgetsBinding.instance.removeObserver(this);
-    _countdownTimer?.cancel();
-    final c = _camera;
-    if (c != null) {
-      if (_streaming) c.stopImageStream().catchError((_) {});
-      c.dispose();
-    }
-    _detector?.close();
-    _objectDetector.dispose();
-    _player.dispose();
-    super.dispose();
-  }
+
 
   // ─────────────────────────────────────────────────────────
   // HIDDEN ADMIN EXIT (top-right corner tapped 5x within 3s -> PIN)
