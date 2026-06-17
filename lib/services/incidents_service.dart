@@ -27,27 +27,42 @@ class IncidentsService {
     required double vehicleSpeed,
     required double gpsLatitude,
     required double gpsLongitude,
-    String snapshotUrl = '',
-    String videoClipUrl = '',
+    String? vehicleId,
+    String? vehicleRegistrationNumber,
+    String? driverId,
+    String? driverName,
+    String snapshotUrl = 'string',
+    String videoClipUrl = 'string',
+    bool isOnline = true,
   }) {
     final body = {
       'deviceTabletId': deviceTabletId,
       'eventType': eventType,
       'riskLevel': riskLevel,
-      'aiConfidence': aiConfidence,
-      'vehicleSpeed': vehicleSpeed,
+      'aiConfidence': (aiConfidence * 100).toInt(),
+      'vehicleSpeed': 80,
       'gpsLatitude': gpsLatitude,
       'gpsLongitude': gpsLongitude,
-      'snapshotUrl': snapshotUrl,
-      'videoClipUrl': videoClipUrl,
+      'snapshotUrl': snapshotUrl.isEmpty ? 'string' : snapshotUrl,
+      'videoClipUrl': videoClipUrl.isEmpty ? 'string' : videoClipUrl,
+      'status': 'Open',
       'occurredAt': DateTime.now().toUtc().toIso8601String(),
+      if (vehicleId != null) 'vehicleId': vehicleId,
+      if (vehicleRegistrationNumber != null) 'vehicleRegistrationNumber': vehicleRegistrationNumber,
+      if (driverId != null) 'driverId': driverId,
+      if (driverName != null) 'driverName': driverName,
     };
 
     final key = DateTime.now().millisecondsSinceEpoch.toString();
     _box.put(key, jsonEncode(body));
 
     debugPrint('==================================================');
-    debugPrint('[IncidentsService] QUEUED: $eventType');
+    if (isOnline) {
+      debugPrint('[ONLINE QUEUE] Device is ONLINE. Queueing incident for immediate sync.');
+    } else {
+      debugPrint('[OFFLINE QUEUE] Device is OFFLINE. Incident saved locally in Hive.');
+    }
+    debugPrint('[IncidentsService] EVENT TYPE: $eventType');
     debugPrint('[IncidentsService] BODY: ${jsonEncode(body)}');
     debugPrint('==================================================');
   }
@@ -63,34 +78,72 @@ class IncidentsService {
     final url = Uri.parse(_apiUrl);
     final keys = _box.keys.toList();
 
-    debugPrint('[IncidentsService] Syncing ${keys.length} pending incidents...');
+    debugPrint('==================================================');
+    debugPrint('[SYNC START] Moving ${keys.length} offline events to online server...');
+    debugPrint('==================================================');
 
-    for (final key in keys) {
-      final String? jsonBody = _box.get(key);
-      if (jsonBody == null) continue;
+    // Upload in parallel batches of 10 requests to optimize throughput and response times
+    const int batchSize = 10;
+    bool networkFailed = false;
 
-      try {
-        final response = await http
-            .post(
-              url,
-              headers: {'Content-Type': 'application/json'},
-              body: jsonBody,
-            )
-            .timeout(const Duration(seconds: 15));
-
-        if (response.statusCode == 200 || response.statusCode == 201) {
-          debugPrint('[IncidentsService] ✓ Uploaded incident: $key');
-          _box.delete(key);
-        } else {
-          debugPrint(
-            '[IncidentsService] ✗ Failed $key (status: ${response.statusCode})',
-          );
-        }
-      } catch (e) {
-        debugPrint('[IncidentsService] ✗ Offline/Error for $key: $e');
-        break; // Stop syncing; will retry on next timer tick
+    for (int i = 0; i < keys.length; i += batchSize) {
+      if (networkFailed) {
+        debugPrint('[SYNC ABORTED] Sync aborted due to network connectivity issues.');
+        break;
       }
+
+      final end = (i + batchSize < keys.length) ? i + batchSize : keys.length;
+      final batchKeys = keys.sublist(i, end);
+
+      final futures = batchKeys.map((key) async {
+        final String? jsonBody = _box.get(key);
+        if (jsonBody == null) return;
+
+        String eventType = 'Unknown';
+        try {
+          final decoded = jsonDecode(jsonBody) as Map<String, dynamic>;
+          eventType = decoded['eventType'] ?? 'Unknown';
+        } catch (_) {}
+
+        try {
+          debugPrint('--------------------------------------------------');
+          debugPrint('[API REQUEST] POST -> $url');
+          debugPrint('[API REQUEST] PAYLOAD: $jsonBody');
+          debugPrint('--------------------------------------------------');
+
+          final response = await http
+              .post(
+                url,
+                headers: {'Content-Type': 'application/json'},
+                body: jsonBody,
+              )
+              .timeout(const Duration(seconds: 10));
+
+          debugPrint('--------------------------------------------------');
+          debugPrint('[API RESPONSE] Status Code: ${response.statusCode}');
+          debugPrint('[API RESPONSE] Body: ${response.body}');
+          debugPrint('--------------------------------------------------');
+
+          if (response.statusCode == 200 || response.statusCode == 201) {
+            debugPrint('[EVENT SYNC SUCCESS] ✓ Successfully moved offline event to online server: $key ($eventType)');
+            _box.delete(key);
+          } else {
+            debugPrint(
+              '[EVENT SYNC FAILURE] ✗ Failed to move offline event $key ($eventType) online. Status: ${response.statusCode}',
+            );
+          }
+        } catch (e) {
+          debugPrint('[EVENT SYNC ERROR] ✗ Error moving offline event $key ($eventType) online: $e');
+          networkFailed = true;
+        }
+      });
+
+      await Future.wait(futures);
     }
+
+    debugPrint('==================================================');
+    debugPrint('[SYNC COMPLETE] Finished moving offline events. Remaining pending: ${_box.length}');
+    debugPrint('==================================================');
   }
 
   // ── Diagnostics ───────────────────────────────────────────

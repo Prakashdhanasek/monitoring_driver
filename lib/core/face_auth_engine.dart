@@ -283,53 +283,7 @@ class FaceAuthEngine {
           print('[Auth] Error enrolling API photo ${file.path}: $e');
         }
       }
-    }
-
-    // 2) If no downloaded photos, fallback to assets
-    if (embeddings.isEmpty) {
-      final tempDir = await getTemporaryDirectory();
-      final manifest = await AssetManifest.loadFromAssetBundle(rootBundle);
-      final List<String> refAssets = manifest
-          .listAssets()
-          .where((String key) => key.startsWith('assets/reference_faces/'))
-          .where((String key) {
-        final lower = key.toLowerCase();
-        return lower.endsWith('.jpeg') ||
-            lower.endsWith('.jpg') ||
-            lower.endsWith('.png');
-      }).toList();
-
-      print('[Auth] Found ${refAssets.length} reference photos in assets.');
-
-      for (final assetPath in refAssets) {
-        try {
-          final byteData = await rootBundle.load(assetPath);
-          final imageBytes = byteData.buffer.asUint8List();
-          final fileName = assetPath.split('/').last;
-          final tempFile = File('${tempDir.path}/$fileName');
-          await tempFile.writeAsBytes(imageBytes);
-
-          final inputImage = InputImage.fromFilePath(tempFile.path);
-          final faces = await tempDetector.processImage(inputImage);
-
-          if (faces.isNotEmpty) {
-            final face = faces.first;
-            final embedding = _embedFaceFromJpeg(imageBytes, face.boundingBox);
-
-            if (embedding != null) {
-              final label = _labelFromAsset(assetPath);
-              embeddings.add(embedding);
-              labels.add(label);
-              print('[Auth] Enrolled asset: $fileName -> $label');
-            }
-          }
-        } catch (e) {
-          print('[Auth] Error enrolling from $assetPath: $e');
-        }
-      }
-    }
-
-    await tempDetector.close();
+    }    await tempDetector.close();
     print('[Auth] Temp detector closed.');
 
     if (embeddings.isEmpty) {
@@ -355,21 +309,6 @@ class FaceAuthEngine {
     } catch (e) {
       print('[Auth] Storage write failed: $e');
     }
-  }
-
-  /// Extracts the reference folder name from an asset path.
-  /// Example:
-  /// assets/reference_faces/Authorized_driver_1/photo.jpg
-  /// -> Authorized_driver_1
-  String _labelFromAsset(String assetPath) {
-    final parts = assetPath.split('/');
-    final idx = parts.indexOf('reference_faces');
-
-    if (idx >= 0 && idx + 1 < parts.length) {
-      return parts[idx + 1];
-    }
-
-    return 'unknown';
   }
 
   // ── Dynamic Gallery Enrollment ─────────────────────────────────────────────

@@ -70,13 +70,8 @@ flutter:
   # the material Icons class.
   uses-material-design: true
 
-  # To add assets to your application, add an assets section, like this:
   assets:
     - assets/models/
-    - assets/reference_faces/Authorized_driver_1/
-    - assets/reference_faces/Authorized_driver_2/
-    - assets/reference_faces/Authorized_driver_3/
-    - assets/reference_faces/Authorized_driver_4/
     - assets/audio/alert_soft.mp3
     - assets/audio/alert_loud.mp3
     

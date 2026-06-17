@@ -24,18 +24,6 @@ import 'package:geolocator/geolocator.dart';
 enum Phase { verifying, details, monitoring }
 
 
-const Map<String, String> kDriverNames = {
-  'Authorized_driver_1': 'Rohit',
-  'Authorized_driver_2': 'Ajal',
-  'Authorized_driver_3': 'Maneesha',
-  'Authorized_driver_4': 'Sruthy',
-};
-const Map<String, String> kDriverIds = {
-  'Authorized_driver_1': 'DRV-001',
-  'Authorized_driver_2': 'DRV-002',
-  'Authorized_driver_3': 'DRV-003',
-  'Authorized_driver_4': 'DRV-004',
-};
 
 class MonitorFlow extends StatefulWidget {
   const MonitorFlow({super.key});
@@ -70,10 +58,13 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   bool _busy = false;
   bool _streaming = false;
   int _frame = 0;
+  bool _initializing = true;
 
   // Verified driver
   String _driverName = 'Driver';
   String _driverId = '—';
+  String? _vehicleId;
+  String? _vehicleRegNo;
 
   // Countdown
   int _countdown = 3;
@@ -128,7 +119,9 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       if (online != _isOnline) {
         _isOnline = online;
         if (mounted) setState(() {});
-        debugPrint('[Flow] Connectivity changed: ${_isOnline ? "ONLINE" : "OFFLINE"}');
+        debugPrint('==================================================');
+        debugPrint('[CONNECTIVITY CHANGE] Device moved to: ${_isOnline ? "ONLINE" : "OFFLINE"}');
+        debugPrint('==================================================');
         // Auto-sync immediately when we come back online
         if (_isOnline) {
           _syncIncidentsTask();
@@ -138,7 +131,9 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       if (_isOnline) {
         _isOnline = false;
         if (mounted) setState(() {});
-        debugPrint('[Flow] Connectivity changed: OFFLINE');
+        debugPrint('==================================================');
+        debugPrint('[CONNECTIVITY CHANGE] Device moved to: OFFLINE');
+        debugPrint('==================================================');
       }
     }
   }
@@ -167,6 +162,14 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
 
 
   Future<void> _init() async {
+    // Clear old queued incidents to start fresh with new schema/details
+    try {
+      await _incidentsService.clearAll();
+      debugPrint('[Flow] Cleared old queued incidents for new schema.');
+    } catch (e) {
+      debugPrint('[Flow] Error clearing incidents queue: $e');
+    }
+
     // 0) Request location permissions upfront so GPS passes correctly.
     try {
       await _requestLocationPermission();
@@ -210,6 +213,10 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
 
     // 4) Camera.
     await _initCamera();
+
+    if (mounted) {
+      setState(() => _initializing = false);
+    }
   }
 
   Future<void> _requestLocationPermission() async {
@@ -354,6 +361,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
                 DateTime.now().difference(_noFaceSince!).inSeconds >=
                     _kTripEndSeconds) {
               _tripCompleted = true;
+              _reportIncident('TripStop', 'Low', 1.0);
             }
           }
           break;
@@ -376,9 +384,25 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       _driverId = parts[0];
       _driverName = parts[1];
     } else {
-      _driverName = kDriverNames[label] ?? 'Driver';
-      _driverId = kDriverIds[label] ?? (label ?? '—');
+      _driverName = label ?? 'Driver';
+      _driverId = '—';
     }
+
+    // Set vehicle details from cached driver
+    try {
+      final drivers = _driversService.getCachedDrivers();
+      final driver = drivers.firstWhere(
+        (d) => d['id'] == _driverId,
+        orElse: () => <String, dynamic>{},
+      );
+      _vehicleId = driver['assignedVehicleId'] as String?;
+      _vehicleRegNo = driver['vehicleRegistrationNumber'] as String?;
+    } catch (e) {
+      debugPrint('[Flow] Error resolving driver vehicle details: $e');
+    }
+
+    _reportIncident('TripStart', 'Low', 1.0);
+
     _phase = Phase.details;
     _countdown = 3;
     if (mounted) setState(() {});
@@ -425,7 +449,17 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
         vehicleSpeed: _state.vehicleSpeed,
         gpsLatitude: _state.gpsLat,
         gpsLongitude: _state.gpsLng,
+        driverId: _driverId == '—' ? null : _driverId,
+        driverName: _driverName == 'Driver' ? null : _driverName,
+        vehicleId: _vehicleId,
+        vehicleRegistrationNumber: _vehicleRegNo,
+        isOnline: _isOnline,
       );
+
+      // If online, upload immediately in real-time
+      if (_isOnline) {
+        _syncIncidentsTask();
+      }
     } catch (e) {
       debugPrint('[Flow] Error queueing incident: $e');
     }
@@ -433,6 +467,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
 
   Future<void> _syncIncidentsTask() async {
     if (!mounted) return;
+    debugPrint('[Flow] Triggering sync of pending incidents (connection: ${_isOnline ? "ONLINE" : "OFFLINE"})...');
     await _incidentsService.syncPendingIncidents();
   }
 
@@ -731,7 +766,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
         fit: StackFit.expand,
         children: [
           _cameraLayer(),
-          if (_phase == Phase.verifying) _verifyingOverlay(),
+        //  if (_phase == Phase.verifying) _verifyingOverlay(),
           if (_phase == Phase.details) _detailsOverlay(),
           if (_phase == Phase.monitoring)
             (_tripCompleted ? _tripCompletedOverlay() : _monitoringOverlay()),
@@ -759,45 +794,75 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   }
 
   // ── VERIFYING ──
-  Widget _verifyingOverlay() {
-    final isUnverified = _state.authStatus == AuthStatus.unauthorized && _state.faceCount > 0;
-
-    return Container(
-      color: Colors.black.withValues(alpha: 0.45),
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          SizedBox(
-            width: 64,
-            height: 64,
-            child: isUnverified
-                ? const Icon(Icons.error_outline, color: Colors.redAccent, size: 64)
-                : const CircularProgressIndicator(
-                    strokeWidth: 3,
-                    color: Color(0xFF3B82F6),
-                  ),
-          ),
-          const SizedBox(height: 24),
-          Text(
-            isUnverified ? 'Unverified' : 'Verifying your face…',
-            style: TextStyle(
-                color: isUnverified ? Colors.redAccent : Colors.white,
-                fontSize: 20,
-                fontWeight: FontWeight.w600),
-          ),
-          const SizedBox(height: 8),
-          Text(
-            _state.faceCount == 0
-                ? 'Look at the camera'
-                : (isUnverified
-                    ? 'Face not recognised — keep looking'
-                    : 'Hold still…'),
-            style: const TextStyle(color: Colors.white70, fontSize: 14),
-          ),
-        ],
-      ),
-    );
-  }
+  // Widget _verifyingOverlay() {
+  //   if (!_initializing && !_authEngine.isEnrolled) {
+  //     return Container(
+  //       color: Colors.black.withOpacity(0.85),
+  //       child: const Center(
+  //         child: Column(
+  //           mainAxisAlignment: MainAxisAlignment.center,
+  //           children: [
+  //             Icon(Icons.people_outlined, color: Colors.redAccent, size: 64),
+  //             const SizedBox(height: 24),
+  //             Text(
+  //               'No Drivers Assigned',
+  //               style: TextStyle(
+  //                   color: Colors.white,
+  //                   fontSize: 20,
+  //                   fontWeight: FontWeight.w600),
+  //             ),
+  //             const SizedBox(height: 8),
+  //             Text(
+  //               'No registered/authorized drivers found for this device.',
+  //               style: TextStyle(color: Colors.white70, fontSize: 14),
+  //               textAlign: TextAlign.center,
+  //             ),
+  //           ],
+  //         ),
+  //       ),
+  //     );
+  //   }
+  //
+  //   final isUnverified = _state.authStatus == AuthStatus.unauthorized && _state.faceCount > 0;
+  //
+  //   return Container(
+  //     color: Colors.black.withValues(alpha: 0.45),
+  //     child: Column(
+  //       mainAxisAlignment: MainAxisAlignment.center,
+  //       children: [
+  //         SizedBox(
+  //           width: 64,
+  //           height: 64,
+  //           child: isUnverified
+  //               ? const Icon(Icons.error_outline, color: Colors.redAccent, size: 64)
+  //               : const CircularProgressIndicator(
+  //                   strokeWidth: 3,
+  //                   color: Color(0xFF3B82F6),
+  //                 ),
+  //         ),
+  //         const SizedBox(height: 24),
+  //         Text(
+  //           _initializing
+  //               ? 'Initializing systems…'
+  //               : (isUnverified ? 'Unverified' : 'Verifying your face…'),
+  //           style: TextStyle(
+  //               color: isUnverified ? Colors.redAccent : Colors.white,
+  //               fontSize: 20,
+  //               fontWeight: FontWeight.w600),
+  //         ),
+  //         const SizedBox(height: 8),
+  //         Text(
+  //           _state.faceCount == 0
+  //               ? 'Look at the camera'
+  //               : (isUnverified
+  //                   ? 'Face not recognised — keep looking'
+  //                   : 'Hold still…'),
+  //           style: const TextStyle(color: Colors.white70, fontSize: 14),
+  //         ),
+  //       ],
+  //     ),
+  //   );
+  // }
 
   // ── DETAILS — clean white "Identity Verified" card (matches design) ──
   Widget _detailsOverlay() {
