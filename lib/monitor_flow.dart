@@ -7,19 +7,16 @@ import 'package:flutter/services.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:google_mlkit_face_detection/google_mlkit_face_detection.dart';
 import 'package:audioplayers/audioplayers.dart';
-import 'package:hive/hive.dart';
 import 'package:image/image.dart' as img;
+import 'package:monitoring_driver/kiosk.dart';
 import 'core/face_auth_engine.dart';
 import 'core/monitoring_engine.dart';
 import 'core/object_detector_engine.dart';
-
-import 'dart:convert';
-import 'package:flutter_secure_storage/flutter_secure_storage.dart';
-import 'package:http/http.dart' as http;
-import 'package:path_provider/path_provider.dart';
-
 import 'core/monitor_state.dart';
-import 'kiosk.dart';
+
+import 'services/settings_service.dart';
+import 'services/drivers_service.dart';
+import 'services/incidents_service.dart';
 
 /// The 3 phases of the driver-facing flow.
 enum Phase { verifying, details, monitoring }
@@ -45,16 +42,28 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   late final MonitoringEngine _monitoringEngine;
   final MonitorState _state = MonitorState();
 
+  // ── Hive Services ──
+  final SettingsService _settings = SettingsService();
+  final DriversService _driversService = DriversService();
+  final IncidentsService _incidentsService = IncidentsService();
+
+  // ── Connectivity tracking ──
+  bool _isOnline = true;
+  Timer? _connectivityTimer;
+
   // Flow
   Phase _phase = Phase.verifying;
   bool _camReady = false;
   bool _busy = false;
   bool _streaming = false;
   int _frame = 0;
+  bool _initializing = true;
 
   // Verified driver
   String _driverName = 'Driver';
   String _driverId = '—';
+  String? _vehicleId;
+  String? _vehicleRegNo;
 
   // Countdown
   int _countdown = 3;
@@ -92,15 +101,49 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     WidgetsBinding.instance.addObserver(this);
     _monitoringEngine = MonitoringEngine(_state);
     _init();
-    
+
     _syncTimer = Timer.periodic(const Duration(seconds: 30), (_) {
       _syncIncidentsTask();
     });
+
+    // Check connectivity every 5 seconds
+    _connectivityTimer = Timer.periodic(const Duration(seconds: 5), (_) {
+      _checkConnectivity();
+    });
+    _checkConnectivity();
+  }
+
+  Future<void> _checkConnectivity() async {
+    try {
+      final result = await InternetAddress.lookup('proximity-driver-api.prod-app.in')
+          .timeout(const Duration(seconds: 3));
+      final online = result.isNotEmpty && result[0].rawAddress.isNotEmpty;
+      if (online != _isOnline) {
+        _isOnline = online;
+        if (mounted) setState(() {});
+        debugPrint('==================================================');
+        debugPrint('[CONNECTIVITY CHANGE] Device moved to: ${_isOnline ? "ONLINE" : "OFFLINE"}');
+        debugPrint('==================================================');
+        // Auto-sync immediately when we come back online
+        if (_isOnline) {
+          _syncIncidentsTask();
+        }
+      }
+    } catch (_) {
+      if (_isOnline) {
+        _isOnline = false;
+        if (mounted) setState(() {});
+        debugPrint('==================================================');
+        debugPrint('[CONNECTIVITY CHANGE] Device moved to: OFFLINE');
+        debugPrint('==================================================');
+      }
+    }
   }
 
   @override
   void dispose() {
     _syncTimer?.cancel();
+    _connectivityTimer?.cancel();
     _countdownTimer?.cancel();
     WidgetsBinding.instance.removeObserver(this);
     _camera?.dispose();
@@ -111,114 +154,24 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   }
 
   Future<void> _fetchAndDownloadDrivers() async {
-    final settingsBox = Hive.box('settingsBox');
-    final driversBox = Hive.box('driversBox');
-    
-    final deviceId = settingsBox.get('device_id');
+    final deviceId = _settings.getDeviceId();
     if (deviceId == null || deviceId.isEmpty) {
       debugPrint('[Flow] No device_id stored. Skipping API fetch.');
       return;
     }
-
-    try {
-      final url = Uri.parse('https://proximity-driver-api.prod-app.in/api/drivers/by-device/$deviceId');
-      debugPrint('==================================================');
-      debugPrint('[Flow] FETCH DRIVERS FOR IMEI/ID: $deviceId');
-      debugPrint('[Flow] API REQUEST URL: $url');
-      debugPrint('==================================================');
-
-      final response = await http.get(url).timeout(const Duration(seconds: 15));
-
-      debugPrint('==================================================');
-      debugPrint('[Flow] API RESPONSE STATUS CODE: ${response.statusCode}');
-      debugPrint('[Flow] API RESPONSE BODY: ${response.body}');
-      debugPrint('==================================================');
-
-      if (response.statusCode == 200) {
-        final List<dynamic> driversList = jsonDecode(response.body);
-        if (driversList.isNotEmpty) {
-          debugPrint('[Flow] Found ${driversList.length} drivers from API. Downloading photos...');
-          // Save the raw JSON for offline usage
-          driversBox.put('offline_drivers', response.body);
-          
-          // Download photos
-          await _downloadPhotos(driversList);
-
-          // Clear old embeddings cache to force re-enrollment
-          // const storage = FlutterSecureStorage();
-          // await storage.delete(key: 'safe_drive_mobilefacenet_v11');
-          
-        } else {
-          debugPrint('[Flow] No drivers returned for device $deviceId. Clearing old cache.');
-          
-          // Clear JSON cache
-          driversBox.delete('offline_drivers');
-          
-          // Clear downloaded photos
-          final dir = await getApplicationDocumentsDirectory();
-          final photosDir = Directory('${dir.path}/downloaded_faces');
-          if (await photosDir.exists()) {
-            await photosDir.delete(recursive: true);
-          }
-          
-          // Clear embeddings cache
-          // const storage = FlutterSecureStorage();
-          // await storage.delete(key: 'safe_drive_mobilefacenet_v11');
-        }
-      } else {
-        debugPrint('[Flow] Failed to fetch drivers. API Status: ${response.statusCode}');
-      }
-    } catch (e) {
-      debugPrint('[Flow] Error fetching drivers (offline?): $e');
-      final cachedDrivers = driversBox.get('offline_drivers');
-      if (cachedDrivers != null) {
-        debugPrint('[Flow] Loading cached drivers from Hive fallback.');
-      }
-    }
+    await _driversService.fetchAndCacheDrivers(deviceId);
   }
 
-  Future<void> _downloadPhotos(List<dynamic> drivers) async {
-    final dir = await getApplicationDocumentsDirectory();
-    final photosDir = Directory('${dir.path}/downloaded_faces');
-    if (!await photosDir.exists()) {
-      await photosDir.create(recursive: true);
-    } else {
-      // Clear old photos
-      await photosDir.delete(recursive: true);
-      await photosDir.create(recursive: true);
-    }
-
-    const baseUrl = 'https://proximity-driver-api.prod-app.in';
-
-    for (final driver in drivers) {
-      final facePhotos = driver['facePhotos'] as List<dynamic>?;
-      if (facePhotos != null && facePhotos.isNotEmpty) {
-        for (final photo in facePhotos) {
-          final photoPath = photo['photoPath'] as String?;
-          final driverId = driver['id'] as String? ?? 'unknown';
-          final driverName = driver['fullName'] as String? ?? 'Driver';
-
-          if (photoPath != null) {
-            try {
-              final imgUrl = Uri.parse('$baseUrl$photoPath');
-              final res = await http.get(imgUrl);
-              if (res.statusCode == 200) {
-                // Save it locally, encoding the driver info in the filename so FaceAuthEngine can read it
-                final fileName = '${driverId}__${driverName.replaceAll(' ', '_')}__${DateTime.now().millisecondsSinceEpoch}.jpg';
-                final file = File('${photosDir.path}/$fileName');
-                await file.writeAsBytes(res.bodyBytes);
-                debugPrint('[Flow] Downloaded photo for $driverName');
-              }
-            } catch (e) {
-              debugPrint('[Flow] Error downloading photo $photoPath: $e');
-            }
-          }
-        }
-      }
-    }
-  }
 
   Future<void> _init() async {
+    // Clear old queued incidents to start fresh with new schema/details
+    try {
+      await _incidentsService.clearAll();
+      debugPrint('[Flow] Cleared old queued incidents for new schema.');
+    } catch (e) {
+      debugPrint('[Flow] Error clearing incidents queue: $e');
+    }
+
     // 0) Request location permissions upfront so GPS passes correctly.
     try {
       await _requestLocationPermission();
@@ -262,6 +215,10 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
 
     // 4) Camera.
     await _initCamera();
+
+    if (mounted) {
+      setState(() => _initializing = false);
+    }
   }
 
   Future<void> _requestLocationPermission() async {
@@ -414,6 +371,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
                 DateTime.now().difference(_noFaceSince!).inSeconds >=
                     _kTripEndSeconds) {
               _tripCompleted = true;
+              _reportIncident('TripStop', 'Low', 1.0);
             }
           }
           break;
@@ -440,11 +398,22 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       _driverId = parts.isNotEmpty ? parts[0] : '—';
       _driverName = parts.length > 1 ? parts[1] : 'Driver';
     } else {
-      // No API metadata available — neutral defaults, never hardcoded names.
-      _driverName = 'Driver';
-      _driverId = label ?? '—';
+      _driverName = label ?? 'Driver';
+      _driverId = '—';
     }
 
+    // Set vehicle details from cached driver
+    try {
+      final drivers = _driversService.getCachedDrivers();
+      final driver = drivers.firstWhere(
+        (d) => d['id'] == _driverId,
+        orElse: () => <String, dynamic>{},
+      );
+      _vehicleId = driver['assignedVehicleId'] as String?;
+      _vehicleRegNo = driver['vehicleRegistrationNumber'] as String?;
+    } catch (e) {
+      debugPrint('[Flow] Error resolving driver vehicle details: $e');
+    }
     _phase = Phase.details;
     _countdown = 3;
     if (mounted) setState(() {});
@@ -480,31 +449,28 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   // ─────────────────────────────────────────────────────────
   Future<void> _reportIncident(String eventType, String riskLevel, double confidence) async {
     try {
-      final settingsBox = Hive.box('settingsBox');
-      final deviceId = settingsBox.get('device_id');
+      final deviceId = _settings.getDeviceId();
       if (deviceId == null || deviceId.isEmpty) return;
 
-      final body = {
-        "deviceTabletId": deviceId,
-        "eventType": eventType,
-        "riskLevel": riskLevel,
-        "aiConfidence": confidence,
-        "vehicleSpeed": _state.vehicleSpeed,
-        "gpsLatitude": _state.gpsLat,
-        "gpsLongitude": _state.gpsLng,
-        "snapshotUrl": "",
-        "videoClipUrl": "",
-        "occurredAt": DateTime.now().toUtc().toIso8601String(),
-      };
+      _incidentsService.queueIncident(
+        deviceTabletId: deviceId,
+        eventType: eventType,
+        riskLevel: riskLevel,
+        aiConfidence: confidence,
+        vehicleSpeed: _state.vehicleSpeed,
+        gpsLatitude: _state.gpsLat,
+        gpsLongitude: _state.gpsLng,
+        driverId: _driverId == '—' ? null : _driverId,
+        driverName: _driverName == 'Driver' ? null : _driverName,
+        vehicleId: _vehicleId,
+        vehicleRegistrationNumber: _vehicleRegNo,
+        isOnline: _isOnline,
+      );
 
-      final incidentsBox = Hive.box('incidentsBox');
-      final incidentKey = DateTime.now().millisecondsSinceEpoch.toString();
-      incidentsBox.put(incidentKey, jsonEncode(body));
-
-      debugPrint('==================================================');
-      debugPrint('[Flow] QUEUED INCIDENT OFFLINE: $eventType');
-      debugPrint('[Flow] API REQUEST BODY: ${jsonEncode(body)}');
-      debugPrint('==================================================');
+      // If online, upload immediately in real-time
+      if (_isOnline) {
+        _syncIncidentsTask();
+      }
     } catch (e) {
       debugPrint('[Flow] Error queueing incident: $e');
     }
@@ -512,34 +478,8 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
 
   Future<void> _syncIncidentsTask() async {
     if (!mounted) return;
-    final incidentsBox = Hive.box('incidentsBox');
-    if (incidentsBox.isEmpty) return;
-
-    final url = Uri.parse('https://proximity-driver-api.prod-app.in/api/incidents');
-    final keys = incidentsBox.keys.toList();
-
-    for (final key in keys) {
-      final String? jsonBody = incidentsBox.get(key);
-      if (jsonBody == null) continue;
-
-      try {
-        final response = await http.post(
-          url,
-          headers: {'Content-Type': 'application/json'},
-          body: jsonBody,
-        ).timeout(const Duration(seconds: 15));
-
-        if (response.statusCode == 200 || response.statusCode == 201) {
-          debugPrint('[Sync] Successfully uploaded incident: $key');
-          incidentsBox.delete(key);
-        } else {
-          debugPrint('[Sync] Failed to upload incident $key. Status: ${response.statusCode}');
-        }
-      } catch (e) {
-        debugPrint('[Sync] Offline/Error syncing incident $key: $e');
-        break; // Stop loop if offline to prevent spamming failed requests
-      }
-    }
+    debugPrint('[Flow] Triggering sync of pending incidents (connection: ${_isOnline ? "ONLINE" : "OFFLINE"})...');
+    await _incidentsService.syncPendingIncidents();
   }
 
   // ─────────────────────────────────────────────────────────
@@ -890,7 +830,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
         fit: StackFit.expand,
         children: [
           _cameraLayer(),
-          if (_phase == Phase.verifying) _verifyingOverlay(),
+        //  if (_phase == Phase.verifying) _verifyingOverlay(),
           if (_phase == Phase.details) _detailsOverlay(),
           if (_phase == Phase.monitoring)
             (_tripCompleted ? _tripCompletedOverlay() : _monitoringOverlay()),
@@ -929,45 +869,75 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   }
 
   // ── VERIFYING ──
-  Widget _verifyingOverlay() {
-    final isUnverified = _state.authStatus == AuthStatus.unauthorized && _state.faceCount > 0;
-
-    return Container(
-      color: Colors.black.withValues(alpha: 0.45),
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          SizedBox(
-            width: 64,
-            height: 64,
-            child: isUnverified
-                ? const Icon(Icons.error_outline, color: Colors.redAccent, size: 64)
-                : const CircularProgressIndicator(
-                    strokeWidth: 3,
-                    color: Color(0xFF3B82F6),
-                  ),
-          ),
-          const SizedBox(height: 24),
-          Text(
-            isUnverified ? 'Unverified' : 'Verifying your face…',
-            style: TextStyle(
-                color: Colors.white,
-                fontSize: 20,
-                fontWeight: FontWeight.w600),
-          ),
-          const SizedBox(height: 8),
-          Text(
-            _state.faceCount == 0
-                ? 'Look at the camera'
-                : (isUnverified
-                      ? 'Face not recognised — keep looking'
-                      : 'Hold still…'),
-            style: const TextStyle(color: Colors.white70, fontSize: 14),
-          ),
-        ],
-      ),
-    );
-  }
+  // Widget _verifyingOverlay() {
+  //   if (!_initializing && !_authEngine.isEnrolled) {
+  //     return Container(
+  //       color: Colors.black.withOpacity(0.85),
+  //       child: const Center(
+  //         child: Column(
+  //           mainAxisAlignment: MainAxisAlignment.center,
+  //           children: [
+  //             Icon(Icons.people_outlined, color: Colors.redAccent, size: 64),
+  //             const SizedBox(height: 24),
+  //             Text(
+  //               'No Drivers Assigned',
+  //               style: TextStyle(
+  //                   color: Colors.white,
+  //                   fontSize: 20,
+  //                   fontWeight: FontWeight.w600),
+  //             ),
+  //             const SizedBox(height: 8),
+  //             Text(
+  //               'No registered/authorized drivers found for this device.',
+  //               style: TextStyle(color: Colors.white70, fontSize: 14),
+  //               textAlign: TextAlign.center,
+  //             ),
+  //           ],
+  //         ),
+  //       ),
+  //     );
+  //   }
+  //
+  //   final isUnverified = _state.authStatus == AuthStatus.unauthorized && _state.faceCount > 0;
+  //
+  //   return Container(
+  //     color: Colors.black.withValues(alpha: 0.45),
+  //     child: Column(
+  //       mainAxisAlignment: MainAxisAlignment.center,
+  //       children: [
+  //         SizedBox(
+  //           width: 64,
+  //           height: 64,
+  //           child: isUnverified
+  //               ? const Icon(Icons.error_outline, color: Colors.redAccent, size: 64)
+  //               : const CircularProgressIndicator(
+  //                   strokeWidth: 3,
+  //                   color: Color(0xFF3B82F6),
+  //                 ),
+  //         ),
+  //         const SizedBox(height: 24),
+  //         Text(
+  //           _initializing
+  //               ? 'Initializing systems…'
+  //               : (isUnverified ? 'Unverified' : 'Verifying your face…'),
+  //           style: TextStyle(
+  //               color: isUnverified ? Colors.redAccent : Colors.white,
+  //               fontSize: 20,
+  //               fontWeight: FontWeight.w600),
+  //         ),
+  //         const SizedBox(height: 8),
+  //         Text(
+  //           _state.faceCount == 0
+  //               ? 'Look at the camera'
+  //               : (isUnverified
+  //                   ? 'Face not recognised — keep looking'
+  //                   : 'Hold still…'),
+  //           style: const TextStyle(color: Colors.white70, fontSize: 14),
+  //         ),
+  //       ],
+  //     ),
+  //   );
+  // }
 
   // ── DETAILS — clean white "Identity Verified" card (matches design) ──
   Widget _detailsOverlay() {
@@ -1162,11 +1132,59 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
+        // _monitorBanner(),
+          _connectivityBanner(),
           _monitorStatusBar(),
           if (_noFaceSince != null && !_tripCompleted) _noDriverCountdown(),
           const Spacer(),
+          _seatbeltIndicator(),
           _monitorBanner(),
           _monitorDiag(),
+        ],
+      ),
+    );
+  }
+
+  /// Shows offline/online status and pending incident count.
+  Widget _connectivityBanner() {
+    final pending = _incidentsService.pendingCount;
+    if (_isOnline && pending == 0) return const SizedBox.shrink();
+
+    final Color bgColor;
+    final IconData icon;
+    final String text;
+
+    if (!_isOnline) {
+      bgColor = const Color(0xFFDC2626);
+      icon = Icons.wifi_off_rounded;
+      text = pending > 0
+          ? 'OFFLINE · $pending events queued'
+          : 'OFFLINE · Events saving locally';
+    } else {
+      // Online but still has pending items = syncing
+      bgColor = const Color(0xFF2563EB);
+      icon = Icons.sync_rounded;
+      text = 'SYNCING · $pending events uploading...';
+    }
+
+    return Container(
+      margin: const EdgeInsets.symmetric(horizontal: 12),
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+      decoration: BoxDecoration(
+        color: bgColor.withValues(alpha: 0.92),
+        borderRadius: BorderRadius.circular(10),
+      ),
+      child: Row(
+        children: [
+          Icon(icon, color: Colors.white, size: 18),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(text,
+                style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 12,
+                    fontWeight: FontWeight.w600)),
+          ),
         ],
       ),
     );
@@ -1374,6 +1392,12 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     } else if (smoke) {
       bg = const Color(0xFF7E22CE);
       text = '🚬  SMOKING DETECTED';
+       } else if (_state.hasEating || _state.isChewing) {
+      bg = const Color(0xFFDC2626);
+      text = '🍔  EATING DETECTED';
+    } else if (_state.hasDrinking) {
+      bg = const Color(0xFFEA580C);
+      text = '🥤  DRINKING DETECTED';
     } else if (_state.drowsinessLevel == DrowsinessLevel.drowsy) {
       bg = const Color(0xFFD97706);
       text = '⚠  DROWSINESS DETECTED  ⚠';
@@ -1381,9 +1405,9 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       bg = const Color(0xFFEAB308);
       fg = Colors.black;
       text = '⚠  EYES ON THE ROAD  ⚠';
-    } else if (_state.seatbeltBuckled) {
-      bg = const Color(0xFF16A34A);
-      text = '🔒  SEATBELT ON';
+    // } else if (_state.seatbeltBuckled) {
+    //   bg = const Color(0xFF16A34A);
+    //   text = '🔒  SEATBELT ON';
     }
 
     if (bg == null || text == null) return const SizedBox.shrink();
@@ -1404,6 +1428,39 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     );
   }
 
+
+// Always-visible seatbelt status: red ✗ when off, green ✓ when on.
+Widget _seatbeltIndicator() {
+  final on = _state.seatbeltBuckled;
+  final bg = on ? const Color(0xFF16A34A) : const Color(0xFFDC2626);
+  final icon = on ? Icons.check_circle_rounded : Icons.cancel_rounded;
+  final text = on ? '🔒  SEATBELT ON' : '⚠️  FASTEN SEATBELT';
+
+  return Container(
+    width: double.infinity,
+    margin: const EdgeInsets.fromLTRB(12, 0, 12, 8),
+    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+    decoration: BoxDecoration(
+      color: bg.withValues(alpha: 0.95),
+      borderRadius: BorderRadius.circular(14),
+    ),
+    child: Row(
+      mainAxisAlignment: MainAxisAlignment.center,
+      children: [
+        Icon(icon, color: Colors.white, size: 22),
+        const SizedBox(width: 10),
+        Text(
+          text,
+          style: const TextStyle(
+            color: Colors.white,
+            fontSize: 16,
+            fontWeight: FontWeight.w800,
+          ),
+        ),
+      ],
+    ),
+  );
+}
   // Small live diagnostics strip (EAR / HEAD / STATUS) like driving_hud_view.
   // Remove this from the monitoring column if you want a cleaner screen.
   Widget _monitorDiag() {

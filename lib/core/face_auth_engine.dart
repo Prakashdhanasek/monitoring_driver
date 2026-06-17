@@ -247,54 +247,62 @@ Future<void> clearCache() async {
     final List<List<double>> embeddings = [];
     final List<String> labels = [];
 
-    // Enroll ONLY from the API-downloaded driver photos
-    // (getApplicationDocumentsDirectory()/downloaded_faces/). If the API has
-    // not provided any drivers for this device, NOTHING is enrolled, so nobody
-    // can be authenticated — random faces are rejected as unauthorized.
-    final docsDir = await getApplicationDocumentsDirectory();
-    final photosDir = Directory('${docsDir.path}/downloaded_faces');
-
-    if (!await photosDir.exists()) {
-      print('[Auth] No downloaded_faces folder — no API drivers. Auth disabled.');
-      await tempDetector.close();
-      return;
-    }
-
-    final files = photosDir.listSync().whereType<File>().where((f) {
-      final lower = f.path.toLowerCase();
-      return lower.endsWith('.jpg') ||
-          lower.endsWith('.jpeg') ||
-          lower.endsWith('.png');
-    }).toList();
-
-    print('[Auth] Found ${files.length} downloaded driver photos to enroll.');
-
-    for (final file in files) {
-      try {
-        final imageBytes = await file.readAsBytes();
-        final inputImage = InputImage.fromFilePath(file.path);
-        final faces = await tempDetector.processImage(inputImage);
-
-        if (faces.isNotEmpty) {
-          final embedding =
-              _embedFaceFromJpeg(imageBytes, faces.first.boundingBox);
-          if (embedding != null) {
-            final label = _labelFromDownloadedFile(file.path);
-            embeddings.add(embedding);
-            labels.add(label);
-            print('[Auth] Enrolled embedding (192D) [$label]');
-          } else {
-            print('[Auth] Failed to extract embedding from ${file.path}');
+    // 1) First check for downloaded API photos
+    final appDir = await getApplicationDocumentsDirectory();
+    final downloadedDir = Directory('${appDir.path}/downloaded_faces');
+    
+    if (await downloadedDir.exists()) {
+      final files = downloadedDir.listSync().whereType<File>().toList();
+      print('[Auth] Found ${files.length} downloaded photos from API.');
+      
+      for (final file in files) {
+        try {
+          final imageBytes = await file.readAsBytes();
+          final fileName = file.path.split(RegExp(r'[/\\]')).last;
+          
+          final inputImage = InputImage.fromFilePath(file.path);
+          final faces = await tempDetector.processImage(inputImage);
+          
+          if (faces.isNotEmpty) {
+            final face = faces.first;
+            final embedding = _embedFaceFromJpeg(imageBytes, face.boundingBox);
+            
+            if (embedding != null) {
+              // Filename format: id__name__timestamp.jpg (or fallback to id_name_timestamp.jpg)
+              String driverId = 'unknown';
+              String driverName = 'unknown';
+              if (fileName.contains('__')) {
+                final parts = fileName.split('__');
+                if (parts.isNotEmpty) driverId = parts[0];
+                if (parts.length >= 2) driverName = parts[1].replaceAll('_', ' ');
+              } else {
+                final parts = fileName.split('_');
+                if (parts.isNotEmpty) {
+                  driverId = parts[0];
+                  if (parts.length > 2) {
+                    driverName = parts.sublist(1, parts.length - 1).join(' ');
+                  } else if (parts.length == 2) {
+                    driverName = parts[1];
+                  }
+                }
+              }
+              driverName = driverName
+                  .replaceAll('.jpg', '')
+                  .replaceAll('.jpeg', '')
+                  .replaceAll('.png', '');
+              
+              final label = '$driverId|$driverName';
+              
+              embeddings.add(embedding);
+              labels.add(label);
+              print('[Auth] Enrolled API photo: $fileName -> label: $label');
+            }
           }
-        } else {
-          print('[Auth] No face detected in ${file.path}');
+        } catch (e) {
+          print('[Auth] Error enrolling API photo ${file.path}: $e');
         }
-      } catch (e) {
-        print('[Auth] Error enrolling from ${file.path}: $e');
       }
-    }
-
-    await tempDetector.close();
+    }    await tempDetector.close();
     print('[Auth] Temp detector closed.');
 
     if (embeddings.isEmpty) {
