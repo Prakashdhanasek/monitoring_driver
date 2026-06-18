@@ -18,6 +18,7 @@ import 'services/settings_service.dart';
 import 'services/drivers_service.dart';
 import 'services/incidents_service.dart';
 import 'services/telemetry_service.dart';
+import 'services/dashcam_recording_service.dart';
 
 import 'package:geolocator/geolocator.dart';
 
@@ -49,6 +50,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   final DriversService _driversService = DriversService();
   final IncidentsService _incidentsService = IncidentsService();
   final TelemetryService _telemetryService = TelemetryService();
+  final DashcamRecordingService _dashcamRecordingService = DashcamRecordingService();
 
   // ── Connectivity tracking ──
   bool _isOnline = true;
@@ -152,6 +154,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     _connectivityTimer?.cancel();
     _telemetryTimer?.cancel();
     _countdownTimer?.cancel();
+    _dashcamRecordingService.stopRecording();
     WidgetsBinding.instance.removeObserver(this);
     _camera?.dispose();
     _detector?.close();
@@ -371,6 +374,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
                     _kTripEndSeconds) {
               _tripCompleted = true;
               _reportIncident('TripStop', 'Low', 1.0);
+              _dashcamRecordingService.stopRecording();
             }
           }
           break;
@@ -411,6 +415,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     }
 
     _reportIncident('TripStart', 'Low', 1.0);
+    _dashcamRecordingService.startRecording('$_tripNumber');
 
     _phase = Phase.details;
     _countdown = 3;
