@@ -16,7 +16,8 @@ class DriversService {
   static const String _boxName = 'driversBox';
   static const String _keyDriversJson = 'offline_drivers';
   static const String _baseUrl = 'https://proximity-driver-api.prod-app.in';
-  static const String _embeddingKey = 'safe_drive_mobilefacenet_v9';
+  static const String _embeddingKey = 'safe_drive_mobilefacenet_v10';
+  static const String _legacyEmbeddingKey = 'safe_drive_mobilefacenet_v9';
 
   Box get _box => Hive.box(_boxName);
 
@@ -26,7 +27,9 @@ class DriversService {
   /// On success: caches the response in Hive, downloads photos, clears old embeddings.
   /// On failure: logs the error and falls back to the cached data.
   /// Returns the list of driver maps (may be empty).
-  Future<List<Map<String, dynamic>>> fetchAndCacheDrivers(String deviceId) async {
+  Future<List<Map<String, dynamic>>> fetchAndCacheDrivers(
+    String deviceId,
+  ) async {
     try {
       final url = Uri.parse('$_baseUrl/api/drivers/by-device/$deviceId');
 
@@ -50,7 +53,9 @@ class DriversService {
 
           // 2. Store fresh JSON
           _box.put(_keyDriversJson, response.body);
-          debugPrint('[DriversService] Cached ${rawList.length} drivers in Hive.');
+          debugPrint(
+            '[DriversService] Cached ${rawList.length} drivers in Hive.',
+          );
 
           // 3. Download fresh photos (deletes old folder first)
           await _downloadPhotos(rawList);
@@ -61,12 +66,16 @@ class DriversService {
           return rawList.cast<Map<String, dynamic>>();
         } else {
           // ── Online + Empty List ──
-          debugPrint('[DriversService] API returned 0 drivers. Clearing old cache.');
+          debugPrint(
+            '[DriversService] API returned 0 drivers. Clearing old cache.',
+          );
           await clearCache();
           return [];
         }
       } else {
-        debugPrint('[DriversService] API error ${response.statusCode}. Using cache.');
+        debugPrint(
+          '[DriversService] API error ${response.statusCode}. Using cache.',
+        );
         return getCachedDrivers();
       }
     } catch (e) {
@@ -87,12 +96,26 @@ class DriversService {
     }
     try {
       final List<dynamic> list = jsonDecode(cached);
-      debugPrint('[DriversService] Loaded ${list.length} drivers from Hive cache.');
+      debugPrint(
+        '[DriversService] Loaded ${list.length} drivers from Hive cache.',
+      );
       return list.cast<Map<String, dynamic>>();
     } catch (e) {
       debugPrint('[DriversService] Error parsing cached drivers: $e');
       return [];
     }
+  }
+
+  /// Returns the cached driver record matching [id], comparing by string.
+  Map<String, dynamic>? getDriverById(String id) {
+    if (id.isEmpty || id == '—') return null;
+
+    final drivers = getCachedDrivers();
+    final result = drivers.firstWhere((driver) {
+      final driverId = driver['id'];
+      return driverId != null && driverId.toString() == id;
+    }, orElse: () => <String, dynamic>{});
+    return result.isNotEmpty ? result.cast<String, dynamic>() : null;
   }
 
   /// Check if there are any cached drivers available.
@@ -160,5 +183,6 @@ class DriversService {
   Future<void> _clearEmbeddings() async {
     const storage = FlutterSecureStorage();
     await storage.delete(key: _embeddingKey);
+    await storage.delete(key: _legacyEmbeddingKey);
   }
 }

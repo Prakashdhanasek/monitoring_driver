@@ -25,7 +25,6 @@ class FaceAuthEngine {
 
   List<List<double>> _referenceEmbeddings = [];
 
-
   List<String> _referenceLabels = [];
 
   bool isEnrolled = false;
@@ -67,8 +66,10 @@ class FaceAuthEngine {
               .map<List<double>>((e) => List<double>.from(e as List))
               .toList();
 
-          _referenceLabels =
-              List<String>.filled(_referenceEmbeddings.length, 'unknown');
+          _referenceLabels = List<String>.filled(
+            _referenceEmbeddings.length,
+            'unknown',
+          );
         }
 
         if (_referenceEmbeddings.isNotEmpty) {
@@ -149,8 +150,8 @@ class FaceAuthEngine {
 
     final String? bestLabel =
         (bestIdx >= 0 && bestIdx < _referenceLabels.length)
-            ? _referenceLabels[bestIdx]
-            : null;
+        ? _referenceLabels[bestIdx]
+        : null;
 
     print(
       '[AuthDBG] minDist=$minDist bestLabel=$bestLabel '
@@ -174,8 +175,9 @@ class FaceAuthEngine {
 
       // If already authenticated, allow 10 frames of mismatch before kicking them out
       // to prevent false alarms from head turns. For unauthenticated, kick out fast.
-      final requiredMisses =
-          state.authStatus == AuthStatus.authenticated ? 10 : 2;
+      final requiredMisses = state.authStatus == AuthStatus.authenticated
+          ? 10
+          : 2;
 
       if (_consecutiveMiss >= requiredMisses) {
         state.authStatus = AuthStatus.unauthorized;
@@ -195,17 +197,21 @@ class FaceAuthEngine {
     await _enrollFromReferencePhotos();
   }
 
+  void resetLiveAuthState() {
+    lastMatchedLabel = null;
+    _consecutiveMatch = 0;
+    _consecutiveMiss = 0;
+  }
 
-
-Future<void> clearCache() async {
-  await _storage.delete(key: _keyEmbedding);
-  isEnrolled = false;
-  _referenceEmbeddings = [];
-  _referenceLabels = [];
-  lastMatchedLabel = null;
-  _consecutiveMatch = 0;
-  _consecutiveMiss = 0;
-}
+  Future<void> clearCache() async {
+    await _storage.delete(key: _keyEmbedding);
+    isEnrolled = false;
+    _referenceEmbeddings = [];
+    _referenceLabels = [];
+    lastMatchedLabel = null;
+    _consecutiveMatch = 0;
+    _consecutiveMiss = 0;
+  }
   // ── MobileFaceNet Model Loading ────────────────────────────────────────────
 
   Future<void> _loadFaceNetModel() async {
@@ -250,23 +256,23 @@ Future<void> clearCache() async {
     // 1) First check for downloaded API photos
     final appDir = await getApplicationDocumentsDirectory();
     final downloadedDir = Directory('${appDir.path}/downloaded_faces');
-    
+
     if (await downloadedDir.exists()) {
       final files = downloadedDir.listSync().whereType<File>().toList();
       print('[Auth] Found ${files.length} downloaded photos from API.');
-      
+
       for (final file in files) {
         try {
           final imageBytes = await file.readAsBytes();
           final fileName = file.path.split(RegExp(r'[/\\]')).last;
-          
+
           final inputImage = InputImage.fromFilePath(file.path);
           final faces = await tempDetector.processImage(inputImage);
-          
+
           if (faces.isNotEmpty) {
             final face = faces.first;
             final embedding = _embedFaceFromJpeg(imageBytes, face.boundingBox);
-            
+
             if (embedding != null) {
               // Filename format: id__name__timestamp.jpg (or fallback to id_name_timestamp.jpg)
               String driverId = 'unknown';
@@ -274,7 +280,8 @@ Future<void> clearCache() async {
               if (fileName.contains('__')) {
                 final parts = fileName.split('__');
                 if (parts.isNotEmpty) driverId = parts[0];
-                if (parts.length >= 2) driverName = parts[1].replaceAll('_', ' ');
+                if (parts.length >= 2)
+                  driverName = parts[1].replaceAll('_', ' ');
               } else {
                 final parts = fileName.split('_');
                 if (parts.isNotEmpty) {
@@ -290,9 +297,9 @@ Future<void> clearCache() async {
                   .replaceAll('.jpg', '')
                   .replaceAll('.jpeg', '')
                   .replaceAll('.png', '');
-              
+
               final label = '$driverId|$driverName';
-              
+
               embeddings.add(embedding);
               labels.add(label);
               print('[Auth] Enrolled API photo: $fileName -> label: $label');
@@ -302,7 +309,8 @@ Future<void> clearCache() async {
           print('[Auth] Error enrolling API photo ${file.path}: $e');
         }
       }
-    }    await tempDetector.close();
+    }
+    await tempDetector.close();
     print('[Auth] Temp detector closed.');
 
     if (embeddings.isEmpty) {
@@ -317,10 +325,7 @@ Future<void> clearCache() async {
     try {
       await _storage.write(
         key: _keyEmbedding,
-        value: jsonEncode({
-          'embeddings': embeddings,
-          'labels': labels,
-        }),
+        value: jsonEncode({'embeddings': embeddings, 'labels': labels}),
       );
       print(
         '[Auth] ${embeddings.length} embeddings (+labels) saved to secure storage.',
@@ -336,7 +341,9 @@ Future<void> clearCache() async {
   String _labelFromDownloadedFile(String path) {
     final name = path.split('/').last.split('\\').last;
     final base = name.replaceAll(
-        RegExp(r'\.(jpg|jpeg|png)$', caseSensitive: false), '');
+      RegExp(r'\.(jpg|jpeg|png)$', caseSensitive: false),
+      '',
+    );
     final parts = base.split('__');
     if (parts.length >= 2) {
       final id = parts[0];
@@ -531,18 +538,16 @@ Future<void> clearCache() async {
           }
 
           final int yIdx = sy * yRowStride + sx;
-          final int uvIdx =
-              (sy >> 1) * uvRowStride + (sx >> 1) * uvPixelStride;
+          final int uvIdx = (sy >> 1) * uvRowStride + (sx >> 1) * uvPixelStride;
 
           final int yVal = yIdx < yBytes.length ? yBytes[yIdx] : 0;
           final int uVal = uvIdx < uBytes.length ? uBytes[uvIdx] - 128 : 0;
           final int vVal = uvIdx < vBytes.length ? vBytes[uvIdx] - 128 : 0;
 
           final int r = (yVal + (1.402 * vVal)).round().clamp(0, 255);
-          final int g =
-              (yVal - (0.344136 * uVal) - (0.714136 * vVal))
-                  .round()
-                  .clamp(0, 255);
+          final int g = (yVal - (0.344136 * uVal) - (0.714136 * vVal))
+              .round()
+              .clamp(0, 255);
           final int b = (yVal + (1.772 * uVal)).round().clamp(0, 255);
 
           croppedImg.setPixelRgb(tx, ty, r, g, b);
@@ -577,8 +582,7 @@ Future<void> clearCache() async {
     if (!_modelLoaded || _faceNetInterpreter == null) return null;
 
     try {
-      _faceNetInterpreter!.getInputTensor(0).data =
-          pixels.buffer.asUint8List();
+      _faceNetInterpreter!.getInputTensor(0).data = pixels.buffer.asUint8List();
 
       _faceNetInterpreter!.invoke();
 
@@ -587,8 +591,9 @@ Future<void> clearCache() async {
       );
 
       // Output is [1, 192] — take first 192 values and L2 normalize
-      final rawEmbedding =
-          outputData.sublist(0, min(192, outputData.length)).toList();
+      final rawEmbedding = outputData
+          .sublist(0, min(192, outputData.length))
+          .toList();
 
       return _l2Normalize(rawEmbedding);
     } catch (e) {
