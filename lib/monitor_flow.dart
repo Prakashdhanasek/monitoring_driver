@@ -18,7 +18,9 @@ import 'services/settings_service.dart';
 import 'services/drivers_service.dart';
 import 'services/incidents_service.dart';
 import 'services/telemetry_service.dart';
-import 'services/dashcam_recording_service.dart';
+import 'services/esp32_wifi_service.dart';
+import 'services/ffmpeg_recorder_service.dart';
+import 'services/sftp_upload_service.dart';
 
 import 'package:geolocator/geolocator.dart';
 
@@ -50,12 +52,22 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   final DriversService _driversService = DriversService();
   final IncidentsService _incidentsService = IncidentsService();
   final TelemetryService _telemetryService = TelemetryService();
-  final DashcamRecordingService _dashcamRecordingService = DashcamRecordingService();
+  final Esp32WifiService _espWifiService = Esp32WifiService();
+  final FFmpegVideoRecorderService _ffmpegRecorderService = FFmpegVideoRecorderService();
+  final SftpUploadService _sftpUploadService = SftpUploadService(
+    host: 'sftp.example.com',
+    port: 22,
+    username: 'upload_user',
+    password: 'secret_password',
+  );
 
   // ── Connectivity tracking ──
   bool _isOnline = true;
   Timer? _connectivityTimer;
   Timer? _telemetryTimer;
+
+  bool _isConnectingToEsp32 = false;
+  bool _isConnectedToEsp32 = false;
 
   // Flow
   Phase _phase = Phase.verifying;
@@ -135,6 +147,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
         // Auto-sync immediately when we come back online
         if (_isOnline) {
           _syncIncidentsTask();
+          _triggerSftpUpload();
         }
       }
     } catch (_) {
@@ -154,12 +167,13 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     _connectivityTimer?.cancel();
     _telemetryTimer?.cancel();
     _countdownTimer?.cancel();
-    _dashcamRecordingService.stopRecording();
     WidgetsBinding.instance.removeObserver(this);
     _camera?.dispose();
     _detector?.close();
     _objectDetector.dispose();
     _player.dispose();
+    _ffmpegRecorderService.stopRecording();
+    _espWifiService.disconnectFromEsp32();
     super.dispose();
   }
 
@@ -229,6 +243,9 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     if (mounted) {
       setState(() => _initializing = false);
     }
+
+    // Connect to ESP32 WiFi and start background stream recording
+    _connectAndStartEsp32Recording();
   }
 
   Future<void> _requestLocationPermission() async {
@@ -374,7 +391,6 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
                     _kTripEndSeconds) {
               _tripCompleted = true;
               _reportIncident('TripStop', 'Low', 1.0);
-              _dashcamRecordingService.stopRecording();
             }
           }
           break;
@@ -415,7 +431,6 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     }
 
     _reportIncident('TripStart', 'Low', 1.0);
-    _dashcamRecordingService.startRecording('$_tripNumber');
 
     _phase = Phase.details;
     _countdown = 3;
@@ -503,6 +518,53 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       longitude: _state.gpsLng,
       speed: _state.vehicleSpeed,
     );
+  }
+
+  Future<void> _connectAndStartEsp32Recording() async {
+    if (_isConnectingToEsp32) return;
+    setState(() {
+      _isConnectingToEsp32 = true;
+    });
+
+    const String targetSsid = 'ESP32-CAM-Access-Point';
+    const String streamUrl = 'rtsp://frontcam.local:8554/mjpeg/1';
+    
+    // Check if device is connected to ANY Wi-Fi network (since camera is on the same local network)
+    final currentSsid = await _espWifiService.getCurrentSsid();
+    bool success = false;
+    
+    debugPrint('==================================================');
+    debugPrint('[ESP32 STREAM STATUS CHECK]');
+    debugPrint('Current SSID in use: $currentSsid');
+    
+    if (currentSsid != null && currentSsid.isNotEmpty && currentSsid != '<unknown ssid>') {
+      debugPrint('[Esp32Wifi] ✓ Connected to Wi-Fi: $currentSsid. Camera is reachable.');
+      debugPrint('==================================================');
+      success = true;
+    } else {
+      debugPrint('[Esp32Wifi] ✗ Device not on Wi-Fi. Attempting fallback softAP connection to: $targetSsid');
+      debugPrint('==================================================');
+      success = await _espWifiService.connectToEsp32(targetSsid);
+    }
+    
+    if (mounted) {
+      setState(() {
+        _isConnectingToEsp32 = false;
+        _isConnectedToEsp32 = success;
+      });
+    }
+
+    if (success) {
+      await _ffmpegRecorderService.startRecording(streamUrl);
+      if (mounted) setState(() {});
+    }
+  }
+
+  Future<void> _triggerSftpUpload() async {
+    debugPrint('[Flow] Online connection detected. Starting SFTP background upload...');
+    
+    // Perform SFTP upload of completed video segments directly (since phone has internet on the same router network)
+    await _sftpUploadService.uploadPendingFiles('/var/www/uploads/videos');
   }
 
   // ─────────────────────────────────────────────────────────
@@ -1069,10 +1131,69 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
         children: [
           _topStatusBar(),
           _connectivityBanner(),
+          _esp32StatusBanner(),
           if (_noFaceSince != null && !_tripCompleted) _noDriverCountdown(),
           const Spacer(),
           _bottomBanners(),
         ],
+      ),
+    );
+  }
+
+  Widget _esp32StatusBanner() {
+    final bool isRecording = _ffmpegRecorderService.isRecording;
+    
+    final Color bgColor;
+    final IconData icon;
+    final String text;
+    
+    if (_isConnectingToEsp32) {
+      bgColor = const Color(0xFFD97706);
+      icon = Icons.wifi_protected_setup_rounded;
+      text = 'Connecting to ESP32-CAM WiFi...';
+    } else if (_isConnectedToEsp32) {
+      if (isRecording) {
+        bgColor = const Color(0xFF16A34A);
+        icon = Icons.videocam_rounded;
+        text = 'ESP32-CAM: Connected & Recording (1-min segments)';
+      } else {
+        bgColor = const Color(0xFF2563EB);
+        icon = Icons.wifi_rounded;
+        text = 'ESP32-CAM: Connected (Idle)';
+      }
+    } else {
+      bgColor = const Color(0xFF475569);
+      icon = Icons.videocam_off_rounded;
+      text = 'ESP32-CAM: Disconnected (Tap to connect)';
+    }
+
+    return GestureDetector(
+      onTap: _connectAndStartEsp32Recording,
+      child: Container(
+        margin: const EdgeInsets.only(left: 12, right: 12, top: 8),
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+        decoration: BoxDecoration(
+          color: bgColor.withValues(alpha: 0.92),
+          borderRadius: BorderRadius.circular(10),
+        ),
+        child: Row(
+          children: [
+            Icon(icon, color: Colors.white, size: 18),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                text,
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 13,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ),
+            if (!_isConnectingToEsp32 && !_isConnectedToEsp32)
+              const Icon(Icons.refresh_rounded, color: Colors.white70, size: 16),
+          ],
+        ),
       ),
     );
   }

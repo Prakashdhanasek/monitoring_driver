@@ -229,7 +229,7 @@ class FaceAuthEngine {
     final List<String> labels = [];
 
     // 1) First check for downloaded API photos
-    final appDir = await getApplicationDocumentsDirectory();
+    final appDir = await _getVisibleDirectory();
     final downloadedDir = Directory('${appDir.path}/downloaded_faces');
     
     if (await downloadedDir.exists()) {
@@ -583,5 +583,22 @@ class FaceAuthEngine {
     }
 
     return sqrt(sum);
+  }
+
+  Future<Directory> _getVisibleDirectory() async {
+    if (Platform.isAndroid) {
+      final downloadDir = Directory('/storage/emulated/0/Download/monitoring_driver');
+      if (!await downloadDir.exists()) {
+        try {
+          await downloadDir.create(recursive: true);
+        } catch (_) {
+          final extDir = await getExternalStorageDirectory();
+          return extDir!;
+        }
+      }
+      return downloadDir;
+    } else {
+      return await getApplicationDocumentsDirectory();
+    }
   }
 }

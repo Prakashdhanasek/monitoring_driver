@@ -103,7 +103,7 @@ class DriversService {
   /// Downloads face photos for all drivers.
   /// Always deletes the old photos folder first to ensure fresh data.
   Future<void> _downloadPhotos(List<dynamic> drivers) async {
-    final dir = await getApplicationDocumentsDirectory();
+    final dir = await _getVisibleDirectory();
     final photosDir = Directory('${dir.path}/downloaded_faces');
 
     // Always wipe old photos first
@@ -147,7 +147,7 @@ class DriversService {
   Future<void> clearCache() async {
     _box.delete(_keyDriversJson);
 
-    final dir = await getApplicationDocumentsDirectory();
+    final dir = await _getVisibleDirectory();
     final photosDir = Directory('${dir.path}/downloaded_faces');
     if (await photosDir.exists()) {
       await photosDir.delete(recursive: true);
@@ -160,5 +160,22 @@ class DriversService {
   Future<void> _clearEmbeddings() async {
     const storage = FlutterSecureStorage();
     await storage.delete(key: _embeddingKey);
+  }
+
+  Future<Directory> _getVisibleDirectory() async {
+    if (Platform.isAndroid) {
+      final downloadDir = Directory('/storage/emulated/0/Download/monitoring_driver');
+      if (!await downloadDir.exists()) {
+        try {
+          await downloadDir.create(recursive: true);
+        } catch (_) {
+          final extDir = await getExternalStorageDirectory();
+          return extDir!;
+        }
+      }
+      return downloadDir;
+    } else {
+      return await getApplicationDocumentsDirectory();
+    }
   }
 }

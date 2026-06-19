@@ -47,8 +47,11 @@ dependencies:
   geolocator: ^13.0.0
   hive: ^2.2.3
   hive_flutter: ^1.1.0
-  ffmpeg_kit_flutter: ^6.0.3
-  gal: ^2.3.2
+  wifi_iot: ^0.3.19
+  ffmpeg_kit_flutter_new_min_gpl: ^2.1.1
+  dartssh2: ^2.5.0
+  connectivity_plus: ^6.0.3
+  path: ^1.9.0
 
 dev_dependencies:
   flutter_test:
