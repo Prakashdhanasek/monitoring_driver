@@ -3,6 +3,7 @@
 // Incidents are saved locally first, then uploaded to the API in batches.
 
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 import 'package:hive/hive.dart';
@@ -32,6 +33,7 @@ class IncidentsService {
     String? driverId,
     String? driverName,
     String snapshotUrl = 'string',
+    String snapshotPath = '',
     String videoClipUrl = 'string',
     bool isOnline = true,
   }) {
@@ -44,11 +46,13 @@ class IncidentsService {
       'gpsLatitude': gpsLatitude,
       'gpsLongitude': gpsLongitude,
       'snapshotUrl': snapshotUrl.isEmpty ? 'string' : snapshotUrl,
+      if (snapshotPath.isNotEmpty) 'snapshotPath': snapshotPath,
       'videoClipUrl': videoClipUrl.isEmpty ? 'string' : videoClipUrl,
       'status': 'Open',
       'occurredAt': DateTime.now().toUtc().toIso8601String(),
       if (vehicleId != null) 'vehicleId': vehicleId,
-      if (vehicleRegistrationNumber != null) 'vehicleRegistrationNumber': vehicleRegistrationNumber,
+      if (vehicleRegistrationNumber != null)
+        'vehicleRegistrationNumber': vehicleRegistrationNumber,
       if (driverId != null) 'driverId': driverId,
       if (driverName != null) 'driverName': driverName,
     };
@@ -58,9 +62,13 @@ class IncidentsService {
 
     debugPrint('==================================================');
     if (isOnline) {
-      debugPrint('[ONLINE QUEUE] Device is ONLINE. Queueing incident for immediate sync.');
+      debugPrint(
+        '[ONLINE QUEUE] Device is ONLINE. Queueing incident for immediate sync.',
+      );
     } else {
-      debugPrint('[OFFLINE QUEUE] Device is OFFLINE. Incident saved locally in Hive.');
+      debugPrint(
+        '[OFFLINE QUEUE] Device is OFFLINE. Incident saved locally in Hive.',
+      );
     }
     debugPrint('[IncidentsService] EVENT TYPE: $eventType');
     debugPrint('[IncidentsService] BODY: ${jsonEncode(body)}');
@@ -79,7 +87,9 @@ class IncidentsService {
     final keys = _box.keys.toList();
 
     debugPrint('==================================================');
-    debugPrint('[SYNC START] Moving ${keys.length} offline events to online server...');
+    debugPrint(
+      '[SYNC START] Moving ${keys.length} offline events to online server...',
+    );
     debugPrint('==================================================');
 
     // Upload in parallel batches of 10 requests to optimize throughput and response times
@@ -88,7 +98,9 @@ class IncidentsService {
 
     for (int i = 0; i < keys.length; i += batchSize) {
       if (networkFailed) {
-        debugPrint('[SYNC ABORTED] Sync aborted due to network connectivity issues.');
+        debugPrint(
+          '[SYNC ABORTED] Sync aborted due to network connectivity issues.',
+        );
         break;
       }
 
@@ -111,13 +123,36 @@ class IncidentsService {
           debugPrint('[API REQUEST] PAYLOAD: $jsonBody');
           debugPrint('--------------------------------------------------');
 
-          final response = await http
-              .post(
-                url,
-                headers: {'Content-Type': 'application/json'},
-                body: jsonBody,
-              )
-              .timeout(const Duration(seconds: 10));
+          final decoded = jsonDecode(jsonBody) as Map<String, dynamic>;
+          final String? snapshotPath = decoded['snapshotPath'] as String?;
+          final File? snapshotFile =
+              snapshotPath != null && snapshotPath.isNotEmpty
+              ? _findLatestSnapshotFile(snapshotPath)
+              : null;
+
+          late http.Response response;
+          if (snapshotFile != null && await snapshotFile.exists()) {
+            final request = http.MultipartRequest('POST', url);
+            decoded.forEach((key, value) {
+              if (key == 'snapshotPath') return;
+              request.fields[key] = value?.toString() ?? '';
+            });
+            request.files.add(
+              await http.MultipartFile.fromPath('snapshot', snapshotFile.path),
+            );
+            final streamed = await request.send().timeout(
+              const Duration(seconds: 15),
+            );
+            response = await http.Response.fromStream(streamed);
+          } else {
+            response = await http
+                .post(
+                  url,
+                  headers: {'Content-Type': 'application/json'},
+                  body: jsonBody,
+                )
+                .timeout(const Duration(seconds: 10));
+          }
 
           debugPrint('--------------------------------------------------');
           debugPrint('[API RESPONSE] Status Code: ${response.statusCode}');
@@ -125,7 +160,9 @@ class IncidentsService {
           debugPrint('--------------------------------------------------');
 
           if (response.statusCode == 200 || response.statusCode == 201) {
-            debugPrint('[EVENT SYNC SUCCESS] ✓ Successfully moved offline event to online server: $key ($eventType)');
+            debugPrint(
+              '[EVENT SYNC SUCCESS] ✓ Successfully moved offline event to online server: $key ($eventType)',
+            );
             _box.delete(key);
           } else {
             debugPrint(
@@ -133,7 +170,9 @@ class IncidentsService {
             );
           }
         } catch (e) {
-          debugPrint('[EVENT SYNC ERROR] ✗ Error moving offline event $key ($eventType) online: $e');
+          debugPrint(
+            '[EVENT SYNC ERROR] ✗ Error moving offline event $key ($eventType) online: $e',
+          );
           networkFailed = true;
         }
       });
@@ -142,7 +181,9 @@ class IncidentsService {
     }
 
     debugPrint('==================================================');
-    debugPrint('[SYNC COMPLETE] Finished moving offline events. Remaining pending: ${_box.length}');
+    debugPrint(
+      '[SYNC COMPLETE] Finished moving offline events. Remaining pending: ${_box.length}',
+    );
     debugPrint('==================================================');
   }
 
@@ -155,5 +196,38 @@ class IncidentsService {
   Future<void> clearAll() async {
     await _box.clear();
     debugPrint('[IncidentsService] All pending incidents cleared.');
+  }
+
+  /// If the snapshot path points to a folder, return the newest image file inside it.
+  File? _findLatestSnapshotFile(String snapshotPath) {
+    final file = File(snapshotPath);
+    if (file.existsSync()) {
+      return file;
+    }
+
+    final directory = Directory(snapshotPath);
+    if (!directory.existsSync()) {
+      return null;
+    }
+
+    final imageFiles = directory
+        .listSync(recursive: false)
+        .whereType<File>()
+        .where((candidate) {
+          final extension = candidate.path.split('.').last.toLowerCase();
+          return extension == 'jpg' ||
+              extension == 'jpeg' ||
+              extension == 'png';
+        })
+        .toList();
+
+    if (imageFiles.isEmpty) {
+      return null;
+    }
+
+    imageFiles.sort(
+      (a, b) => b.lastModifiedSync().compareTo(a.lastModifiedSync()),
+    );
+    return imageFiles.first;
   }
 }

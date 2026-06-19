@@ -22,11 +22,11 @@ class DeviceEnrollmentScreen extends StatefulWidget {
 class _DeviceEnrollmentScreenState extends State<DeviceEnrollmentScreen> {
   final FlutterSecureStorage _storage = const FlutterSecureStorage();
   final SettingsService _settings = SettingsService();
-  
+
   bool _isLoading = true;
   String _statusMessage = "Initializing device details...";
   String? _errorMessage;
-  
+
   @override
   void initState() {
     super.initState();
@@ -41,24 +41,12 @@ class _DeviceEnrollmentScreenState extends State<DeviceEnrollmentScreen> {
   }
 
   Future<String> _getDeviceImei() async {
-    // 1. Try to read from SettingsService (Hive)
-    if (_settings.hasValidImei()) {
-      final imei = _settings.getDeviceId()!;
-      debugPrint('[Enroll] Found existing valid 15-digit IMEI: $imei');
-      return imei;
-    }
-    
-    // 1b. Migration: Check secure storage if Hive is empty
-    final storedImei = await _storage.read(key: 'device_id');
-    if (storedImei != null && storedImei.length == 15 && RegExp(r'^\d+$').hasMatch(storedImei)) {
-      _settings.saveDeviceId(storedImei);
-      debugPrint('[Enroll] Migrated IMEI from SecureStorage: $storedImei');
-      return storedImei;
-    }
 
+     _settings.saveDeviceId(''); // Clear cached ID first to ensure fresh fetch
+  try { await _storage.delete(key: 'device_id'); } catch (_) {}
     String? hardwareImei;
 
-    // 2. Request phone permission on mobile platforms
+    // 1. AADYAM real hardware IMEI try cheyyuka (device-owner -> real IMEI).
     if (Platform.isAndroid || Platform.isIOS) {
       try {
         final status = await Permission.phone.request();
@@ -75,12 +63,31 @@ class _DeviceEnrollmentScreenState extends State<DeviceEnrollmentScreen> {
       }
     }
 
-    // Validate the retrieved hardware IMEI (must be exactly 15 digits)
-    if (hardwareImei != null && hardwareImei.length == 15 && RegExp(r'^\d+$').hasMatch(hardwareImei)) {
-      debugPrint('[Enroll] Successfully retrieved hardware IMEI: $hardwareImei');
+    // Real hardware IMEI kittiyaal athu use cheyt save cheyyuka (mock overwrite).
+    if (hardwareImei != null &&
+        hardwareImei.length == 15 &&
+        RegExp(r'^\d+$').hasMatch(hardwareImei)) {
+      debugPrint('[Enroll] Real hardware IMEI fetched: $hardwareImei');
       _settings.saveDeviceId(hardwareImei);
       await _storage.write(key: 'device_id', value: hardwareImei);
       return hardwareImei;
+    }
+
+    // 2. Hardware kittiyilla -> cached Hive id ഉണ്ടെങ്കil athu.
+    if (_settings.hasValidImei()) {
+      final imei = _settings.getDeviceId()!;
+      debugPrint('[Enroll] Using existing cached IMEI: $imei');
+      return imei;
+    }
+
+    // 2b. Migration: Check secure storage if Hive is empty
+    final storedImei = await _storage.read(key: 'device_id');
+    if (storedImei != null &&
+        storedImei.length == 15 &&
+        RegExp(r'^\d+$').hasMatch(storedImei)) {
+      _settings.saveDeviceId(storedImei);
+      debugPrint('[Enroll] Migrated IMEI from SecureStorage: $storedImei');
+      return storedImei;
     }
 
     // 3. Fallback: Generate a persistent 15-digit mock IMEI (using TAC '35' prefix)
@@ -91,7 +98,7 @@ class _DeviceEnrollmentScreenState extends State<DeviceEnrollmentScreen> {
       buffer.write(random.nextInt(10));
     }
     final mockImei = buffer.toString();
-    
+
     _settings.saveDeviceId(mockImei);
     await _storage.write(key: 'device_id', value: mockImei);
     debugPrint('[Enroll] Generated persistent mock IMEI: $mockImei');
@@ -143,7 +150,7 @@ class _DeviceEnrollmentScreenState extends State<DeviceEnrollmentScreen> {
       debugPrint('[Enroll] API REQUEST URL: $url');
       debugPrint('[Enroll] API REQUEST BODY: $body');
       debugPrint('==================================================');
-      
+
       final response = await http.post(
         url,
         headers: {"Content-Type": "application/json"},
@@ -158,7 +165,7 @@ class _DeviceEnrollmentScreenState extends State<DeviceEnrollmentScreen> {
       if (response.statusCode == 200 || response.statusCode == 201) {
         final Map<String, dynamic> resData = jsonDecode(response.body);
         final registeredId = resData['deviceId'] as String? ?? deviceId;
-        
+
         _settings.saveDeviceId(registeredId);
         _settings.saveDeviceInfo(model: deviceModel, osVersion: osVersion);
         _settings.markRegistered();

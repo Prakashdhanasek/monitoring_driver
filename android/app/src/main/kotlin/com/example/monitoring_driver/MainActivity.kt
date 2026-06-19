@@ -9,17 +9,19 @@ import android.net.NetworkRequest
 import android.net.wifi.WifiManager
 import android.net.wifi.WifiNetworkSpecifier
 import android.os.Build
+import android.telephony.TelephonyManager
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
 
 class MainActivity : FlutterActivity() {
     private val channelName = "kiosk"
+    private val deviceInfoChannel = "com.proximity.driver/device_info"
 
 
     companion object {
-        private const val WIFI_SSID = "Tommy's Phone"   // exact peru (case-sensitive)
-        private const val WIFI_PASSWORD = "********"      // $ -> \$ (Kotlin safe)
+        private const val WIFI_SSID = "Airtel_Airte_ nimi_1580"   // exact peru (case-sensitive)
+        private const val WIFI_PASSWORD = "12345678$"      // $ -> \$ (Kotlin safe)
     }
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
@@ -44,6 +46,45 @@ class MainActivity : FlutterActivity() {
                     else -> result.notImplemented()
                 }
             }
+
+        // ── Device info channel (real IMEI for device-owner apps) ──
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, deviceInfoChannel)
+            .setMethodCallHandler { call, result ->
+                when (call.method) {
+                    "getImei" -> {
+                        try {
+                            val imei = getDeviceImei()
+                            if (imei != null) {
+                                result.success(imei)
+                            } else {
+                                result.error("UNAVAILABLE", "IMEI not available", null)
+                            }
+                        } catch (e: Exception) {
+                            result.error("ERROR", e.message, null)
+                        }
+                    }
+                    else -> result.notImplemented()
+                }
+            }
+    }
+
+    @Suppress("HardwareIds")
+    private fun getDeviceImei(): String? {
+        return try {
+            val tm = getSystemService(Context.TELEPHONY_SERVICE) as TelephonyManager
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                // Device-owner apps-inu ithu anuvadikkum (Android 10+ il polum).
+                tm.imei ?: tm.deviceId
+            } else {
+                @Suppress("DEPRECATION")
+                tm.deviceId
+            }
+        } catch (e: SecurityException) {
+            // Device-owner alleങ്കil / permission illeങ്കil ithu varum.
+            null
+        } catch (e: Exception) {
+            null
+        }
     }
 
     private fun startKiosk() {
@@ -80,6 +121,11 @@ class MainActivity : FlutterActivity() {
                         dpm.setPermissionGrantState(
                             admin, packageName,
                             "android.permission.BLUETOOTH_SCAN",
+                            DevicePolicyManager.PERMISSION_GRANT_STATE_GRANTED
+                        )
+                        dpm.setPermissionGrantState(
+                            admin, packageName,
+                            "android.permission.READ_PHONE_STATE",
                             DevicePolicyManager.PERMISSION_GRANT_STATE_GRANTED
                         )
                     } catch (_: Throwable) {}
@@ -138,6 +184,6 @@ class MainActivity : FlutterActivity() {
 
     override fun onResume() {
         super.onResume()
-        startKiosk()
+       
     }
 }

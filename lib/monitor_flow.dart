@@ -8,6 +8,7 @@ import 'package:geolocator/geolocator.dart';
 import 'package:google_mlkit_face_detection/google_mlkit_face_detection.dart';
 import 'package:audioplayers/audioplayers.dart';
 import 'package:image/image.dart' as img;
+import 'package:battery_plus/battery_plus.dart';
 import 'package:monitoring_driver/kiosk.dart';
 import 'core/face_auth_engine.dart';
 import 'core/monitoring_engine.dart';
@@ -101,6 +102,16 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   DateTime? _firstExitTapAt;
   Timer? _syncTimer;
 
+  // ── Cable / charging monitor ──
+  final Battery _battery = Battery();
+  StreamSubscription<BatteryState>? _batterySub;
+  bool _cableUnplugged = false;
+  DateTime? _lastCableReportAt;
+
+  // ── Screenshot flash (alert varumbol screenshot effect) ──
+  bool _flashScreenshot = false;
+  DateTime? _lastFlashAt;
+
   @override
   void initState() {
     super.initState();
@@ -110,6 +121,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
 
     _syncTimer = Timer.periodic(const Duration(seconds: 30), (_) {
       _syncIncidentsTask();
+      _maybeReReportCable();
     });
 
     // Check connectivity every 5 seconds
@@ -122,6 +134,8 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     _telemetryTimer = Timer.periodic(const Duration(seconds: 3), (_) {
       _sendTelemetryTask();
     });
+
+    _initBatteryMonitor();
   }
 
   Future<void> _checkConnectivity() async {
@@ -154,12 +168,61 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     }
   }
 
+  // ─────────────────────────────────────────────────────────
+  // CABLE / CHARGING MONITOR
+  // ─────────────────────────────────────────────────────────
+  Future<void> _initBatteryMonitor() async {
+    try {
+      final initial = await _battery.batteryState;
+      _cableUnplugged = _isUnplugged(initial);
+      _batterySub =
+          _battery.onBatteryStateChanged.listen(_onBatteryStateChanged);
+    } catch (e) {
+      debugPrint('[Flow] battery monitor init error: $e');
+    }
+  }
+
+  bool _isUnplugged(BatteryState state) {
+    final plugged = state == BatteryState.charging ||
+        state == BatteryState.full ||
+        state == BatteryState.connectedNotCharging;
+    return !plugged && state != BatteryState.unknown;
+  }
+
+  void _onBatteryStateChanged(BatteryState state) {
+    final nowUnplugged = _isUnplugged(state);
+
+    if (nowUnplugged && !_cableUnplugged) {
+      _cableUnplugged = true;
+      debugPrint('[Flow] ⚠️ Charging cable UNPLUGGED — reporting to admin.');
+      _reportIncident('Cable Unplugged', 'High', 1.0);
+      _lastCableReportAt = DateTime.now();
+      _playAlert('audio/alert_loud.mp3');
+      if (mounted) setState(() {});
+    } else if (!nowUnplugged && _cableUnplugged) {
+      _cableUnplugged = false;
+      _lastCableReportAt = null;
+      debugPrint('[Flow] Charging cable reconnected.');
+      if (mounted) setState(() {});
+    }
+  }
+
+  void _maybeReReportCable() {
+    if (!_cableUnplugged) return;
+    final last = _lastCableReportAt;
+    if (last == null || DateTime.now().difference(last).inSeconds >= 30) {
+      _lastCableReportAt = DateTime.now();
+      _reportIncident('Cable Unplugged', 'High', 1.0);
+    }
+  }
+
   @override
   void dispose() {
     _syncTimer?.cancel();
     _connectivityTimer?.cancel();
     _telemetryTimer?.cancel();
     _countdownTimer?.cancel();
+    _batterySub?.cancel();
     WidgetsBinding.instance.removeObserver(this);
     _camera?.dispose();
     _detector?.close();
@@ -426,8 +489,6 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     );
   }
 
-  /// Live camera-ne oru circle-il kanikkum (next driver thanne kaanum -> camera
-  /// on aanu enn manassilaavum). Camera ready alleങ്കil placeholder icon.
   Widget _liveFaceCircle(double size) {
     final c = _camera;
     if (_camReady && c != null && c.value.previewSize != null) {
@@ -546,6 +607,12 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       final deviceId = _settings.getDeviceId();
       if (deviceId == null || deviceId.isEmpty) return;
 
+      // Ella alert-inum screenshot effect kaanikkuka.
+      _showScreenshotFlash();
+
+      // Disk-il already save aaya latest evidence folder edukkuka.
+      final String? snapshotPath = await _findLatestEvidenceFolder();
+
       _incidentsService.queueIncident(
         deviceTabletId: deviceId,
         eventType: eventType,
@@ -558,6 +625,8 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
         driverName: _driverName == 'Driver' ? null : _driverName,
         vehicleId: _vehicleId,
         vehicleRegistrationNumber: _vehicleRegNo,
+        snapshotUrl: '',
+        snapshotPath: snapshotPath ?? '',
         isOnline: _isOnline,
       );
 
@@ -568,6 +637,51 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     } catch (e) {
       debugPrint('[Flow] Error queueing incident: $e');
     }
+  }
+
+  /// Documents directory-il ninnu ഏറ്റവും puthiya SafeDrive_Evidence_* folder
+  /// edukkuka (ring buffer evidence system save cheytath).
+  Future<String?> _findLatestEvidenceFolder() async {
+    try {
+      final docsPath = _state.documentsDirectoryPath;
+      if (docsPath == null || docsPath.isEmpty) return null;
+      final dir = Directory(docsPath);
+      if (!dir.existsSync()) return null;
+
+      final folders = dir
+          .listSync()
+          .whereType<Directory>()
+          .where((d) => d.path.contains('SafeDrive_Evidence_'))
+          .toList();
+      if (folders.isEmpty) return null;
+
+      folders.sort(
+        (a, b) => b.statSync().modified.compareTo(a.statSync().modified),
+      );
+      final latest = folders.first.path;
+      debugPrint('[Flow] Latest evidence folder for incident: $latest');
+      return latest;
+    } catch (e) {
+      debugPrint('[Flow] find evidence folder error: $e');
+      return null;
+    }
+  }
+
+  /// Alert varumbol normal screenshot effect (quick shrink + border + dim).
+  void _showScreenshotFlash() {
+    if (!mounted) return;
+    // 2 second cooldown — alerts vegathil varumbol flash spam ozhivakkan.
+    final now = DateTime.now();
+    if (_lastFlashAt != null &&
+        now.difference(_lastFlashAt!).inMilliseconds < 2000) {
+      return;
+    }
+    _lastFlashAt = now;
+
+    setState(() => _flashScreenshot = true);
+    Future.delayed(const Duration(milliseconds: 220), () {
+      if (mounted) setState(() => _flashScreenshot = false);
+    });
   }
 
   Future<void> _syncIncidentsTask() async {
@@ -957,7 +1071,6 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
         fit: StackFit.expand,
         children: [
           _cameraLayer(),
-          //  if (_phase == Phase.verifying) _verifyingOverlay(),
           if (_phase == Phase.details) _detailsOverlay(),
           if (_phase == Phase.verifying) _verifyingOverlay(),
           if (_phase == Phase.monitoring)
@@ -973,6 +1086,35 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
               child: const SizedBox(width: 72, height: 72),
             ),
           ),
+
+          // Screenshot effect — alert varumbol screen quick shrink + border + dim
+          // (phone-il screenshot edukkumbol pole).
+          if (_flashScreenshot)
+            Positioned.fill(
+              child: IgnorePointer(
+                child: TweenAnimationBuilder<double>(
+                  tween: Tween(begin: 1.0, end: 0.92),
+                  duration: const Duration(milliseconds: 110),
+                  curve: Curves.easeOut,
+                  builder: (context, scale, child) {
+                    return Container(
+                      color: Colors.black.withValues(alpha: 0.45),
+                      alignment: Alignment.center,
+                      child: Transform.scale(
+                        scale: scale,
+                        child: Container(
+                          decoration: BoxDecoration(
+                            border: Border.all(color: Colors.white, width: 3),
+                            borderRadius: BorderRadius.circular(8),
+                          ),
+                          child: const SizedBox.expand(),
+                        ),
+                      ),
+                    );
+                  },
+                ),
+              ),
+            ),
         ],
       ),
     );
@@ -1275,7 +1417,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          // _monitorBanner(),
+          _cableUnpluggedBanner(),
           _connectivityBanner(),
           _monitorStatusBar(),
           if (_noFaceSince != null && !_tripCompleted) _noDriverCountdown(),
@@ -1283,6 +1425,35 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
           _seatbeltIndicator(),
           _monitorBanner(),
           _monitorDiag(),
+        ],
+      ),
+    );
+  }
+
+  /// Charging cable ഊരിയാല് kaanikkunna persistent alert banner.
+  Widget _cableUnpluggedBanner() {
+    if (!_cableUnplugged) return const SizedBox.shrink();
+    return Container(
+      margin: const EdgeInsets.fromLTRB(12, 0, 12, 8),
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+      decoration: BoxDecoration(
+        color: const Color(0xFFB91C1C).withValues(alpha: 0.95),
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Row(
+        children: const [
+          Icon(Icons.power_off_rounded, color: Colors.white, size: 20),
+          SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              '🔌 CHARGING CABLE UNPLUGGED · Reported to admin',
+              style: TextStyle(
+                color: Colors.white,
+                fontSize: 13,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+          ),
         ],
       ),
     );
@@ -1448,193 +1619,86 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     );
   }
 
-
   Widget _tripCompletedOverlay() {
-  return Container(
-    width: double.infinity,
-    height: double.infinity,
-    color: Colors.white,
-    child: SafeArea(
-      child: Center(
-        child: SingleChildScrollView(
-          padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 24),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Container(
-                width: 82,
-                height: 82,
-                decoration: const BoxDecoration(
-                  shape: BoxShape.circle,
-                  color: Color(0xFF16A34A),
-                ),
-                child: const Icon(
-                  Icons.check_rounded,
-                  color: Colors.white,
-                  size: 48,
-                ),
-              ),
-              const SizedBox(height: 22),
-              Text(
-                'Trip $_tripNumber Completed',
-                textAlign: TextAlign.center,
-                style: const TextStyle(
-                  color: Color(0xFF111827),
-                  fontSize: 24,
-                  fontWeight: FontWeight.w700,
-                ),
-              ),
-              const SizedBox(height: 10),
-              const Padding(
-                padding: EdgeInsets.symmetric(horizontal: 20),
-                child: Text(
-                  'Driver left the seat. The next driver must verify to start the next trip.',
-                  textAlign: TextAlign.center,
-                  style: TextStyle(
-                    color: Color(0xFF6B7280),
-                    fontSize: 14,
-                    height: 1.4,
+    return Container(
+      width: double.infinity,
+      height: double.infinity,
+      color: Colors.white,
+      child: SafeArea(
+        child: Center(
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 24),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Container(
+                  width: 82,
+                  height: 82,
+                  decoration: const BoxDecoration(
+                    shape: BoxShape.circle,
+                    color: Color(0xFF16A34A),
+                  ),
+                  child: const Icon(
+                    Icons.check_rounded,
+                    color: Colors.white,
+                    size: 48,
                   ),
                 ),
-              ),
-              const SizedBox(height: 34),
-
-              // Live camera + scanning pulse.
-              _ScanningPulse(child: _liveFaceCircle(150)),
-
-              const SizedBox(height: 28),
-              const Text(
-                'Look at the camera to verify',
-                textAlign: TextAlign.center,
-                style: TextStyle(
-                  color: Color(0xFF2563EB),
-                  fontSize: 17,
-                  fontWeight: FontWeight.w700,
+                const SizedBox(height: 22),
+                Text(
+                  'Trip $_tripNumber Completed',
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(
+                    color: Color(0xFF111827),
+                    fontSize: 24,
+                    fontWeight: FontWeight.w700,
+                  ),
                 ),
-              ),
-              const SizedBox(height: 12),
-              const Text(
-                'Waiting for authentication…',
-                textAlign: TextAlign.center,
-                style: TextStyle(
-                  color: Colors.blue,
-                  fontSize: 13,
-                  fontWeight: FontWeight.w600,
+                const SizedBox(height: 10),
+                const Padding(
+                  padding: EdgeInsets.symmetric(horizontal: 20),
+                  child: Text(
+                    'Driver left the seat. The next driver must verify to start the next trip.',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(
+                      color: Color(0xFF6B7280),
+                      fontSize: 14,
+                      height: 1.4,
+                    ),
+                  ),
                 ),
-              ),
-            ],
+                const SizedBox(height: 34),
+
+                // Live camera + scanning pulse.
+                _ScanningPulse(child: _liveFaceCircle(150)),
+
+                const SizedBox(height: 28),
+                const Text(
+                  'Look at the camera to verify',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    color: Color(0xFF2563EB),
+                    fontSize: 17,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+                const SizedBox(height: 12),
+                const Text(
+                  'Waiting for authentication…',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    color: Colors.blue,
+                    fontSize: 14,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ],
+            ),
           ),
         ),
       ),
-    ),
-  );
-}
-
-  // Widget _tripCompletedOverlay() {
-  //   return Container(
-  //     width: double.infinity,
-  //     height: double.infinity,
-  //     color: Colors.white,
-  //     child: SafeArea(
-  //       child: Center(
-  //         child: SingleChildScrollView(
-  //           padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 24),
-  //           child: Column(
-  //             mainAxisSize: MainAxisSize.min,
-  //             children: [
-  //               // Normal tick icon - no animation
-  //               Container(
-  //                 width: 82,
-  //                 height: 82,
-  //                 decoration: const BoxDecoration(
-  //                   shape: BoxShape.circle,
-  //                   color: Color(0xFF16A34A),
-  //                 ),
-  //                 child: const Icon(
-  //                   Icons.check_rounded,
-  //                   color: Colors.white,
-  //                   size: 48,
-  //                 ),
-  //               ),
-
-  //               const SizedBox(height: 22),
-
-  //               // Normal Trip Completed text - no animation
-  //               Text(
-  //                 'Trip $_tripNumber Completed',
-  //                 textAlign: TextAlign.center,
-  //                 style: const TextStyle(
-  //                   color: Color(0xFF111827),
-  //                   fontSize: 24,
-  //                   fontWeight: FontWeight.w700,
-  //                 ),
-  //               ),
-
-  //               const SizedBox(height: 10),
-
-  //               const Padding(
-  //                 padding: EdgeInsets.symmetric(horizontal: 20),
-  //                 child: Text(
-  //                   'Driver left the seat. The next driver must verify to start the next trip.',
-  //                   textAlign: TextAlign.center,
-  //                   style: TextStyle(
-  //                     color: Color(0xFF6B7280),
-  //                     fontSize: 14,
-  //                     height: 1.4,
-  //                   ),
-  //                 ),
-  //               ),
-
-  //               const SizedBox(height: 34),
-
-  //               // Only camera circle animation
-  //               _ScanningPulse(child: _liveFaceCircle(150)),
-
-  //               const SizedBox(height: 28),
-
-  //               // Normal look-at-camera text - no animation
-  //               const Text(
-  //                 'Look at the camera to verify',
-  //                 textAlign: TextAlign.center,
-  //                 style: TextStyle(
-  //                   color: Color(0xFF2563EB),
-  //                   fontSize: 17,
-  //                   fontWeight: FontWeight.w700,
-  //                 ),
-  //               ),
-
-  //               const SizedBox(height: 12),
-
-  //               // Waiting text + spinner only
-  //               // Row(
-  //               //   mainAxisAlignment: MainAxisAlignment.center,
-  //               //   children: const [
-  //               //     SizedBox(
-  //               //       width: 16,
-  //               //       height: 16,
-  //               //       child: CircularProgressIndicator(
-  //               //         strokeWidth: 2,
-  //               //         color: Color(0xFF3B82F6),
-  //               //       ),
-  //               //     ),
-  //               //     SizedBox(width: 10),
-  //                   Text(
-  //                     'Waiting for authentication…',
-  //                     style: TextStyle(
-  //                       color: Colors.blue,
-  //                       fontSize: 13,
-  //                       fontWeight: FontWeight.w600,
-  //                     ),
-  //                   ),
-  //                 ],
-  //               ),
-              
-  //           ),
-  //         ),
-  //       ),
-      
-  //   );
-  // }
+    );
+  }
 
   // Big full-width detection banner (driving_hud_view style). Shows the most
   // important active state: unauthorized / multiple / asleep / phone /
@@ -1731,9 +1795,10 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     return null;
   }
 
-  // Always-visible seatbelt status: red ✗ when off, green ✓ when on.
+  // Seatbelt status: red alert kaanikkum (off aanenkil). Buckled aanenkil hide.
   Widget _seatbeltIndicator() {
     final on = _state.seatbeltBuckled;
+    if (on) return const SizedBox.shrink();
     final bg = on ? const Color(0xFF16A34A) : const Color(0xFFDC2626);
     final icon = on ? Icons.check_circle_rounded : Icons.cancel_rounded;
     final text = on ? '🔒  SEATBELT ON' : '⚠️  FASTEN SEATBELT';
@@ -1765,7 +1830,6 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   }
 
   // Small live diagnostics strip (EAR / HEAD / STATUS) like driving_hud_view.
-  // Remove this from the monitoring column if you want a cleaner screen.
   Widget _monitorDiag() {
     return Container(
       margin: const EdgeInsets.all(12),
@@ -1831,54 +1895,6 @@ class _ScanningPulse extends StatefulWidget {
   State<_ScanningPulse> createState() => _ScanningPulseState();
 }
 
-// class _ScanningPulseState extends State<_ScanningPulse>
-//     with SingleTickerProviderStateMixin {
-//   late final AnimationController _c = AnimationController(
-//     vsync: this,
-//     duration: const Duration(milliseconds: 1800),
-//   )..repeat();
-
-//   @override
-//   void dispose() {
-//     _c.dispose();
-//     super.dispose();
-//   }
-
-//   Widget _ring(double t) {
-//     const base = 150.0; // _liveFaceCircle size-inu match cheyyunnu
-//     final size = base + t * 90;
-//     final opacity = (1.0 - t).clamp(0.0, 1.0) * 0.55;
-//     return Container(
-//       width: size,
-//       height: size,
-//       decoration: BoxDecoration(
-//         shape: BoxShape.circle,
-//         border: Border.all(
-//           color: const Color(0xFF3B82F6).withValues(alpha: opacity),
-//           width: 3,
-//         ),
-//       ),
-//     );
-//   }
-
-//   @override
-//   Widget build(BuildContext context) {
-//     return AnimatedBuilder(
-//       animation: _c,
-//       builder: (_, child) {
-//         final t = _c.value;
-//         return Stack(
-//           alignment: Alignment.center,
-//           children: [_ring(t), _ring((t + 0.5) % 1.0), child!],
-//         );
-//       },
-//       child: widget.child,
-//     );
-//   }
-// }
-
-
-
 class _ScanningPulseState extends State<_ScanningPulse>
     with SingleTickerProviderStateMixin {
   late final AnimationController _c = AnimationController(
@@ -1921,7 +1937,6 @@ class _ScanningPulseState extends State<_ScanningPulse>
         child: Stack(
           alignment: Alignment.center,
           children: [
-            // Rings maathram ee AnimatedBuilder-il -> camera repaint cheyyilla.
             AnimatedBuilder(
               animation: _c,
               builder: (_, __) {
@@ -1932,46 +1947,10 @@ class _ScanningPulseState extends State<_ScanningPulse>
                 );
               },
             ),
-            // Camera vere RepaintBoundary-il -> rings animate cheytaalum
-            // camera texture repaint/flicker varilla.
             RepaintBoundary(child: widget.child),
           ],
         ),
       ),
-    );
-  }
-}
-
-/// Child-ne softly fade in/out cheyyum ("waiting / live" feel).
-class _Breathing extends StatefulWidget {
-  const _Breathing({required this.child});
-  final Widget child;
-
-  @override
-  State<_Breathing> createState() => _BreathingState();
-}
-
-class _BreathingState extends State<_Breathing>
-    with SingleTickerProviderStateMixin {
-  late final AnimationController _c = AnimationController(
-    vsync: this,
-    duration: const Duration(milliseconds: 1100),
-  )..repeat(reverse: true);
-
-  @override
-  void dispose() {
-    _c.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return FadeTransition(
-      opacity: Tween(
-        begin: 0.4,
-        end: 1.0,
-      ).animate(CurvedAnimation(parent: _c, curve: Curves.easeInOut)),
-      child: widget.child,
     );
   }
 }
