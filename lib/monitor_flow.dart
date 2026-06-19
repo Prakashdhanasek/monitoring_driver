@@ -3,11 +3,14 @@ import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:camera/camera.dart';
+import 'package:device_info_plus/device_info_plus.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:google_mlkit_face_detection/google_mlkit_face_detection.dart';
 import 'package:audioplayers/audioplayers.dart';
 import 'package:image/image.dart' as img;
+import 'package:permission_handler/permission_handler.dart';
+import 'package:multicast_dns/multicast_dns.dart';
 
 import 'core/face_auth_engine.dart';
 import 'core/monitoring_engine.dart';
@@ -186,6 +189,110 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     await _driversService.fetchAndCacheDrivers(deviceId);
   }
 
+  Future<void> _connectAndStartEsp32Recording() async {
+    if (_isConnectingToEsp32) return;
+    setState(() {
+      _isConnectingToEsp32 = true;
+    });
+
+    const String targetSsid = 'ESP32-CAM-Access-Point';
+    String streamUrl = 'rtsp://frontcam.local:8554/mjpeg/1';
+    String esp32Host = 'frontcam.local';
+    const int esp32Port = 8554;
+
+    debugPrint('==================================================');
+    debugPrint('[ESP32 STREAM STATUS CHECK]');
+    debugPrint('[ESP32] Checking current Wi-Fi SSID...');
+
+    // Step 1: Get current SSID
+    String? currentSsid;
+    try {
+      currentSsid = await _espWifiService.getCurrentSsid()
+          .timeout(const Duration(seconds: 5));
+    } catch (e) {
+      debugPrint('[ESP32] Timeout/error getting SSID: $e');
+      currentSsid = null;
+    }
+
+    debugPrint('[ESP32] Current SSID: $currentSsid');
+
+    // Step 2: If not on any WiFi, try to connect to ESP32 AP
+    if (currentSsid == null || currentSsid.isEmpty || currentSsid == '<unknown ssid>') {
+      debugPrint('[Esp32Wifi] ✗ Not on any Wi-Fi. Trying to connect to: $targetSsid');
+      debugPrint('==================================================');
+      final apConnected = await _espWifiService.connectToEsp32(targetSsid);
+      if (!apConnected) {
+        debugPrint('[ESP32] ✗ Could not connect to ESP32 Access Point.');
+        if (mounted) {
+          setState(() {
+            _isConnectingToEsp32 = false;
+            _isConnectedToEsp32 = false;
+          });
+        }
+        return;
+      }
+      currentSsid = await _espWifiService.getCurrentSsid()
+          .timeout(const Duration(seconds: 5));
+    }
+
+    debugPrint('[Esp32Wifi] ✓ On Wi-Fi: $currentSsid. Testing ESP32 camera reachability...');
+
+    // Step 3: Resolve mDNS (.local) natively since Android doesn't support it
+    if (Platform.isAndroid && esp32Host.endsWith('.local')) {
+      debugPrint('[ESP32] Resolving mDNS for $esp32Host...');
+      try {
+        final MDnsClient client = MDnsClient();
+        await client.start();
+        await for (final IPAddressResourceRecord record in client
+            .lookup<IPAddressResourceRecord>(ResourceRecordQuery.addressIPv4(esp32Host))
+            .timeout(const Duration(seconds: 4))) {
+          esp32Host = record.address.address;
+          streamUrl = 'rtsp://$esp32Host:8554/mjpeg/1';
+          debugPrint('[ESP32] ✓ Resolved mDNS to IP: $esp32Host');
+          break;
+        }
+        client.stop();
+      } catch (e) {
+        debugPrint('[ESP32] ✗ mDNS resolution failed or timed out: $e');
+      }
+    }
+
+    // Step 4: TCP test — verify ESP32-CAM host is reachable on port 8554
+    bool cameraReachable = false;
+    try {
+      final socket = await Socket.connect(
+        esp32Host,
+        esp32Port,
+      ).timeout(const Duration(seconds: 3));
+      await socket.close();
+      cameraReachable = true;
+      debugPrint('[ESP32] ✓ Camera reachable at $esp32Host:$esp32Port — starting recording');
+      debugPrint('==================================================');
+    } catch (e) {
+      cameraReachable = false;
+      debugPrint('==================================================');
+      debugPrint('[ESP32] ✗ Camera check failed/timeout at $esp32Host:$esp32Port: $e');
+      debugPrint('[ESP32]   → Attempting FFmpeg recording anyway as fallback...');
+      debugPrint('==================================================');
+    }
+
+    if (mounted) {
+      setState(() {
+        _isConnectingToEsp32 = false;
+        // Mark as connected/attempting so UI reflects status
+        _isConnectedToEsp32 = true;
+      });
+    }
+
+    // Always attempt to start recording, letting FFmpeg handle connection retries/logging
+    await _ffmpegRecorderService.startRecording(streamUrl);
+    if (mounted) setState(() {});
+  }
+
+  Future<void> _triggerSftpUpload() async {
+    debugPrint('[Flow] Online. Starting SFTP background upload...');
+    await _sftpUploadService.uploadPendingFiles('/var/www/uploads/videos');
+  }
 
   Future<void> _init() async {
     // Clear old queued incidents to start fresh with new schema/details
@@ -196,11 +303,11 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       debugPrint('[Flow] Error clearing incidents queue: $e');
     }
 
-    // 0) Request location permissions upfront so GPS passes correctly.
+    // 0) Request location and storage permissions upfront.
     try {
-      await _requestLocationPermission();
+      await _requestPermissions();
     } catch (e) {
-      debugPrint('[Flow] Location permission error: $e');
+      debugPrint('[Flow] Permission error: $e');
     }
 
     // 1) Fetch and download driver list and photos for this device.
@@ -248,7 +355,30 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     _connectAndStartEsp32Recording();
   }
 
-  Future<void> _requestLocationPermission() async {
+  Future<void> _requestPermissions() async {
+    // 1. Storage Permissions (required to save video to public Downloads folder)
+    try {
+      if (Platform.isAndroid) {
+        final info = await DeviceInfoPlugin().androidInfo;
+        if (info.version.sdkInt >= 30) {
+          // Android 11+
+          var manageStatus = await Permission.manageExternalStorage.status;
+          if (!manageStatus.isGranted) {
+            await Permission.manageExternalStorage.request();
+          }
+        } else {
+          // Android 10 and below
+          var storageStatus = await Permission.storage.status;
+          if (!storageStatus.isGranted) {
+            await Permission.storage.request();
+          }
+        }
+      }
+    } catch (e) {
+      debugPrint('[Flow] Error requesting storage permission: $e');
+    }
+
+    // 2. Location Permissions (for GPS telemetry)
     bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
     if (!serviceEnabled) {
       debugPrint('[Flow] Location services are disabled.');
@@ -520,53 +650,53 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     );
   }
 
-  Future<void> _connectAndStartEsp32Recording() async {
-    if (_isConnectingToEsp32) return;
-    setState(() {
-      _isConnectingToEsp32 = true;
-    });
-
-    const String targetSsid = 'ESP32-CAM-Access-Point';
-    const String streamUrl = 'rtsp://frontcam.local:8554/mjpeg/1';
-    
-    // Check if device is connected to ANY Wi-Fi network (since camera is on the same local network)
-    final currentSsid = await _espWifiService.getCurrentSsid();
-    bool success = false;
-    
-    debugPrint('==================================================');
-    debugPrint('[ESP32 STREAM STATUS CHECK]');
-    debugPrint('Current SSID in use: $currentSsid');
-    
-    if (currentSsid != null && currentSsid.isNotEmpty && currentSsid != '<unknown ssid>') {
-      debugPrint('[Esp32Wifi] ✓ Connected to Wi-Fi: $currentSsid. Camera is reachable.');
-      debugPrint('==================================================');
-      success = true;
-    } else {
-      debugPrint('[Esp32Wifi] ✗ Device not on Wi-Fi. Attempting fallback softAP connection to: $targetSsid');
-      debugPrint('==================================================');
-      success = await _espWifiService.connectToEsp32(targetSsid);
-    }
-    
-    if (mounted) {
-      setState(() {
-        _isConnectingToEsp32 = false;
-        _isConnectedToEsp32 = success;
-      });
-    }
-
-    if (success) {
-      await _ffmpegRecorderService.startRecording(streamUrl);
-      if (mounted) setState(() {});
-    }
-  }
-
-  Future<void> _triggerSftpUpload() async {
-    debugPrint('[Flow] Online connection detected. Starting SFTP background upload...');
-    
-    // Perform SFTP upload of completed video segments directly (since phone has internet on the same router network)
-    await _sftpUploadService.uploadPendingFiles('/var/www/uploads/videos');
-  }
-
+  // Future<void> _connectAndStartEsp32Recording() async {
+  //   if (_isConnectingToEsp32) return;
+  //   setState(() {
+  //     _isConnectingToEsp32 = true;
+  //   });
+  //
+  //   const String targetSsid = 'ESP32-CAM-Access-Point';
+  //   const String streamUrl = 'rtsp://frontcam.local:8554/mjpeg/1';
+  //
+  //   // Check if device is connected to ANY Wi-Fi network (since camera is on the same local network)
+  //   final currentSsid = await _espWifiService.getCurrentSsid();
+  //   bool success = false;
+  //
+  //   debugPrint('==================================================');
+  //     debugPrint('[ESP32 STREAM STATUS CHECK]');
+  //   debugPrint('Current SSID in use: $currentSsid');
+  //
+  //   if (currentSsid != null && currentSsid.isNotEmpty && currentSsid != '<unknown ssid>') {
+  //     debugPrint('[Esp32Wifi] ✓ Connected to Wi-Fi: $currentSsid. Camera is reachable.');
+  //     debugPrint('==================================================');
+  //     success = true;
+  //   } else {
+  //     debugPrint('[Esp32Wifi] ✗ Device not on Wi-Fi. Attempting fallback softAP connection to: $targetSsid');
+  //     debugPrint('==================================================');
+  //     success = await _espWifiService.connectToEsp32(targetSsid);
+  //   }
+  //
+  //   if (mounted) {
+  //     setState(() {
+  //       _isConnectingToEsp32 = false;
+  //       _isConnectedToEsp32 = success;
+  //     });
+  //   }
+  //
+  //   if (success) {
+  //     await _ffmpegRecorderService.startRecording(streamUrl);
+  //     if (mounted) setState(() {});
+  //   }
+  // }
+  //
+  // Future<void> _triggerSftpUpload() async {
+  //   debugPrint('[Flow] Online connection detected. Starting SFTP background upload...');
+  //
+  //   // Perform SFTP upload of completed video segments directly (since phone has internet on the same router network)
+  //   await _sftpUploadService.uploadPendingFiles('/var/www/uploads/videos');
+  // }
+  //
   // ─────────────────────────────────────────────────────────
   // ALERT AUDIO & INCIDENTS
   // ─────────────────────────────────────────────────────────
