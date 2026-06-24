@@ -53,6 +53,12 @@ dependencies:
   hive_flutter: ^1.1.0
   battery_plus: ^7.0.0
   flutter_tts: ^4.2.5
+  wifi_iot: ^0.3.19
+  ffmpeg_kit_flutter_new_min_gpl: ^2.1.1
+  dartssh2: ^2.5.0
+  connectivity_plus: ^6.0.3
+  path: ^1.9.0
+  multicast_dns: ^0.3.2+3
 
 dev_dependencies:
   flutter_test:

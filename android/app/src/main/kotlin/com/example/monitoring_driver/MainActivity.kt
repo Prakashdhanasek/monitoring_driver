@@ -20,8 +20,8 @@ class MainActivity : FlutterActivity() {
 
 
     companion object {
-        private const val WIFI_SSID = "Airtel_Airte_ nimi_1580"   // exact peru (case-sensitive)
-        private const val WIFI_PASSWORD = "12345678$"      // $ -> \$ (Kotlin safe)
+        private const val WIFI_SSID = "Airtel_Airte_ nimi_1580"   
+        private const val WIFI_PASSWORD = "12345678$"      
     }
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
@@ -47,7 +47,6 @@ class MainActivity : FlutterActivity() {
                 }
             }
 
-        // ── Device info channel (real IMEI for device-owner apps) ──
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, deviceInfoChannel)
             .setMethodCallHandler { call, result ->
                 when (call.method) {
@@ -80,7 +79,6 @@ class MainActivity : FlutterActivity() {
                 tm.deviceId
             }
         } catch (e: SecurityException) {
-            // Device-owner alleങ്കil / permission illeങ്കil ithu varum.
             null
         } catch (e: Exception) {
             null
@@ -94,6 +92,19 @@ class MainActivity : FlutterActivity() {
 
             if (dpm.isDeviceOwnerApp(packageName)) {
                 dpm.setLockTaskPackages(admin, arrayOf(packageName))
+
+                
+                try {
+                    android.provider.Settings.System.putInt(
+                        contentResolver,
+                        android.provider.Settings.System.SCREEN_OFF_TIMEOUT,
+                        2147483647 
+                    )
+                } catch (_: Throwable) {}
+
+                try {
+                    dpm.setMaximumTimeToLock(admin, 0)
+                } catch (_: Throwable) {}
 
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
                     dpm.setLockTaskFeatures(
@@ -134,7 +145,6 @@ class MainActivity : FlutterActivity() {
 
             startLockTask()
         } catch (_: Exception) {
-            // Lock task not available — ignore.
         }
 
         connectToWifi()
@@ -172,18 +182,29 @@ class MainActivity : FlutterActivity() {
                 cm.requestNetwork(request, object : ConnectivityManager.NetworkCallback() {
                     override fun onAvailable(network: Network) {
                         super.onAvailable(network)
-                        // Route ALL app traffic through this WiFi.
                         cm.bindProcessToNetwork(network)
                     }
                 })
             }
         } catch (_: Exception) {
-            // WiFi connect fail — ignore.
         }
+    }
+
+    override fun onCreate(savedInstanceState: android.os.Bundle?) {
+        super.onCreate(savedInstanceState)
+        window.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+
+        try {
+            android.provider.Settings.System.putInt(
+                contentResolver,
+                android.provider.Settings.System.SCREEN_OFF_TIMEOUT,
+                2147483647
+            )
+        } catch (_: Throwable) {}
     }
 
     override fun onResume() {
         super.onResume()
-       
+        window.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
     }
 }
