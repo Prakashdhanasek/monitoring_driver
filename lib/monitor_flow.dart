@@ -1,6 +1,5 @@
 import 'dart:async';
 import 'dart:io';
-import 'dart:typed_data';
 
 import 'package:camera/camera.dart';
 import 'package:device_info_plus/device_info_plus.dart';
@@ -26,6 +25,9 @@ import 'services/ffmpeg_recorder_service.dart';
 import 'services/sftp_upload_service.dart';
 
 import 'package:geolocator/geolocator.dart';
+import 'services/reversing_detector_service.dart';
+import 'views/reversing_camera_overlay.dart';
+
 
 /// The 3 phases of the driver-facing flow.
 enum Phase { verifying, details, monitoring }
@@ -68,9 +70,16 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   bool _isOnline = true;
   Timer? _connectivityTimer;
   Timer? _telemetryTimer;
+  Timer? _sensorUiTimer;
 
   bool _isConnectingToEsp32 = false;
   bool _isConnectedToEsp32 = false;
+  bool _forceCameraPreview = false;
+  
+  ReversingDetectorService? _reversingDetector;
+  bool _isReversing = false;
+  String _esp32StreamUrl = 'http://10.119.135.95/';
+
 
   // Flow
   Phase _phase = Phase.verifying;
@@ -78,7 +87,6 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   bool _busy = false;
   bool _streaming = false;
   int _frame = 0;
-  bool _initializing = true;
 
   // Verified driver
   String _driverName = 'Driver';
@@ -134,6 +142,13 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     _telemetryTimer = Timer.periodic(const Duration(seconds: 3), (_) {
       _sendTelemetryTask();
     });
+
+    // Refresh UI every 200 milliseconds to show real-time sensor/direction telemetry
+    _sensorUiTimer = Timer.periodic(const Duration(milliseconds: 200), (_) {
+      if (mounted && _phase == Phase.monitoring) {
+        setState(() {});
+      }
+    });
   }
 
   Future<void> _checkConnectivity() async {
@@ -169,6 +184,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     _syncTimer?.cancel();
     _connectivityTimer?.cancel();
     _telemetryTimer?.cancel();
+    _sensorUiTimer?.cancel();
     _countdownTimer?.cancel();
     WidgetsBinding.instance.removeObserver(this);
     _camera?.dispose();
@@ -177,6 +193,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     _player.dispose();
     _ffmpegRecorderService.stopRecording();
     _espWifiService.disconnectFromEsp32();
+    _reversingDetector?.dispose();
     super.dispose();
   }
 
@@ -189,16 +206,123 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     await _driversService.fetchAndCacheDrivers(deviceId);
   }
 
-  Future<void> _connectAndStartEsp32Recording() async {
+  Future<String?> _findEsp32IpFromArpTable() async {
+    // Strategy 1: Try reading the ARP table (works on older Android versions)
+    try {
+      final file = File('/proc/net/arp');
+      if (await file.exists()) {
+        final content = await file.readAsString();
+        final lines = content.split('\n');
+        for (var line in lines) {
+          final parts = line.split(RegExp(r'\s+')).where((p) => p.isNotEmpty).toList();
+          if (parts.length >= 4 && parts[0] != 'IP') {
+            final ip = parts[0];
+            final mac = parts[3].toLowerCase();
+            if (mac != '00:00:00:00:00:00') {
+              debugPrint('[ESP32-ARP] Client in ARP: IP=$ip, MAC=$mac');
+              try {
+                final socket = await Socket.connect(ip, 80).timeout(const Duration(milliseconds: 1000));
+                await socket.close();
+                debugPrint('[ESP32-ARP] Found responsive HTTP server at $ip');
+                return ip;
+              } catch (_) {
+                // Keep looking
+              }
+            }
+          }
+        }
+      }
+    } catch (e) {
+      debugPrint('[ESP32-ARP] ARP read failed (expected on Android 10+): $e');
+    }
+
+    // Strategy 2: Subnet scan fallback (works on Android 10+)
+    try {
+      debugPrint('[SubnetScan] Starting subnet scan fallback...');
+      final interfaces = await NetworkInterface.list(
+        includeLinkLocal: false,
+        type: InternetAddressType.IPv4,
+      );
+      
+      String? localIp;
+      // Step 1: Look for interface starting with wlan, ap, softap (Wi-Fi/Hotspot)
+      for (var interface in interfaces) {
+        final name = interface.name.toLowerCase();
+        if (name.contains('wlan') || name.contains('ap') || name.contains('softap')) {
+          for (var addr in interface.addresses) {
+            if (!addr.isLoopback && (addr.address.startsWith('192.168.') || addr.address.startsWith('10.'))) {
+              localIp = addr.address;
+              break;
+            }
+          }
+        }
+        if (localIp != null) break;
+      }
+      
+      // Step 2: Fallback to any interface that has a 192.168.x.x private IP (highly likely local Wi-Fi/hotspot)
+      if (localIp == null) {
+        for (var interface in interfaces) {
+          for (var addr in interface.addresses) {
+            if (!addr.isLoopback && addr.address.startsWith('192.168.')) {
+              localIp = addr.address;
+              break;
+            }
+          }
+          if (localIp != null) break;
+        }
+      }
+      
+      if (localIp == null) {
+        debugPrint('[SubnetScan] No valid local IP found.');
+        return null;
+      }
+      
+      debugPrint('[SubnetScan] Local IP identified: $localIp');
+      final lastDot = localIp.lastIndexOf('.');
+      if (lastDot == -1) return null;
+      final prefix = localIp.substring(0, lastDot + 1); // e.g. "192.168.175."
+      
+      debugPrint('[SubnetScan] Probing subnet ${prefix}* on port 80 concurrently...');
+      
+      // Spawn concurrent probes to scan the entire subnet in parallel
+      final List<Future<String?>> probes = [];
+      for (int i = 2; i <= 254; i++) {
+        final target = '$prefix$i';
+        if (target == localIp) continue;
+        
+        probes.add(() async {
+          try {
+            final socket = await Socket.connect(target, 80).timeout(const Duration(milliseconds: 800));
+            await socket.close();
+            debugPrint('[SubnetScan] ✓ Found camera at $target');
+            return target;
+          } catch (_) {
+            return null;
+          }
+        }());
+      }
+      
+      final results = await Future.wait(probes);
+      for (var ip in results) {
+        if (ip != null) return ip;
+      }
+      debugPrint('[SubnetScan] No responsive camera found on subnet.');
+    } catch (e) {
+      debugPrint('[SubnetScan] Subnet scan failed: $e');
+    }
+    return null;
+  }
+
+  Future<void> _connectToEsp32Wifi() async {
     if (_isConnectingToEsp32) return;
     setState(() {
       _isConnectingToEsp32 = true;
     });
 
-    const String targetSsid = 'ESP32-CAM-Access-Point';
-    String streamUrl = 'rtsp://frontcam.local:8554/mjpeg/1';
-    String esp32Host = 'frontcam.local';
-    const int esp32Port = 8554;
+    const String targetSsid = 'motorola edge 50 pro';
+    String streamUrl = 'http://10.119.135.95/';
+    String esp32Host = '10.119.135.95';
+    const int esp32Port = 80;
 
     debugPrint('==================================================');
     debugPrint('[ESP32 STREAM STATUS CHECK]');
@@ -238,26 +362,38 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     debugPrint('[Esp32Wifi] ✓ On Wi-Fi: $currentSsid. Testing ESP32 camera reachability...');
 
     // Step 3: Resolve mDNS (.local) natively since Android doesn't support it
-    if (Platform.isAndroid && esp32Host.endsWith('.local')) {
-      debugPrint('[ESP32] Resolving mDNS for $esp32Host...');
-      try {
-        final MDnsClient client = MDnsClient();
-        await client.start();
-        await for (final IPAddressResourceRecord record in client
-            .lookup<IPAddressResourceRecord>(ResourceRecordQuery.addressIPv4(esp32Host))
-            .timeout(const Duration(seconds: 4))) {
-          esp32Host = record.address.address;
-          streamUrl = 'rtsp://$esp32Host:8554/mjpeg/1';
-          debugPrint('[ESP32] ✓ Resolved mDNS to IP: $esp32Host');
-          break;
+    if (esp32Host.endsWith('.local')) {
+      if (Platform.isAndroid) {
+        debugPrint('[ESP32] Platform is Android. Resolving via ARP table lookup...');
+        final arpIp = await _findEsp32IpFromArpTable();
+        if (arpIp != null) {
+          esp32Host = arpIp;
+          streamUrl = 'http://$esp32Host/';
+          debugPrint('[ESP32] ✓ Resolved via ARP table to IP: $esp32Host');
+        } else {
+          debugPrint('[ESP32] ✗ ARP table lookup did not find ESP32.');
         }
-        client.stop();
-      } catch (e) {
-        debugPrint('[ESP32] ✗ mDNS resolution failed or timed out: $e');
+      } else {
+        debugPrint('[ESP32] Resolving mDNS for $esp32Host...');
+        try {
+          final MDnsClient client = MDnsClient();
+          await client.start();
+          await for (final IPAddressResourceRecord record in client
+              .lookup<IPAddressResourceRecord>(ResourceRecordQuery.addressIPv4(esp32Host))
+              .timeout(const Duration(seconds: 4))) {
+            esp32Host = record.address.address;
+            streamUrl = 'http://$esp32Host/';
+            debugPrint('[ESP32] ✓ Resolved mDNS to IP: $esp32Host');
+            break;
+          }
+          client.stop();
+        } catch (e) {
+          debugPrint('[ESP32] ✗ mDNS resolution failed: $e');
+        }
       }
     }
 
-    // Step 4: TCP test — verify ESP32-CAM host is reachable on port 8554
+    // Step 4: TCP test — verify ESP32-CAM host is reachable on port 80
     bool cameraReachable = false;
     try {
       final socket = await Socket.connect(
@@ -266,27 +402,46 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       ).timeout(const Duration(seconds: 3));
       await socket.close();
       cameraReachable = true;
-      debugPrint('[ESP32] ✓ Camera reachable at $esp32Host:$esp32Port — starting recording');
+      debugPrint('[ESP32] ✓ Camera reachable at $esp32Host:$esp32Port');
       debugPrint('==================================================');
     } catch (e) {
-      cameraReachable = false;
-      debugPrint('==================================================');
-      debugPrint('[ESP32] ✗ Camera check failed/timeout at $esp32Host:$esp32Port: $e');
-      debugPrint('[ESP32]   → Attempting FFmpeg recording anyway as fallback...');
-      debugPrint('==================================================');
+      debugPrint('[ESP32] ✗ Initial camera check failed at $esp32Host:$esp32Port: $e');
+      if (Platform.isAndroid) {
+        debugPrint('[ESP32] Scanning ARP table as fallback to find responsive ESP32 IP...');
+        final arpIp = await _findEsp32IpFromArpTable();
+        if (arpIp != null && arpIp != esp32Host) {
+          debugPrint('[ESP32] Found potential fallback IP in ARP: $arpIp. Verifying reachability...');
+          try {
+            final socket = await Socket.connect(
+              arpIp,
+              esp32Port,
+            ).timeout(const Duration(seconds: 3));
+            await socket.close();
+            esp32Host = arpIp;
+            streamUrl = 'http://$esp32Host/';
+            cameraReachable = true;
+            debugPrint('[ESP32] ✓ Fallback camera reachable at $esp32Host:$esp32Port');
+          } catch (fallbackErr) {
+            debugPrint('[ESP32] ✗ Fallback camera check failed at $arpIp:$esp32Port: $fallbackErr');
+          }
+        }
+      }
+      if (!cameraReachable) {
+        cameraReachable = false;
+        debugPrint('==================================================');
+        debugPrint('[ESP32] ✗ Camera check failed/timeout at $esp32Host:$esp32Port: $e');
+        debugPrint('==================================================');
+      }
     }
 
     if (mounted) {
       setState(() {
         _isConnectingToEsp32 = false;
         // Mark as connected/attempting so UI reflects status
-        _isConnectedToEsp32 = true;
+        _isConnectedToEsp32 = cameraReachable;
+        _esp32StreamUrl = streamUrl;
       });
     }
-
-    // Always attempt to start recording, letting FFmpeg handle connection retries/logging
-    await _ffmpegRecorderService.startRecording(streamUrl);
-    if (mounted) setState(() {});
   }
 
   Future<void> _triggerSftpUpload() async {
@@ -323,6 +478,26 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     } catch (e) {
       debugPrint('[Flow] auth init error: $e');
     }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
     if (!mounted) return;
 
     // 2) Object detector (isolate + YOLO).
@@ -347,12 +522,27 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     // 4) Camera.
     await _initCamera();
 
-    if (mounted) {
-      setState(() => _initializing = false);
-    }
+    // Initialize reversing detector
+    _reversingDetector = ReversingDetectorService();
+    _reversingDetector!.onReversingChanged.listen((reversing) {
+      if (mounted) {
+        setState(() {
+          _isReversing = reversing;
+        });
+        // We comment out background recording during reversing because the ESP32-CAM RTSP server
+        // only supports a single client connection. Running FFmpeg in the background locks the
+        // RTSP stream and causes a black screen (connection refused/timeout) in the VLC live preview.
+        // 
+        // if (reversing) {
+        //   _ffmpegRecorderService.startRecording(_esp32StreamUrl);
+        // } else {
+        //   _ffmpegRecorderService.stopRecording();
+        // }
+      }
+    });
 
-    // Connect to ESP32 WiFi and start background stream recording
-    _connectAndStartEsp32Recording();
+    // Connect to ESP32 WiFi at startup to stay connected and minimize latency
+    _connectToEsp32Wifi();
   }
 
   Future<void> _requestPermissions() async {
@@ -402,9 +592,16 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
           distanceFilter: 10,
         ),
       ).listen((Position position) {
+        final speedKmH = position.speed > 0 ? (position.speed * 3.6) : 0.0;
         _state.gpsLat = position.latitude;
         _state.gpsLng = position.longitude;
-        _state.vehicleSpeed = position.speed > 0 ? (position.speed * 3.6) : 0.0;
+        _state.vehicleSpeed = speedKmH;
+        _reversingDetector?.updateGps(
+          position.latitude,
+          position.longitude,
+          position.speed > 0 ? position.speed : 0.0,
+          position.heading,
+        );
       });
     }
   }
@@ -446,6 +643,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   // FRAME PIPELINE
   // ─────────────────────────────────────────────────────────
   Future<void> _processImage(CameraImage image) async {
+    if (_isReversing) return;
     if (_busy || !_camReady || _detector == null) return;
     _busy = true;
     _frame++;
@@ -992,10 +1190,23 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
         fit: StackFit.expand,
         children: [
           _cameraLayer(),
-        //  if (_phase == Phase.verifying) _verifyingOverlay(),
+          if (_phase == Phase.verifying) _verifyingOverlay(),
           if (_phase == Phase.details) _detailsOverlay(),
           if (_phase == Phase.monitoring)
             (_tripCompleted ? _tripCompletedOverlay() : _monitoringOverlay()),
+          if (_phase == Phase.monitoring && !_tripCompleted && (_isReversing || _forceCameraPreview))
+            ReversingCameraOverlay(
+              streamUrl: _esp32StreamUrl,
+              speed: _state.vehicleSpeed,
+              latitude: _state.gpsLat,
+              longitude: _state.gpsLng,
+              isPreviewMode: _forceCameraPreview,
+              onClosePreview: () {
+                setState(() {
+                  _forceCameraPreview = false;
+                });
+              },
+            ),
         ],
       ),
     );
@@ -1020,75 +1231,69 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   }
 
   // ── VERIFYING ──
-  // Widget _verifyingOverlay() {
-  //   if (!_initializing && !_authEngine.isEnrolled) {
-  //     return Container(
-  //       color: Colors.black.withOpacity(0.85),
-  //       child: const Center(
-  //         child: Column(
-  //           mainAxisAlignment: MainAxisAlignment.center,
-  //           children: [
-  //             Icon(Icons.people_outlined, color: Colors.redAccent, size: 64),
-  //             const SizedBox(height: 24),
-  //             Text(
-  //               'No Drivers Assigned',
-  //               style: TextStyle(
-  //                   color: Colors.white,
-  //                   fontSize: 20,
-  //                   fontWeight: FontWeight.w600),
-  //             ),
-  //             const SizedBox(height: 8),
-  //             Text(
-  //               'No registered/authorized drivers found for this device.',
-  //               style: TextStyle(color: Colors.white70, fontSize: 14),
-  //               textAlign: TextAlign.center,
-  //             ),
-  //           ],
-  //         ),
-  //       ),
-  //     );
-  //   }
-  //
-  //   final isUnverified = _state.authStatus == AuthStatus.unauthorized && _state.faceCount > 0;
-  //
-  //   return Container(
-  //     color: Colors.black.withValues(alpha: 0.45),
-  //     child: Column(
-  //       mainAxisAlignment: MainAxisAlignment.center,
-  //       children: [
-  //         SizedBox(
-  //           width: 64,
-  //           height: 64,
-  //           child: isUnverified
-  //               ? const Icon(Icons.error_outline, color: Colors.redAccent, size: 64)
-  //               : const CircularProgressIndicator(
-  //                   strokeWidth: 3,
-  //                   color: Color(0xFF3B82F6),
-  //                 ),
-  //         ),
-  //         const SizedBox(height: 24),
-  //         Text(
-  //           _initializing
-  //               ? 'Initializing systems…'
-  //               : (isUnverified ? 'Unverified' : 'Verifying your face…'),
-  //           style: TextStyle(
-  //               color: isUnverified ? Colors.redAccent : Colors.white,
-  //               fontSize: 20,
-  //               fontWeight: FontWeight.w600),
-  //         ),
-  //         const SizedBox(height: 8),
-  //         Text(
-  //           _state.faceCount == 0
-  //               ? 'Look at the camera'
-  //               : (isUnverified
-  //                   ? 'Face not recognised — keep looking'
-  //                   : 'Hold still…'),
-  //           style: const TextStyle(color: Colors.white70, fontSize: 14),
-  //         ),
-  //       ],
-  //     ),
-  //   );
-  // }
+  Widget _verifyingOverlay() {
+    final isUnverified = _state.authStatus == AuthStatus.unauthorized && _state.faceCount > 0;
+
+    return Container(
+      color: Colors.black.withValues(alpha: 0.65),
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          SizedBox(
+            width: 64,
+            height: 64,
+            child: isUnverified
+                ? const Icon(Icons.error_outline, color: Colors.redAccent, size: 64)
+                : const CircularProgressIndicator(
+                    strokeWidth: 3,
+                    color: Color(0xFF3B82F6),
+                  ),
+          ),
+          const SizedBox(height: 24),
+          Text(
+            isUnverified ? 'Unverified' : 'Verifying your face…',
+            style: TextStyle(
+                color: isUnverified ? Colors.redAccent : Colors.white,
+                fontSize: 20,
+                fontWeight: FontWeight.w600),
+          ),
+          const SizedBox(height: 8),
+          Text(
+            _state.faceCount == 0
+                ? 'Look at the camera'
+                : (isUnverified
+                    ? 'Face not recognized — keep looking'
+                    : 'Hold still…'),
+            style: const TextStyle(color: Colors.white70, fontSize: 14),
+          ),
+          const SizedBox(height: 48),
+          ElevatedButton.icon(
+            style: ElevatedButton.styleFrom(
+              backgroundColor: const Color(0xFF2563EB),
+              foregroundColor: Colors.white,
+              padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 14),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(12),
+              ),
+              elevation: 4,
+            ),
+            icon: const Icon(Icons.play_arrow_rounded),
+            label: const Text(
+              "BYPASS VERIFICATION (DEV MODE)",
+              style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold, letterSpacing: 0.5),
+            ),
+            onPressed: () {
+              setState(() {
+                _driverName = "Testing Mode";
+                _driverId = "DEV-999";
+                _phase = Phase.monitoring;
+              });
+            },
+          ),
+        ],
+      ),
+    );
+  }
 
   // ── DETAILS — clean white "Identity Verified" card (matches design) ──
   Widget _detailsOverlay() {
@@ -1262,6 +1467,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
           _topStatusBar(),
           _connectivityBanner(),
           _esp32StatusBanner(),
+          _deviceMotionCard(),
           if (_noFaceSince != null && !_tripCompleted) _noDriverCountdown(),
           const Spacer(),
           _bottomBanners(),
@@ -1298,7 +1504,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     }
 
     return GestureDetector(
-      onTap: _connectAndStartEsp32Recording,
+      onTap: _connectToEsp32Wifi,
       child: Container(
         margin: const EdgeInsets.only(left: 12, right: 12, top: 8),
         padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
@@ -1320,7 +1526,27 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
                 ),
               ),
             ),
-            if (!_isConnectingToEsp32 && !_isConnectedToEsp32)
+            if (_isConnectedToEsp32)
+              ElevatedButton(
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.white,
+                  foregroundColor: const Color(0xFF2563EB),
+                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                  minimumSize: Size.zero,
+                  tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(6)),
+                ),
+                onPressed: () {
+                  setState(() {
+                    _forceCameraPreview = true;
+                  });
+                },
+                child: const Text(
+                  "PREVIEW",
+                  style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold),
+                ),
+              )
+            else if (!_isConnectingToEsp32)
               const Icon(Icons.refresh_rounded, color: Colors.white70, size: 16),
           ],
         ),
@@ -1560,6 +1786,171 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       child: Text(text,
           style: const TextStyle(
               color: Colors.white, fontSize: 14, fontWeight: FontWeight.w700)),
+    );
+  }
+
+  Widget _deviceMotionCard() {
+    final detector = _reversingDetector;
+    if (detector == null) return const SizedBox.shrink();
+
+    // Determine state
+    final isRev = detector.isReversing;
+    final speed = detector.gpsSpeed; // m/s
+    final speedKmH = speed * 3.6;
+    final isMoving = speed > 0.3; // threshold for moving
+    
+    final Color stateColor;
+    final String stateLabel;
+    final IconData stateIcon;
+    
+    if (isRev) {
+      stateColor = Colors.redAccent;
+      stateLabel = "REVERSING";
+      stateIcon = Icons.arrow_back_rounded;
+    } else if (isMoving) {
+      stateColor = Colors.greenAccent;
+      stateLabel = "MOVING FORWARD";
+      stateIcon = Icons.arrow_forward_rounded;
+    } else {
+      stateColor = Colors.blueAccent;
+      stateLabel = "STATIONARY";
+      stateIcon = Icons.pause_rounded;
+    }
+
+    final double rawZ = detector.currentZ;
+    final double compass = detector.compassHeading;
+    final double gpsHeading = detector.gpsHeading;
+    final bool isCalib = detector.isCalibrated;
+
+    return Container(
+      margin: const EdgeInsets.only(left: 12, right: 12, top: 8),
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: Colors.black.withValues(alpha: 0.85),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: stateColor.withValues(alpha: 0.3), width: 1.5),
+        boxShadow: [
+          BoxShadow(
+            color: stateColor.withValues(alpha: 0.1),
+            blurRadius: 10,
+            spreadRadius: 1,
+          )
+        ]
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // Row 1: Header / Current State
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Row(
+                children: [
+                  Icon(stateIcon, color: stateColor, size: 20),
+                  const SizedBox(width: 8),
+                  Text(
+                    stateLabel,
+                    style: TextStyle(
+                      color: stateColor,
+                      fontSize: 14,
+                      fontWeight: FontWeight.w900,
+                      letterSpacing: 1.0,
+                    ),
+                  ),
+                ],
+              ),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                decoration: BoxDecoration(
+                  color: isCalib ? Colors.green.withValues(alpha: 0.2) : Colors.amber.withValues(alpha: 0.2),
+                  borderRadius: BorderRadius.circular(6),
+                ),
+                child: Text(
+                  isCalib ? "COMPASS CALIBRATED" : "COMPASS UNCALIBRATED",
+                  style: TextStyle(
+                    color: isCalib ? Colors.greenAccent : Colors.amberAccent,
+                    fontSize: 9,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          
+          // Row 2: Metrics Grid
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              // Z-Acceleration
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text(
+                      "IMU Z-ACCEL",
+                      style: TextStyle(color: Colors.white38, fontSize: 9, fontWeight: FontWeight.bold),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      "${rawZ.toStringAsFixed(2)} m/s²",
+                      style: TextStyle(
+                        color: rawZ.abs() > 0.4 ? Colors.amberAccent : Colors.white,
+                        fontSize: 13,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              
+              // GPS Speed
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text(
+                      "GPS SPEED",
+                      style: TextStyle(color: Colors.white38, fontSize: 9, fontWeight: FontWeight.bold),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      "${speedKmH.toStringAsFixed(1)} km/h",
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 13,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+
+              // Direction Angles
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text(
+                      "COMPASS / GPS",
+                      style: TextStyle(color: Colors.white38, fontSize: 9, fontWeight: FontWeight.bold),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      "${compass.toStringAsFixed(0)}° / ${gpsHeading.toStringAsFixed(0)}°",
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 13,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
     );
   }
 }

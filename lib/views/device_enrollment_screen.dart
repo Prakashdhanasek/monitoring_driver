@@ -25,7 +25,6 @@ class _DeviceEnrollmentScreenState extends State<DeviceEnrollmentScreen> {
   
   bool _isLoading = true;
   String _statusMessage = "Initializing device details...";
-  String? _errorMessage;
   
   @override
   void initState() {
@@ -101,7 +100,6 @@ class _DeviceEnrollmentScreenState extends State<DeviceEnrollmentScreen> {
   Future<void> _autoRegisterDevice() async {
     setState(() {
       _isLoading = true;
-      _errorMessage = null;
       _statusMessage = "Registering device...";
     });
 
