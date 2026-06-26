@@ -1,5 +1,3 @@
-// lib/core/monitor_state.dart
-// Central state model for the entire monitoring pipeline
 
 enum AuthStatus { scanning, authenticated, unauthorized, multipleFaces }
 enum DrowsinessLevel { alert, drowsy, asleep }
@@ -25,11 +23,15 @@ class AlertEvent {
 class MonitorState {
   // Auth
   AuthStatus authStatus = AuthStatus.scanning;
-  double authDistance = -1.0;  // live distance score — shown in diag for threshold tuning
-  int? authenticatedTrackingId; // Maintain auth if MLKit tracking confirms it's the same physical face
-  int faceCount = 0;           // number of faces seen in current frame
+  double authDistance = -1.0;
+  int? authenticatedTrackingId;
+  int faceCount = 0;
   bool seatbeltBuckled = false;
   DateTime? lastSeatbeltDetected;
+
+  double gpsLat = 0.0;
+double gpsLng = 0.0;
+double vehicleSpeed = 0.0;
 
   // Calibration
   bool calibrated = false;
@@ -52,11 +54,16 @@ class MonitorState {
   DateTime? perclosExceededSince;
   DateTime? yoloYawnDetectedSince;
   DateTime? sunglassesHeadDropSince;
+  
+  // Drowsiness 'Strike' System
   int drowsyAlertCount = 0;
+  DateTime? continuousDrowsySince;
+  DateTime? continuousRecoverySince;
+
   DrowsinessLevel drowsinessLevel = DrowsinessLevel.alert;
   int totalDrowsyCount = 0;
-  List<bool> eyeClosureHistory = []; // Tracks if eyes were closed per frame for PERCLOS
-  static const int perclosWindowSize = 900; // ~30 seconds at 30fps
+  List<bool> eyeClosureHistory = [];
+  static const int perclosWindowSize = 900; 
 
   // MAR (sunglasses mode)
   double mar = 0.0;
@@ -78,7 +85,7 @@ class MonitorState {
 
   // Blink tracking
   List<DateTime> blinkTimestamps = [];
-  List<double> recentEarHistory = []; // For rolling variance / sunglasses detection
+  List<double> recentEarHistory = [];
   double blinkBaseline = 0.0;
   bool blinkBaselineSet = false;
   DateTime? blinkBaselineStart;
@@ -88,7 +95,7 @@ class MonitorState {
   DateTime? impairmentSuppressedUntil;
   bool lastEyeStateOpen = true;
 
-  // Driver historical baseline (Substance Abuse Tracker)
+  // Driver historical baseline
   double headSwayBaseline = 0.0;
   List<double> headPitchHistory = [];
   List<double> headYawHistory = [];
@@ -98,6 +105,13 @@ class MonitorState {
   DateTime? lastDistractionFlagTime;
   Map<String, int> consecutiveDistractions = {};
   Map<String, DateTime> distractionCooldowns = {};
+
+  // Distraction Strike System (looking away)
+  // 1-4 strikes = audio alert, 5 strikes = major flag
+  int distractionStrikeCount = 0;
+  DateTime? continuousDistractedSince;
+  DateTime? continuousForwardSince;
+  DateTime? lastDistractionStrikeCooldown;
 
   // Object detection
   List<DetectedObject> detectedObjects = [];
@@ -111,6 +125,7 @@ class MonitorState {
   int cameraStreamWidth = 0;
   int cameraStreamHeight = 0;
   int cameraRotation = 0;
+  String? documentsDirectoryPath;
 
   // Alert log
   List<AlertEvent> recentAlerts = [];
@@ -129,7 +144,6 @@ class MonitorState {
     if (recentAlerts.length > 20) recentAlerts.removeLast();
   }
 
-  /// Reset calibration — called when driver changes or auth is revoked
   void resetCalibration() {
     calibrated = false;
     calibrationFrame = 0;
@@ -152,6 +166,8 @@ class MonitorState {
     yoloYawnDetectedSince = null;
     sunglassesHeadDropSince = null;
     drowsyAlertCount = 0;
+    continuousDrowsySince = null;
+    continuousRecoverySince = null;
     distractedSince = null;
     headDropSince = null;
     seatbeltBuckled = false;
@@ -159,6 +175,10 @@ class MonitorState {
     lastDistractionFlagTime = null;
     consecutiveDistractions.clear();
     distractionCooldowns.clear();
+    distractionStrikeCount = 0;
+    continuousDistractedSince = null;
+    continuousForwardSince = null;
+    lastDistractionStrikeCooldown = null;
     headSwayBaseline = 0.0;
     headPitchHistory.clear();
     headYawHistory.clear();
@@ -177,18 +197,31 @@ class MonitorState {
     cameraStreamWidth = 0;
     cameraStreamHeight = 0;
     cameraRotation = 0;
-    consecutiveDrowsyFrames = 0;
-    consecutiveRecoveryFrames = 0;
+    severeImpairmentWarning = false;
+    closedIntervals.clear();
+    consecutiveMobileFrames = 0;
+    consecutiveDrinkFrames = 0;
+    consecutiveSmokeFrames = 0;
+    consecutiveFoodFrames = 0;
+    hasPhone = false;
+    hasCigarette = false;
+    hasEating = false;
+    hasDrinking = false;
   }
 
-  int consecutiveDrowsyFrames = 0;
-  int consecutiveRecoveryFrames = 0;
+  bool severeImpairmentWarning = false;
+  List<ClosedInterval> closedIntervals = [];
+
+  bool hasPhone = false;
+  bool hasCigarette = false;
+  bool hasEating = false;
+  bool hasDrinking = false;
 }
 
 class DetectedObject {
   final String label;
   final double confidence;
-  final double x, y, width, height; // normalized 0-1
+  final double x, y, width, height;
   DetectedObject({
     required this.label,
     required this.confidence,
@@ -197,4 +230,10 @@ class DetectedObject {
     required this.width,
     required this.height,
   });
+}
+
+class ClosedInterval {
+  DateTime start;
+  DateTime? end;
+  ClosedInterval(this.start, [this.end]);
 }

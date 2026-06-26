@@ -40,18 +40,47 @@ dependencies:
   image: ^4.5.4
   flutter_secure_storage: ^9.2.4
   path_provider: ^2.1.5
+  wakelock_plus: ^1.2.10
   audioplayers: ^6.4.0
+  flutter_blue_plus: ^1.32.12
+
+
+  http: ^1.2.0
+  device_info_plus: ^10.1.0
+  permission_handler: ^11.0.1
+  geolocator: ^13.0.0
+  hive: ^2.2.3
+  hive_flutter: ^1.1.0
+  battery_plus: ^7.0.0
+  flutter_tts: ^4.2.5
+  wifi_iot: ^0.3.19
+  ffmpeg_kit_flutter_new_min_gpl: ^2.1.1
+  dartssh2: ^2.5.0
+  connectivity_plus: ^6.0.3
+  path: ^1.9.0
+  multicast_dns: ^0.3.2+3
+  video_player: ^2.11.1
+  sensors_plus: ^6.1.1
+  # HTTP MJPEG streaming is handled by custom widget in views/mjpeg_stream_widget.dart
+
 
 dev_dependencies:
   flutter_test:
     sdk: flutter
+  flutter_launcher_icons: ^0.14.4
+  flutter_lints: ^6.0.0
+
+flutter_launcher_icons:
+  android: true
+  ios: true
+  image_path: "assets/icon/appicon_monitor.png"
 
   # The "flutter_lints" package below contains a set of recommended lints to
   # encourage good coding practices. The lint set provided by the package is
   # activated in the `analysis_options.yaml` file located at the root of your
   # package. See that file for information about deactivating specific lint
   # rules and activating additional ones.
-  flutter_lints: ^6.0.0
+  
 
 # For information on the generic Dart part of this file, see the
 # following page: https://dart.dev/tools/pub/pubspec
@@ -64,18 +93,14 @@ flutter:
   # the material Icons class.
   uses-material-design: true
 
-  # To add assets to your application, add an assets section, like this:
   assets:
     - assets/models/custom_yolo.tflite
+    - assets/models/custom_yolo_updated.tflite
     - assets/models/mobile_face_net.tflite
-    - assets/models/labels.txt
-    - assets/reference_faces/Authorized_driver_1/
-    - assets/reference_faces/Authorized_driver_2/
-    - assets/reference_faces/Authorized_driver_3/
-    - assets/reference_faces/Authorized_driver_4/
     - assets/audio/alert_soft.mp3
     - assets/audio/alert_loud.mp3
-    
+    - assets/models/yolo11n_full_int8.tflite
+
 
 
   #   - images/a_dot_ham.jpeg

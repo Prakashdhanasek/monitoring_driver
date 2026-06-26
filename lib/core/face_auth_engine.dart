@@ -17,14 +17,13 @@ class FaceAuthEngine {
   final FlutterSecureStorage _storage = const FlutterSecureStorage();
 
   // v8: forces fresh enrollment from newly added reference images.
-  static const String _keyEmbedding = 'safe_drive_mobilefacenet_v8';
+  static const String _keyEmbedding = 'safe_drive_mobilefacenet_v10';
 
   // MobileFaceNet: 112x112 RGB input → 192D embedding
   Interpreter? _faceNetInterpreter;
   bool _modelLoaded = false;
 
   List<List<double>> _referenceEmbeddings = [];
-
 
   List<String> _referenceLabels = [];
 
@@ -37,7 +36,7 @@ class FaceAuthEngine {
   // Balanced threshold:
   // 0.72 was too strict and caused all faces to fail.
   // 0.95 allows valid reference drivers while still blocking many unknown faces.
-  static const double kAuthThreshold = 1.08;
+  static const double kAuthThreshold = 1.15;
 
   int _consecutiveMatch = 0;
   int _consecutiveMiss = 0;
@@ -67,8 +66,10 @@ class FaceAuthEngine {
               .map<List<double>>((e) => List<double>.from(e as List))
               .toList();
 
-          _referenceLabels =
-              List<String>.filled(_referenceEmbeddings.length, 'unknown');
+          _referenceLabels = List<String>.filled(
+            _referenceEmbeddings.length,
+            'unknown',
+          );
         }
 
         if (_referenceEmbeddings.isNotEmpty) {
@@ -94,8 +95,16 @@ class FaceAuthEngine {
     CameraImage image,
     int rotation,
   ) {
-    if (!isEnrolled || _referenceEmbeddings.isEmpty || !_modelLoaded) {
+    // Model still loading -> keep scanning.
+    if (!_modelLoaded) {
       state.authStatus = AuthStatus.scanning;
+      state.authDistance = -1.0;
+      return;
+    }
+    // Model is ready but NO drivers enrolled (API data missing / incorrect).
+    // Never authorize a random face -> show unauthorized.
+    if (!isEnrolled || _referenceEmbeddings.isEmpty) {
+      state.authStatus = AuthStatus.unauthorized;
       state.authDistance = -1.0;
       return;
     }
@@ -141,8 +150,8 @@ class FaceAuthEngine {
 
     final String? bestLabel =
         (bestIdx >= 0 && bestIdx < _referenceLabels.length)
-            ? _referenceLabels[bestIdx]
-            : null;
+        ? _referenceLabels[bestIdx]
+        : null;
 
     print(
       '[AuthDBG] minDist=$minDist bestLabel=$bestLabel '
@@ -166,8 +175,9 @@ class FaceAuthEngine {
 
       // If already authenticated, allow 10 frames of mismatch before kicking them out
       // to prevent false alarms from head turns. For unauthenticated, kick out fast.
-      final requiredMisses =
-          state.authStatus == AuthStatus.authenticated ? 10 : kMissFrames;
+      final requiredMisses = state.authStatus == AuthStatus.authenticated
+          ? 10
+          : 2;
 
       if (_consecutiveMiss >= requiredMisses) {
         state.authStatus = AuthStatus.unauthorized;
@@ -187,6 +197,21 @@ class FaceAuthEngine {
     await _enrollFromReferencePhotos();
   }
 
+  void resetLiveAuthState() {
+    lastMatchedLabel = null;
+    _consecutiveMatch = 0;
+    _consecutiveMiss = 0;
+  }
+
+  Future<void> clearCache() async {
+    await _storage.delete(key: _keyEmbedding);
+    isEnrolled = false;
+    _referenceEmbeddings = [];
+    _referenceLabels = [];
+    lastMatchedLabel = null;
+    _consecutiveMatch = 0;
+    _consecutiveMiss = 0;
+  }
   // ── MobileFaceNet Model Loading ────────────────────────────────────────────
 
   Future<void> _loadFaceNetModel() async {
@@ -225,62 +250,66 @@ class FaceAuthEngine {
       ),
     );
 
-    final tempDir = await getTemporaryDirectory();
     final List<List<double>> embeddings = [];
     final List<String> labels = [];
 
-    // Dynamically load all photos from the assets/reference_faces/ folders
-    final manifest = await AssetManifest.loadFromAssetBundle(rootBundle);
-    final List<String> refAssets = manifest
-        .listAssets()
-        .where((String key) => key.startsWith('assets/reference_faces/'))
-        .where((String key) {
-      final lower = key.toLowerCase();
-      return lower.endsWith('.jpeg') ||
-          lower.endsWith('.jpg') ||
-          lower.endsWith('.png');
-    }).toList();
+    // 1) First check for downloaded API photos
+    final appDir = await _getVisibleDirectory();
+    final downloadedDir = Directory('${appDir.path}/downloaded_faces');
 
-    print('[Auth] Found ${refAssets.length} reference photos to enroll.');
+    if (await downloadedDir.exists()) {
+      final files = downloadedDir.listSync().whereType<File>().toList();
+      print('[Auth] Found ${files.length} downloaded photos from API.');
 
-    for (final assetPath in refAssets) {
-      try {
-        final byteData = await rootBundle.load(assetPath);
-        final imageBytes = byteData.buffer.asUint8List();
-        final fileName = assetPath.split('/').last;
-        final tempFile = File('${tempDir.path}/$fileName');
-        await tempFile.writeAsBytes(imageBytes);
+      for (final file in files) {
+        try {
+          final imageBytes = await file.readAsBytes();
+          final fileName = file.path.split(RegExp(r'[/\\]')).last;
 
-        final inputImage = InputImage.fromFilePath(tempFile.path);
-        final faces = await tempDetector.processImage(inputImage);
+          final inputImage = InputImage.fromFilePath(file.path);
+          final faces = await tempDetector.processImage(inputImage);
 
-        if (faces.isNotEmpty) {
-          final face = faces.first;
+          if (faces.isNotEmpty) {
+            final face = faces.first;
+            final embedding = _embedFaceFromJpeg(imageBytes, face.boundingBox);
 
-          // Decode JPEG using dart:image, crop & embed
-          final embedding = _embedFaceFromJpeg(imageBytes, face.boundingBox);
+            if (embedding != null) {
+              // Filename format: id__name__timestamp.jpg (or fallback to id_name_timestamp.jpg)
+              String driverId = 'unknown';
+              String driverName = 'unknown';
+              if (fileName.contains('__')) {
+                final parts = fileName.split('__');
+                if (parts.isNotEmpty) driverId = parts[0];
+                if (parts.length >= 2)
+                  driverName = parts[1].replaceAll('_', ' ');
+              } else {
+                final parts = fileName.split('_');
+                if (parts.isNotEmpty) {
+                  driverId = parts[0];
+                  if (parts.length > 2) {
+                    driverName = parts.sublist(1, parts.length - 1).join(' ');
+                  } else if (parts.length == 2) {
+                    driverName = parts[1];
+                  }
+                }
+              }
+              driverName = driverName
+                  .replaceAll('.jpg', '')
+                  .replaceAll('.jpeg', '')
+                  .replaceAll('.png', '');
 
-          if (embedding != null) {
-            final label = _labelFromAsset(assetPath);
+              final label = '$driverId|$driverName';
 
-            embeddings.add(embedding);
-            labels.add(label);
-
-            print(
-              '[Auth] Enrollment embedding extracted from '
-              '$fileName (192D) [$label]',
-            );
-          } else {
-            print('[Auth] Failed to extract embedding from $fileName');
+              embeddings.add(embedding);
+              labels.add(label);
+              print('[Auth] Enrolled API photo: $fileName -> label: $label');
+            }
           }
-        } else {
-          print('[Auth] No face detected in $fileName');
+        } catch (e) {
+          print('[Auth] Error enrolling API photo ${file.path}: $e');
         }
-      } catch (e) {
-        print('[Auth] Error enrolling from $assetPath: $e');
       }
     }
-
     await tempDetector.close();
     print('[Auth] Temp detector closed.');
 
@@ -296,10 +325,7 @@ class FaceAuthEngine {
     try {
       await _storage.write(
         key: _keyEmbedding,
-        value: jsonEncode({
-          'embeddings': embeddings,
-          'labels': labels,
-        }),
+        value: jsonEncode({'embeddings': embeddings, 'labels': labels}),
       );
       print(
         '[Auth] ${embeddings.length} embeddings (+labels) saved to secure storage.',
@@ -307,6 +333,24 @@ class FaceAuthEngine {
     } catch (e) {
       print('[Auth] Storage write failed: $e');
     }
+  }
+
+  /// Label from an API-downloaded filename.
+  /// Format: <driverId>__<Driver_Name>__<timestamp>.jpg
+  /// -> "driverId|Driver Name"  (monitor_flow splits on '|').
+  String _labelFromDownloadedFile(String path) {
+    final name = path.split('/').last.split('\\').last;
+    final base = name.replaceAll(
+      RegExp(r'\.(jpg|jpeg|png)$', caseSensitive: false),
+      '',
+    );
+    final parts = base.split('__');
+    if (parts.length >= 2) {
+      final id = parts[0];
+      final driverName = parts[1].replaceAll('_', ' ');
+      return '$id|$driverName';
+    }
+    return base;
   }
 
   /// Extracts the reference folder name from an asset path.
@@ -494,18 +538,16 @@ class FaceAuthEngine {
           }
 
           final int yIdx = sy * yRowStride + sx;
-          final int uvIdx =
-              (sy >> 1) * uvRowStride + (sx >> 1) * uvPixelStride;
+          final int uvIdx = (sy >> 1) * uvRowStride + (sx >> 1) * uvPixelStride;
 
           final int yVal = yIdx < yBytes.length ? yBytes[yIdx] : 0;
           final int uVal = uvIdx < uBytes.length ? uBytes[uvIdx] - 128 : 0;
           final int vVal = uvIdx < vBytes.length ? vBytes[uvIdx] - 128 : 0;
 
           final int r = (yVal + (1.402 * vVal)).round().clamp(0, 255);
-          final int g =
-              (yVal - (0.344136 * uVal) - (0.714136 * vVal))
-                  .round()
-                  .clamp(0, 255);
+          final int g = (yVal - (0.344136 * uVal) - (0.714136 * vVal))
+              .round()
+              .clamp(0, 255);
           final int b = (yVal + (1.772 * uVal)).round().clamp(0, 255);
 
           croppedImg.setPixelRgb(tx, ty, r, g, b);
@@ -540,8 +582,7 @@ class FaceAuthEngine {
     if (!_modelLoaded || _faceNetInterpreter == null) return null;
 
     try {
-      _faceNetInterpreter!.getInputTensor(0).data =
-          pixels.buffer.asUint8List();
+      _faceNetInterpreter!.getInputTensor(0).data = pixels.buffer.asUint8List();
 
       _faceNetInterpreter!.invoke();
 
@@ -550,8 +591,9 @@ class FaceAuthEngine {
       );
 
       // Output is [1, 192] — take first 192 values and L2 normalize
-      final rawEmbedding =
-          outputData.sublist(0, min(192, outputData.length)).toList();
+      final rawEmbedding = outputData
+          .sublist(0, min(192, outputData.length))
+          .toList();
 
       return _l2Normalize(rawEmbedding);
     } catch (e) {
@@ -593,5 +635,22 @@ class FaceAuthEngine {
     }
 
     return sqrt(sum);
+  }
+
+  Future<Directory> _getVisibleDirectory() async {
+    if (Platform.isAndroid) {
+      final downloadDir = Directory('/storage/emulated/0/Download/monitoring_driver');
+      if (!await downloadDir.exists()) {
+        try {
+          await downloadDir.create(recursive: true);
+        } catch (_) {
+          final extDir = await getExternalStorageDirectory();
+          return extDir!;
+        }
+      }
+      return downloadDir;
+    } else {
+      return await getApplicationDocumentsDirectory();
+    }
   }
 }

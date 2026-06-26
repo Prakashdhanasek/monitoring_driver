@@ -1,30 +1,55 @@
-// This is a basic Flutter widget test.
-//
-// To perform an interaction with a widget in your test, use the WidgetTester
-// utility in the flutter_test package. For example, you can send tap and scroll
-// gestures. You can also use WidgetTester to find child widgets in the widget
-// tree, read text, and verify that the values of widget properties are correct.
-
-import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
-
-import 'package:monitoring_driver/main.dart';
+import 'package:monitoring_driver/services/reversing_detector_service.dart';
 
 void main() {
-  testWidgets('Counter increments smoke test', (WidgetTester tester) async {
-    // Build our app and trigger a frame.
-    await tester.pumpWidget(const DriverMonitorApp());
+  TestWidgetsFlutterBinding.ensureInitialized();
 
-    // Verify that our counter starts at 0.
-    expect(find.text('0'), findsOneWidget);
-    expect(find.text('1'), findsNothing);
+  setUpAll(() {
+    // Mock the MethodChannel for sensors_plus to avoid MissingPluginException
+    const MethodChannel methodChannel = MethodChannel('dev.fluttercommunity.plus/sensors/method');
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger.setMockMethodCallHandler(
+      methodChannel,
+      (MethodCall methodCall) async {
+        return null;
+      },
+    );
 
-    // Tap the '+' icon and trigger a frame.
-    await tester.tap(find.byIcon(Icons.add));
-    await tester.pump();
+    // Mock the EventChannel for user accelerometer
+    const MethodChannel eventChannel = MethodChannel('dev.fluttercommunity.plus/sensors/user_accelerometer');
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger.setMockMethodCallHandler(
+      eventChannel,
+      (MethodCall methodCall) async {
+        return null;
+      },
+    );
+  });
 
-    // Verify that our counter has incremented.
-    expect(find.text('0'), findsNothing);
-    expect(find.text('1'), findsOneWidget);
+  test('ReversingDetectorService starts with isReversing = false', () {
+    final detector = ReversingDetectorService();
+    expect(detector.isReversing, isFalse);
+    detector.dispose();
+  });
+
+  test('ReversingDetectorService triggers isReversing on negative GPS latitude', () {
+    final detector = ReversingDetectorService();
+    expect(detector.isReversing, isFalse);
+
+    // Update GPS with a negative latitude
+    detector.updateGps(-10.0, 20.0, 15.0, 0.0);
+    expect(detector.isReversing, isTrue);
+
+    detector.dispose();
+  });
+
+  test('ReversingDetectorService triggers isReversing on negative GPS speed', () {
+    final detector = ReversingDetectorService();
+    expect(detector.isReversing, isFalse);
+
+    // Update GPS with a negative speed
+    detector.updateGps(10.0, 20.0, -5.0, 0.0);
+    expect(detector.isReversing, isTrue);
+
+    detector.dispose();
   });
 }
