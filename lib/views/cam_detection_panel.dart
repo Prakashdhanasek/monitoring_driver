@@ -70,8 +70,9 @@ class _CamDetectionPanelState extends State<CamDetectionPanel> {
       height: widget.height,
       decoration: BoxDecoration(
         color: Colors.black,
-        borderRadius:
-            widget.fullScreen ? BorderRadius.zero : BorderRadius.circular(12),
+        borderRadius: widget.fullScreen
+            ? BorderRadius.zero
+            : BorderRadius.circular(12),
         border: widget.fullScreen
             ? null
             : Border.all(color: Colors.redAccent, width: 2),
