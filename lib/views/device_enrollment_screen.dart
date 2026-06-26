@@ -108,7 +108,6 @@ class _DeviceEnrollmentScreenState extends State<DeviceEnrollmentScreen> {
   Future<void> _autoRegisterDevice() async {
     setState(() {
       _isLoading = true;
-      _errorMessage = null;
       _statusMessage = "Registering device...";
     });
 

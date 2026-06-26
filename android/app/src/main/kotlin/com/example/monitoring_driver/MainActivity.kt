@@ -20,7 +20,7 @@ class MainActivity : FlutterActivity() {
 
 
     companion object {
-        private const val WIFI_SSID = "Airtel_Airte_ nimi_1580"   
+        private const val WIFI_SSID = "BB SF ASIANET-2.4G"   
         private const val WIFI_PASSWORD = "12345678$"      
     }
 
@@ -36,6 +36,9 @@ class MainActivity : FlutterActivity() {
                     "stopKiosk" -> {
                         try {
                             stopLockTask()
+                        } catch (_: Exception) {}
+                        try {
+                            moveTaskToBack(true)
                         } catch (_: Exception) {}
                         result.success(true)
                     }

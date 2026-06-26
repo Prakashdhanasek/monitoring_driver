@@ -19,7 +19,7 @@ class FFmpegVideoRecorderService {
   /// Timer that fires every [_kChunkDurationSeconds] to rotate to the next chunk.
   Timer? _chunkRotationTimer;
 
-  /// The RTSP/HTTP stream URL, kept so we can restart FFmpeg for each chunk.
+  /// The HTTP/RTSP stream URL, kept so we can restart FFmpeg for each chunk.
   String? _streamUrl;
 
   /// Index counter for the current chunk (increments each rotation).

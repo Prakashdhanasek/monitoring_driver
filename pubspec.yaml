@@ -59,6 +59,10 @@ dependencies:
   connectivity_plus: ^6.0.3
   path: ^1.9.0
   multicast_dns: ^0.3.2+3
+  video_player: ^2.11.1
+  sensors_plus: ^6.1.1
+  # HTTP MJPEG streaming is handled by custom widget in views/mjpeg_stream_widget.dart
+
 
 dev_dependencies:
   flutter_test:
@@ -95,7 +99,8 @@ flutter:
     - assets/models/mobile_face_net.tflite
     - assets/audio/alert_soft.mp3
     - assets/audio/alert_loud.mp3
-    
+    - assets/models/yolo11n_full_int8.tflite
+
 
 
   #   - images/a_dot_ham.jpeg

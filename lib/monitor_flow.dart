@@ -1,6 +1,6 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
-import 'dart:typed_data';
 import 'package:camera/camera.dart';
 import 'package:device_info_plus/device_info_plus.dart';
 import 'package:flutter/material.dart';
@@ -13,6 +13,7 @@ import 'package:battery_plus/battery_plus.dart';
 import 'package:monitoring_driver/kiosk.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:multicast_dns/multicast_dns.dart';
+import 'package:http/http.dart' as http;
 import 'package:wakelock_plus/wakelock_plus.dart';
 
 import 'core/face_auth_engine.dart';
@@ -30,10 +31,19 @@ import 'services/esp32_wifi_service.dart';
 import 'services/ffmpeg_recorder_service.dart';
 import 'services/sftp_upload_service.dart';
 
-import 'package:geolocator/geolocator.dart';
+import 'services/reversing_detector_service.dart';
+import 'views/reversing_camera_overlay.dart';
+import 'views/cam_detection_panel.dart';
 
 /// The 3 phases of the driver-facing flow.
 enum Phase { verifying, details, monitoring }
+
+/// Exactly one camera is active at a time.
+/// Switching away from [driverMonitoring] stops the phone camera image stream
+/// so the CPU is entirely free for the active ESP32 stream.
+// enum CamMode { driverMonitoring, rear, left, right }
+
+enum CamMode { driverMonitoring, rear, left, right, front }
 
 /// Hidden admin exit PIN (tap the top-right corner 5x to enter it).
 const String kAdminPin = '1234';
@@ -79,17 +89,53 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   bool _isOnline = true;
   Timer? _connectivityTimer;
   Timer? _telemetryTimer;
+  Timer? _sensorUiTimer;
 
   bool _isConnectingToEsp32 = false;
   bool _isConnectedToEsp32 = false;
+  // True when REAR was opened via the REAR button (manual). Reverting clears this.
+  bool _rearManualOverride = false;
+
+  ReversingDetectorService? _reversingDetector;
+  // ── Single active camera mode ─────────────────────────────────────────────
+  // Only one of these runs at a time. Switching away from driverMonitoring
+  // stops the phone image stream so face/object detection is fully paused.
+  CamMode _camMode = CamMode.driverMonitoring;
+  // String _esp32StreamUrl = 'http://10.119.135.95:82/';
+
+  String _esp32StreamUrl = 'http://192.168.1.131:82/';
+
+  // ── Side cameras (blind spot)
+  // Left cam  — video :86,  sensor :87
+  // Right cam  — video :80,  sensor :81
+  // Front cam  — video :84,  sensor :85
+  // Rear cam   — video :82,  sensor :83
+  static const String _kLeftCamStreamUrl = 'http://leftcam.local:86/';
+  static const String _kRightCamStreamUrl = 'http://rightcam.local:80/';
+  static const String _kFrontCamStreamUrl = 'http://frontcam.local:84/';
+  // Resolved IPs for all ESP32 cams — found by subnet scanner on startup.
+  // Null until resolved; sensors and panels are skipped while null.
+  // Reset to null if we switch networks so the scanner re-discovers them.
+  // String? _leftCamIp; // video :86  sensor :87
+  // String? _rightCamIp; // video :80  sensor :81
+  // String?
+  // _frontCamIp; // video :84
+
+  String? _leftCamIp = '192.168.1.61'; // video :86  sensor :87
+  String? _rightCamIp = '192.168.1.129'; // video :80  sensor :81
+  String? _frontCamIp = '192.168.1.130'; // video :84  sensor :85
+  // (resolved by scanner, not shown in strict mode)
+  DateTime? _lastSideCamScanAt; // throttle scanner to once per 60 s
+  Timer? _blindSpotTimer;
+  bool _isPollingBlindSpot = false;
 
   // Flow
   Phase _phase = Phase.verifying;
+  bool _initializing = true;
   bool _camReady = false;
   bool _busy = false;
   bool _streaming = false;
   int _frame = 0;
-  bool _initializing = true;
 
   // Verified driver
   String _driverName = 'Driver';
@@ -152,7 +198,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     WidgetsBinding.instance.addObserver(this);
     _monitoringEngine = MonitoringEngine(_state);
     _tts.init();
-     WakelockPlus.enable();
+    WakelockPlus.enable();
     _init();
 
     _syncTimer = Timer.periodic(const Duration(seconds: 30), (_) {
@@ -171,7 +217,23 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       _sendTelemetryTask();
     });
 
+    // Refresh UI every 200 ms for real-time sensor/direction telemetry.
+    _sensorUiTimer = Timer.periodic(const Duration(milliseconds: 200), (_) {
+      if (mounted && _phase == Phase.monitoring) {
+        setState(() {});
+      }
+    });
+
     _initBatteryMonitor();
+
+    // Resolve cam IPs after 10 s so app startup isn't flooded with 150+
+    // concurrent subnet probe requests the moment the app opens.
+    // Future.delayed(const Duration(seconds: 10), _resolveSideCamIps);
+
+    // Blind spot sensor polling every 500 ms
+    _blindSpotTimer = Timer.periodic(const Duration(milliseconds: 500), (_) {
+      _pollBlindSpotSensors();
+    });
   }
 
   Future<void> _checkConnectivity() async {
@@ -296,6 +358,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     _syncTimer?.cancel();
     _connectivityTimer?.cancel();
     _telemetryTimer?.cancel();
+    _sensorUiTimer?.cancel();
     _countdownTimer?.cancel();
     _cableBannerTimer?.cancel();
     _batterySub?.cancel();
@@ -308,6 +371,8 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     WakelockPlus.disable();
     _ffmpegRecorderService.stopRecording();
     _espWifiService.disconnectFromEsp32();
+    _reversingDetector?.dispose();
+    _blindSpotTimer?.cancel();
     super.dispose();
   }
 
@@ -320,16 +385,142 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     await _driversService.fetchAndCacheDrivers(deviceId);
   }
 
-  Future<void> _connectAndStartEsp32Recording() async {
+  Future<String?> _findEsp32IpFromArpTable() async {
+    // Strategy 1: Try reading the ARP table (works on older Android versions)
+    try {
+      final file = File('/proc/net/arp');
+      if (await file.exists()) {
+        final content = await file.readAsString();
+        final lines = content.split('\n');
+        for (var line in lines) {
+          final parts = line
+              .split(RegExp(r'\s+'))
+              .where((p) => p.isNotEmpty)
+              .toList();
+          if (parts.length >= 4 && parts[0] != 'IP') {
+            final ip = parts[0];
+            final mac = parts[3].toLowerCase();
+            if (mac != '00:00:00:00:00:00') {
+              debugPrint('[ESP32-ARP] Client in ARP: IP=$ip, MAC=$mac');
+              try {
+                final socket = await Socket.connect(
+                  ip,
+                  80,
+                ).timeout(const Duration(milliseconds: 1000));
+                await socket.close();
+                debugPrint('[ESP32-ARP] Found responsive HTTP server at $ip');
+                return ip;
+              } catch (_) {
+                // Keep looking
+              }
+            }
+          }
+        }
+      }
+    } catch (e) {
+      debugPrint('[ESP32-ARP] ARP read failed (expected on Android 10+): $e');
+    }
+
+    // Strategy 2: Subnet scan fallback (works on Android 10+)
+    try {
+      debugPrint('[SubnetScan] Starting subnet scan fallback...');
+      final interfaces = await NetworkInterface.list(
+        includeLinkLocal: false,
+        type: InternetAddressType.IPv4,
+      );
+
+      String? localIp;
+      // Step 1: Look for interface starting with wlan, ap, softap (Wi-Fi/Hotspot)
+      for (var interface in interfaces) {
+        final name = interface.name.toLowerCase();
+        if (name.contains('wlan') ||
+            name.contains('ap') ||
+            name.contains('softap')) {
+          for (var addr in interface.addresses) {
+            if (!addr.isLoopback &&
+                (addr.address.startsWith('192.168.') ||
+                    addr.address.startsWith('10.'))) {
+              localIp = addr.address;
+              break;
+            }
+          }
+        }
+        if (localIp != null) break;
+      }
+
+      // Step 2: Fallback to any interface that has a 192.168.x.x private IP (highly likely local Wi-Fi/hotspot)
+      if (localIp == null) {
+        for (var interface in interfaces) {
+          for (var addr in interface.addresses) {
+            if (!addr.isLoopback && addr.address.startsWith('192.168.')) {
+              localIp = addr.address;
+              break;
+            }
+          }
+          if (localIp != null) break;
+        }
+      }
+
+      if (localIp == null) {
+        debugPrint('[SubnetScan] No valid local IP found.');
+        return null;
+      }
+
+      debugPrint('[SubnetScan] Local IP identified: $localIp');
+      final lastDot = localIp.lastIndexOf('.');
+      if (lastDot == -1) return null;
+      final prefix = localIp.substring(0, lastDot + 1); // e.g. "192.168.175."
+
+      debugPrint(
+        '[SubnetScan] Probing subnet ${prefix}* on port 80 concurrently...',
+      );
+
+      // Spawn concurrent probes to scan the entire subnet in parallel
+      final List<Future<String?>> probes = [];
+      for (int i = 2; i <= 254; i++) {
+        final target = '$prefix$i';
+        if (target == localIp) continue;
+
+        probes.add(() async {
+          try {
+            final socket = await Socket.connect(
+              target,
+              80,
+            ).timeout(const Duration(milliseconds: 800));
+            await socket.close();
+            debugPrint('[SubnetScan] ✓ Found camera at $target');
+            return target;
+          } catch (_) {
+            return null;
+          }
+        }());
+      }
+
+      final results = await Future.wait(probes);
+      for (var ip in results) {
+        if (ip != null) return ip;
+      }
+      debugPrint('[SubnetScan] No responsive camera found on subnet.');
+    } catch (e) {
+      debugPrint('[SubnetScan] Subnet scan failed: $e');
+    }
+    return null;
+  }
+
+  Future<void> _connectToEsp32Wifi() async {
     if (_isConnectingToEsp32) return;
     setState(() {
       _isConnectingToEsp32 = true;
     });
 
-    const String targetSsid = 'ESP32-CAM-Access-Point';
-    String streamUrl = 'rtsp://frontcam.local:8554/mjpeg/1';
-    String esp32Host = 'frontcam.local';
-    const int esp32Port = 8554;
+    const String targetSsid = 'BB SF ASIANET-2.4G';
+    // String streamUrl = 'http://10.119.135.95:82/';
+    // String esp32Host = '10.119.135.95';
+    // const int esp32Port = 82;
+
+    String streamUrl = 'http://192.168.1.131:82/';
+    String esp32Host = '192.168.1.131';
+    const int esp32Port = 82;
 
     debugPrint('==================================================');
     debugPrint('[ESP32 STREAM STATUS CHECK]');
@@ -377,29 +568,43 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     );
 
     // Step 3: Resolve mDNS (.local) natively since Android doesn't support it
-    if (Platform.isAndroid && esp32Host.endsWith('.local')) {
-      debugPrint('[ESP32] Resolving mDNS for $esp32Host...');
-      try {
-        final MDnsClient client = MDnsClient();
-        await client.start();
-        await for (final IPAddressResourceRecord record
-            in client
-                .lookup<IPAddressResourceRecord>(
-                  ResourceRecordQuery.addressIPv4(esp32Host),
-                )
-                .timeout(const Duration(seconds: 4))) {
-          esp32Host = record.address.address;
-          streamUrl = 'rtsp://$esp32Host:8554/mjpeg/1';
-          debugPrint('[ESP32] ✓ Resolved mDNS to IP: $esp32Host');
-          break;
+    if (esp32Host.endsWith('.local')) {
+      if (Platform.isAndroid) {
+        debugPrint(
+          '[ESP32] Platform is Android. Resolving via ARP table lookup...',
+        );
+        final arpIp = await _findEsp32IpFromArpTable();
+        if (arpIp != null) {
+          esp32Host = arpIp;
+          streamUrl = 'http://$esp32Host:82/';
+          debugPrint('[ESP32] ✓ Resolved via ARP table to IP: $esp32Host');
+        } else {
+          debugPrint('[ESP32] ✗ ARP table lookup did not find ESP32.');
         }
-        client.stop();
-      } catch (e) {
-        debugPrint('[ESP32] ✗ mDNS resolution failed or timed out: $e');
+      } else {
+        debugPrint('[ESP32] Resolving mDNS for $esp32Host...');
+        try {
+          final MDnsClient client = MDnsClient();
+          await client.start();
+          await for (final IPAddressResourceRecord record
+              in client
+                  .lookup<IPAddressResourceRecord>(
+                    ResourceRecordQuery.addressIPv4(esp32Host),
+                  )
+                  .timeout(const Duration(seconds: 4))) {
+            esp32Host = record.address.address;
+            streamUrl = 'http://$esp32Host:82/';
+            debugPrint('[ESP32] ✓ Resolved mDNS to IP: $esp32Host');
+            break;
+          }
+          client.stop();
+        } catch (e) {
+          debugPrint('[ESP32] ✗ mDNS resolution failed: $e');
+        }
       }
     }
 
-    // Step 4: TCP test — verify ESP32-CAM host is reachable on port 8554
+    // Step 4: TCP test — verify ESP32-CAM host is reachable on port 80
     bool cameraReachable = false;
     try {
       final socket = await Socket.connect(
@@ -408,33 +613,58 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       ).timeout(const Duration(seconds: 3));
       await socket.close();
       cameraReachable = true;
-      debugPrint(
-        '[ESP32] ✓ Camera reachable at $esp32Host:$esp32Port — starting recording',
-      );
+      debugPrint('[ESP32] ✓ Camera reachable at $esp32Host:$esp32Port');
       debugPrint('==================================================');
     } catch (e) {
-      cameraReachable = false;
-      debugPrint('==================================================');
       debugPrint(
-        '[ESP32] ✗ Camera check failed/timeout at $esp32Host:$esp32Port: $e',
+        '[ESP32] ✗ Initial camera check failed at $esp32Host:$esp32Port: $e',
       );
-      debugPrint(
-        '[ESP32]   → Attempting FFmpeg recording anyway as fallback...',
-      );
-      debugPrint('==================================================');
+      if (Platform.isAndroid) {
+        debugPrint(
+          '[ESP32] Scanning ARP table as fallback to find responsive ESP32 IP...',
+        );
+        final arpIp = await _findEsp32IpFromArpTable();
+        if (arpIp != null && arpIp != esp32Host) {
+          debugPrint(
+            '[ESP32] Found potential fallback IP in ARP: $arpIp. Verifying reachability...',
+          );
+          try {
+            final socket = await Socket.connect(
+              arpIp,
+              esp32Port,
+            ).timeout(const Duration(seconds: 3));
+            await socket.close();
+            esp32Host = arpIp;
+            streamUrl = 'http://$esp32Host:82/';
+            cameraReachable = true;
+            debugPrint(
+              '[ESP32] ✓ Fallback camera reachable at $esp32Host:$esp32Port',
+            );
+          } catch (fallbackErr) {
+            debugPrint(
+              '[ESP32] ✗ Fallback camera check failed at $arpIp:$esp32Port: $fallbackErr',
+            );
+          }
+        }
+      }
+      if (!cameraReachable) {
+        cameraReachable = false;
+        debugPrint('==================================================');
+        debugPrint(
+          '[ESP32] ✗ Camera check failed/timeout at $esp32Host:$esp32Port: $e',
+        );
+        debugPrint('==================================================');
+      }
     }
 
     if (mounted) {
       setState(() {
         _isConnectingToEsp32 = false;
         // Mark as connected/attempting so UI reflects status
-        _isConnectedToEsp32 = true;
+        _isConnectedToEsp32 = cameraReachable;
+        _esp32StreamUrl = streamUrl;
       });
     }
-
-    // Always attempt to start recording, letting FFmpeg handle connection retries/logging
-    await _ffmpegRecorderService.startRecording(streamUrl);
-    if (mounted) setState(() {});
   }
 
   Future<void> _triggerSftpUpload() async {
@@ -485,6 +715,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     } catch (e) {
       debugPrint('[Flow] auth init error: $e');
     }
+
     if (!mounted) return;
 
     // 2) Object detector (isolate + YOLO).
@@ -509,12 +740,22 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     // 4) Camera.
     await _initCamera();
 
-    if (mounted) {
-      setState(() => _initializing = false);
-    }
+    // Initialize reversing detector
+    _reversingDetector = ReversingDetectorService();
+    _reversingDetector!.onReversingChanged.listen((reversing) {
+      if (!mounted) return;
+      if (reversing) {
+        _setCamMode(CamMode.rear);
+      } else if (_camMode == CamMode.rear && !_rearManualOverride) {
+        // Auto-return only when reversing ends AND rear wasn't manually opened.
+        _setCamMode(CamMode.driverMonitoring);
+      }
+    });
 
-    // Connect to ESP32 WiFi and start background stream recording
-    _connectAndStartEsp32Recording();
+    // Connect to ESP32 WiFi at startup to stay connected and minimize latency
+    _connectToEsp32Wifi();
+
+    if (mounted) setState(() => _initializing = false);
   }
 
   Future<void> _requestPermissions() async {
@@ -565,9 +806,16 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
           distanceFilter: 10,
         ),
       ).listen((Position position) {
+        final speedKmH = position.speed > 0 ? (position.speed * 3.6) : 0.0;
         _state.gpsLat = position.latitude;
         _state.gpsLng = position.longitude;
-        _state.vehicleSpeed = position.speed > 0 ? (position.speed * 3.6) : 0.0;
+        _state.vehicleSpeed = speedKmH;
+        _reversingDetector?.updateGps(
+          position.latitude,
+          position.longitude,
+          position.speed > 0 ? position.speed : 0.0,
+          position.heading,
+        );
       });
     }
   }
@@ -609,6 +857,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   // FRAME PIPELINE
   // ─────────────────────────────────────────────────────────
   Future<void> _processImage(CameraImage image) async {
+    if (_camMode != CamMode.driverMonitoring) return;
     if (_busy || !_camReady || _detector == null) return;
     _busy = true;
     _frame++;
@@ -1342,7 +1591,8 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
         _streaming = false;
       }
     } else if (state == AppLifecycleState.resumed) {
-      if (!_streaming && _camReady) {
+      // Only restart the phone cam if we're in driver monitoring mode.
+      if (!_streaming && _camReady && _camMode == CamMode.driverMonitoring) {
         c.startImageStream(_processImage);
         _streaming = true;
       }
@@ -1410,10 +1660,24 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
         fit: StackFit.expand,
         children: [
           _cameraLayer(),
-          if (_phase == Phase.details) _detailsOverlay(),
           if (_phase == Phase.verifying) _verifyingOverlay(),
+          if (_phase == Phase.details) _detailsOverlay(),
           if (_phase == Phase.monitoring)
             (_tripCompleted ? _tripCompletedOverlay() : _monitoringOverlay()),
+          if (_phase == Phase.monitoring &&
+              !_tripCompleted &&
+              _camMode == CamMode.rear)
+            ReversingCameraOverlay(
+              streamUrl: _esp32StreamUrl,
+              speed: _state.vehicleSpeed,
+              latitude: _state.gpsLat,
+              longitude: _state.gpsLng,
+              isPreviewMode: _rearManualOverride,
+              onClosePreview: () {
+                _rearManualOverride = false;
+                _setCamMode(CamMode.driverMonitoring);
+              },
+            ),
 
           // Invisible admin-exit hotspot (top-right corner). Tap 5x -> PIN.
           Positioned(
@@ -1425,6 +1689,163 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
               child: const SizedBox(width: 72, height: 72),
             ),
           ),
+
+          // ── Side cam overlays (monitoring phase) ──
+          if (_phase == Phase.monitoring &&
+              !_tripCompleted &&
+              _camMode == CamMode.left)
+            Positioned(
+              bottom: 90,
+              left: 44,
+              child: CamDetectionPanel(
+                streamUrl: _leftCamIp != null
+                    ? 'http://$_leftCamIp:86/'
+                    : _kLeftCamStreamUrl,
+                label: 'LEFT CAM',
+                width: 200,
+                height: 260,
+                onClose: () => _setCamMode(CamMode.driverMonitoring),
+              ),
+            ),
+          if (_phase == Phase.monitoring &&
+              !_tripCompleted &&
+              _camMode == CamMode.right)
+            Positioned(
+              bottom: 90,
+              right: 44,
+              child: CamDetectionPanel(
+                streamUrl: _rightCamIp != null
+                    ? 'http://$_rightCamIp:80/'
+                    : _kRightCamStreamUrl,
+                label: 'RIGHT CAM',
+                width: 200,
+                height: 260,
+                onClose: () => _setCamMode(CamMode.driverMonitoring),
+              ),
+            ),
+          if (_phase == Phase.monitoring &&
+              !_tripCompleted &&
+              _camMode == CamMode.front)
+            Positioned(
+              bottom: 90,
+              left: 0,
+              right: 0,
+              child: Center(
+                child: CamDetectionPanel(
+                  streamUrl: _frontCamIp != null
+                      ? 'http://$_frontCamIp:84/'
+                      : _kFrontCamStreamUrl,
+                  label: 'FRONT CAM',
+                  width: 260,
+                  height: 200,
+                  onClose: () => _setCamMode(CamMode.driverMonitoring),
+                ),
+              ),
+            ),
+
+          // ── Side cam toggle buttons (monitoring phase) ──
+          if (_phase == Phase.monitoring && !_tripCompleted)
+            Positioned(
+              left: 0,
+              top: 0,
+              bottom: 0,
+              child: Center(
+                child: GestureDetector(
+                  onTap: () {
+                    if (_camMode == CamMode.left) {
+                      _setCamMode(CamMode.driverMonitoring);
+                    } else {
+                      _setCamMode(CamMode.left);
+                    }
+                  },
+                  child: Container(
+                    width: 36,
+                    height: 64,
+                    decoration: BoxDecoration(
+                      color: _camMode == CamMode.left
+                          ? Colors.redAccent.withValues(alpha: 0.85)
+                          : Colors.black54,
+                      borderRadius: const BorderRadius.only(
+                        topRight: Radius.circular(10),
+                        bottomRight: Radius.circular(10),
+                      ),
+                      border: Border.all(
+                        color: _camMode == CamMode.left
+                            ? Colors.redAccent
+                            : Colors.white24,
+                        width: 1.2,
+                      ),
+                    ),
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: const [
+                        Icon(
+                          Icons.chevron_left_rounded,
+                          color: Colors.white,
+                          size: 20,
+                        ),
+                        Icon(
+                          Icons.videocam_rounded,
+                          color: Colors.white,
+                          size: 14,
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          if (_phase == Phase.monitoring && !_tripCompleted)
+            Positioned(
+              right: 0,
+              top: 0,
+              bottom: 0,
+              child: Center(
+                child: GestureDetector(
+                  onTap: () {
+                    if (_camMode == CamMode.right) {
+                      _setCamMode(CamMode.driverMonitoring);
+                    } else {
+                      _setCamMode(CamMode.right);
+                    }
+                  },
+                  child: Container(
+                    width: 36,
+                    height: 64,
+                    decoration: BoxDecoration(
+                      color: _camMode == CamMode.right
+                          ? Colors.redAccent.withValues(alpha: 0.85)
+                          : Colors.black54,
+                      borderRadius: const BorderRadius.only(
+                        topLeft: Radius.circular(10),
+                        bottomLeft: Radius.circular(10),
+                      ),
+                      border: Border.all(
+                        color: _camMode == CamMode.right
+                            ? Colors.redAccent
+                            : Colors.white24,
+                        width: 1.2,
+                      ),
+                    ),
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: const [
+                        Icon(
+                          Icons.videocam_rounded,
+                          color: Colors.white,
+                          size: 14,
+                        ),
+                        Icon(
+                          Icons.chevron_right_rounded,
+                          color: Colors.white,
+                          size: 20,
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            ),
 
           // 👇 CABLE UNPLUGGED banner — shows for 5 seconds only.
           if (_showCableBanner)
@@ -1500,6 +1921,243 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
         ],
       ),
     );
+  }
+
+  // ─────────────────────────────────────────────────────────
+  // SINGLE-MODE CAMERA SWITCHING
+  // ─────────────────────────────────────────────────────────
+
+  /// Switches to [mode], stopping the phone camera image stream when leaving
+  /// driver monitoring and resuming it when returning.
+  /// This is the ONLY place [_camMode] is written — never set it directly.
+  void _setCamMode(CamMode mode) {
+    if (_camMode == mode) return;
+    final wasMonitoring = _camMode == CamMode.driverMonitoring;
+    final nowMonitoring = mode == CamMode.driverMonitoring;
+    _camMode = mode;
+    final c = _camera;
+    if (c != null && c.value.isInitialized) {
+      if (wasMonitoring && _streaming) {
+        c.stopImageStream().catchError((_) {});
+        _streaming = false;
+        debugPrint('[CamMode] → $mode | phone cam PAUSED');
+      } else if (nowMonitoring && !_streaming && _camReady) {
+        c.startImageStream(_processImage).catchError((_) {});
+        _streaming = true;
+        debugPrint('[CamMode] → driverMonitoring | phone cam RESUMED');
+      }
+    }
+    if (mounted) setState(() {});
+  }
+
+  // ─────────────────────────────────────────────────────────
+  // BLIND SPOT — IP resolution + sensor polling
+  // ─────────────────────────────────────────────────────────
+
+  /// Scans the local subnet to resolve direct IPs for all three ESP32 cams.
+  /// Left sensor: port 87 | Right sensor: port 81 | Front sensor: port 85
+  /// Direct IPs are used because .local mDNS is unreliable on Android.
+  Future<void> _resolveSideCamIps() async {
+    if (_leftCamIp != null && _rightCamIp != null && _frontCamIp != null)
+      return;
+
+    // Throttle: never scan more than once every 60 seconds.
+    final now = DateTime.now();
+    if (_lastSideCamScanAt != null &&
+        now.difference(_lastSideCamScanAt!) < const Duration(seconds: 60))
+      return;
+    _lastSideCamScanAt = now;
+
+    // Get local IPv4 subnet prefix (e.g. "10.119.135")
+    String? subnet;
+    try {
+      final interfaces = await NetworkInterface.list(
+        type: InternetAddressType.IPv4,
+        includeLoopback: false,
+      );
+      for (final iface in interfaces) {
+        for (final addr in iface.addresses) {
+          final parts = addr.address.split('.');
+          if (parts.length == 4 && parts[0] != '127') {
+            subnet = '${parts[0]}.${parts[1]}.${parts[2]}';
+            break;
+          }
+        }
+        if (subnet != null) break;
+      }
+    } catch (e) {
+      debugPrint('[SideCam] Cannot get local IP: $e');
+      return;
+    }
+    if (subnet == null) return;
+    debugPrint(
+      '[SideCam] Scanning $subnet.1-254 — left:87, right:81, front:85',
+    );
+
+    final String sub = subnet;
+
+    Future<String?> scanForPort(int sensorPort) async {
+      Future<String?> probe(String ip) async {
+        try {
+          final res = await http
+              .get(Uri.parse('http://$ip:$sensorPort/sensor'))
+              .timeout(const Duration(milliseconds: 500));
+          if (res.statusCode == 200) {
+            final data = jsonDecode(res.body) as Map<String, dynamic>;
+            if (data.containsKey('distance_cm')) return ip;
+          }
+        } catch (_) {}
+        return null;
+      }
+
+      for (int start = 1; start <= 254; start += 50) {
+        final end = (start + 49).clamp(1, 254);
+        final batch = [for (int i = start; i <= end; i++) probe('$sub.$i')];
+        final results = await Future.wait(batch);
+        final found = results.firstWhere((r) => r != null, orElse: () => null);
+        if (found != null) return found;
+      }
+      return null;
+    }
+
+    final leftFuture = _leftCamIp == null
+        ? scanForPort(87)
+        : Future.value(_leftCamIp);
+    final rightFuture = _rightCamIp == null
+        ? scanForPort(81)
+        : Future.value(_rightCamIp);
+    final frontFuture = _frontCamIp == null
+        ? scanForPort(85)
+        : Future.value(_frontCamIp);
+
+    final results = await Future.wait([leftFuture, rightFuture, frontFuture]);
+
+    if (_leftCamIp == null && results[0] != null) {
+      _leftCamIp = results[0];
+      debugPrint('[SideCam] Left cam IP → $_leftCamIp');
+    }
+    if (_rightCamIp == null && results[1] != null) {
+      _rightCamIp = results[1];
+      debugPrint('[SideCam] Right cam IP → $_rightCamIp');
+    }
+    if (_frontCamIp == null && results[2] != null) {
+      _frontCamIp = results[2];
+      debugPrint('[SideCam] Front cam IP → $_frontCamIp');
+    }
+  }
+
+  /// Polls both ultrasonic sensor endpoints every 500 ms.
+  /// Opens the side cam automatically when an object is closer than 50 cm,
+  /// and closes it when the path is clear beyond 60 cm.
+  Future<void> _pollBlindSpotSensors() async {
+    if (!mounted || _phase != Phase.monitoring || _tripCompleted) return;
+    if (_isPollingBlindSpot) return; // skip if previous poll still running
+    _isPollingBlindSpot = true;
+
+    // Trigger IP resolution in the background if left or right cam is unknown.
+    // Non-blocking: polls continue with whatever IPs are already resolved.
+    if (_leftCamIp == null || _rightCamIp == null) {
+      _resolveSideCamIps(); // fire-and-forget
+    }
+
+    Future<double?> fetch(String? url) async {
+      if (url == null) return null; // IP not yet resolved — skip silently
+      try {
+        final res = await http
+            .get(Uri.parse(url))
+            .timeout(const Duration(milliseconds: 1500));
+        if (res.statusCode == 200) {
+          final data = jsonDecode(res.body) as Map<String, dynamic>;
+          final dist = (data['distance_cm'] as num?)?.toDouble();
+          debugPrint('[BlindSpot] $url → ${dist?.toStringAsFixed(1)} cm');
+          return dist;
+        } else {
+          debugPrint('[BlindSpot] $url → HTTP ${res.statusCode}');
+        }
+      } catch (e) {
+        debugPrint('[BlindSpot] $url → ERROR: $e');
+      }
+      return null;
+    }
+
+    // Only poll sensors for which we have a resolved IP.
+    // .local mDNS fallback is intentionally removed — it doesn't work on Android.
+    // final leftUrl = _leftCamIp != null ? 'http://$_leftCamIp:87/sensor' : null;
+    // final rightUrl = _rightCamIp != null
+    //     ? 'http://$_rightCamIp:81/sensor'
+    //     : null;
+
+    // final results = await Future.wait([fetch(leftUrl), fetch(rightUrl)]);
+    // if (!mounted) {
+    //   _isPollingBlindSpot = false;
+    //   return;
+    // }
+
+    // final double? left = results[0];
+    // final double? right = results[1];
+
+    // // Priority: rear > left > right. Rear is handled by the reversing detector.
+    // // Never override rear mode or a manual rear override from the REAR button.
+    // if (_camMode != CamMode.rear && !_rearManualOverride) {
+    //   if (left != null && left < 50.0) {
+    //     _setCamMode(CamMode.left);
+    //   } else if (right != null && right < 50.0) {
+    //     _setCamMode(CamMode.right);
+    //   } else {
+    //     final bool leftClear = left == null || left > 60.0;
+    //     final bool rightClear = right == null || right > 60.0;
+    //     if (leftClear &&
+    //         rightClear &&
+    //         (_camMode == CamMode.left || _camMode == CamMode.right)) {
+    //       _setCamMode(CamMode.driverMonitoring);
+    //     }
+    //   }
+    // }
+
+    final leftUrl = _leftCamIp != null ? 'http://$_leftCamIp:87/sensor' : null;
+    final rightUrl = _rightCamIp != null
+        ? 'http://$_rightCamIp:81/sensor'
+        : null;
+    final frontUrl = _frontCamIp != null
+        ? 'http://$_frontCamIp:85/sensor'
+        : null;
+
+    final results = await Future.wait([
+      fetch(leftUrl),
+      fetch(rightUrl),
+      fetch(frontUrl),
+    ]);
+    if (!mounted) {
+      _isPollingBlindSpot = false;
+      return;
+    }
+
+    final double? left = results[0];
+    final double? right = results[1];
+    final double? front = results[2];
+
+    if (_camMode != CamMode.rear && !_rearManualOverride) {
+      if (left != null && left < 50.0) {
+        _setCamMode(CamMode.left);
+      } else if (right != null && right < 50.0) {
+        _setCamMode(CamMode.right);
+      } else if (front != null && front < 50.0) {
+        _setCamMode(CamMode.front);
+      } else {
+        final bool leftClear = left == null || left > 60.0;
+        final bool rightClear = right == null || right > 60.0;
+        final bool frontClear = front == null || front > 60.0;
+        if (leftClear &&
+            rightClear &&
+            frontClear &&
+            (_camMode == CamMode.left ||
+                _camMode == CamMode.right ||
+                _camMode == CamMode.front)) {
+          _setCamMode(CamMode.driverMonitoring);
+        }
+      }
+    }
+    _isPollingBlindSpot = false;
   }
 
   Widget _cameraLayer() {
@@ -1803,6 +2461,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
           _connectivityBanner(),
           _monitorStatusBar(),
           _esp32StatusBanner(),
+          // _deviceMotionCard(),
           if (_noFaceSince != null && !_tripCompleted) _noDriverCountdown(),
           const Spacer(),
           _seatbeltIndicator(),
@@ -1869,7 +2528,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     }
 
     return GestureDetector(
-      onTap: _connectAndStartEsp32Recording,
+      onTap: _connectToEsp32Wifi,
       child: Container(
         margin: const EdgeInsets.only(left: 12, right: 12, top: 8),
         padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
@@ -1891,12 +2550,107 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
                 ),
               ),
             ),
-            if (!_isConnectingToEsp32 && !_isConnectedToEsp32)
+            if (_isConnectedToEsp32)
+              GestureDetector(
+                onTap: () {
+                  if (_camMode == CamMode.rear && _rearManualOverride) {
+                    _rearManualOverride = false;
+                    _setCamMode(CamMode.driverMonitoring);
+                  } else {
+                    _rearManualOverride = true;
+                    _setCamMode(CamMode.rear);
+                  }
+                },
+                child: Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 10,
+                    vertical: 6,
+                  ),
+                  decoration: BoxDecoration(
+                    color: _camMode == CamMode.rear
+                        ? Colors.redAccent.withValues(alpha: 0.9)
+                        : Colors.white.withValues(alpha: 0.15),
+                    borderRadius: BorderRadius.circular(6),
+                    border: Border.all(
+                      color: _camMode == CamMode.rear
+                          ? Colors.redAccent
+                          : Colors.white30,
+                      width: 1,
+                    ),
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: const [
+                      Icon(
+                        Icons.videocam_rounded,
+                        color: Colors.white,
+                        size: 16,
+                      ),
+                      SizedBox(width: 4),
+                      Text(
+                        'REAR',
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontSize: 11,
+                          fontWeight: FontWeight.w700,
+                          letterSpacing: 0.5,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              )
+            else if (!_isConnectingToEsp32)
               const Icon(
                 Icons.refresh_rounded,
                 color: Colors.white70,
                 size: 16,
               ),
+            // ── FRONT cam toggle button ──
+            const SizedBox(width: 6),
+            GestureDetector(
+              onTap: () {
+                if (_camMode == CamMode.front) {
+                  _setCamMode(CamMode.driverMonitoring);
+                } else {
+                  _setCamMode(CamMode.front);
+                }
+              },
+              child: Container(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 10,
+                  vertical: 6,
+                ),
+                decoration: BoxDecoration(
+                  color: _camMode == CamMode.front
+                      ? Colors.orangeAccent.withValues(alpha: 0.9)
+                      : Colors.white.withValues(alpha: 0.15),
+                  borderRadius: BorderRadius.circular(6),
+                  border: Border.all(
+                    color: _camMode == CamMode.front
+                        ? Colors.orangeAccent
+                        : Colors.white30,
+                    width: 1,
+                  ),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: const [
+                    Icon(Icons.videocam_rounded, color: Colors.white, size: 16),
+                    SizedBox(width: 4),
+                    Text(
+                      'FRONT',
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontSize: 11,
+                        fontWeight: FontWeight.w700,
+                        letterSpacing: 0.5,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
           ],
         ),
       ),
@@ -2320,6 +3074,190 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
               value,
               style: const TextStyle(color: Colors.white70, fontSize: 11),
             ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _deviceMotionCard() {
+    final detector = _reversingDetector;
+    if (detector == null) return const SizedBox.shrink();
+
+    // Determine state
+    final isRev = detector.isReversing;
+    final speed = detector.gpsSpeed; // m/s
+    final speedKmH = speed * 3.6;
+    final isMoving = speed > 0.3; // threshold for moving
+
+    final Color stateColor;
+    final String stateLabel;
+    final IconData stateIcon;
+
+    if (isRev) {
+      stateColor = Colors.redAccent;
+      stateLabel = "REVERSING";
+      stateIcon = Icons.arrow_back_rounded;
+    } else if (isMoving) {
+      stateColor = Colors.greenAccent;
+      stateLabel = "MOVING FORWARD";
+      stateIcon = Icons.arrow_forward_rounded;
+    } else {
+      stateColor = Colors.blueAccent;
+      stateLabel = "STATIONARY";
+      stateIcon = Icons.pause_rounded;
+    }
+
+    final double rawZ = detector.currentZ;
+    final double compass = detector.compassHeading;
+    final double gpsHeading = detector.gpsHeading;
+    final bool isCalib = detector.isCalibrated;
+
+    return Container(
+      margin: const EdgeInsets.only(left: 12, right: 12, top: 8),
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: Colors.black.withValues(alpha: 0.85),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(
+          color: stateColor.withValues(alpha: 0.3),
+          width: 1.5,
+        ),
+        boxShadow: [
+          BoxShadow(
+            color: stateColor.withValues(alpha: 0.1),
+            blurRadius: 10,
+            spreadRadius: 1,
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // Row 1: Header / Current State
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Row(
+                children: [
+                  Icon(stateIcon, color: stateColor, size: 20),
+                  const SizedBox(width: 8),
+                  Text(
+                    stateLabel,
+                    style: TextStyle(
+                      color: stateColor,
+                      fontSize: 14,
+                      fontWeight: FontWeight.w900,
+                      letterSpacing: 1.0,
+                    ),
+                  ),
+                ],
+              ),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                decoration: BoxDecoration(
+                  color: isCalib
+                      ? Colors.green.withValues(alpha: 0.2)
+                      : Colors.amber.withValues(alpha: 0.2),
+                  borderRadius: BorderRadius.circular(6),
+                ),
+                child: Text(
+                  isCalib ? "COMPASS CALIBRATED" : "COMPASS UNCALIBRATED",
+                  style: TextStyle(
+                    color: isCalib ? Colors.greenAccent : Colors.amberAccent,
+                    fontSize: 9,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+
+          // Row 2: Metrics Grid
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              // Z-Acceleration
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text(
+                      "IMU Z-ACCEL",
+                      style: TextStyle(
+                        color: Colors.white38,
+                        fontSize: 9,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      "${rawZ.toStringAsFixed(2)} m/s²",
+                      style: TextStyle(
+                        color: rawZ.abs() > 0.4
+                            ? Colors.amberAccent
+                            : Colors.white,
+                        fontSize: 13,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+
+              // GPS Speed
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text(
+                      "GPS SPEED",
+                      style: TextStyle(
+                        color: Colors.white38,
+                        fontSize: 9,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      "${speedKmH.toStringAsFixed(1)} km/h",
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 13,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+
+              // Direction Angles
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text(
+                      "COMPASS / GPS",
+                      style: TextStyle(
+                        color: Colors.white38,
+                        fontSize: 9,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      "${compass.toStringAsFixed(0)}° / ${gpsHeading.toStringAsFixed(0)}°",
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 13,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
           ),
         ],
       ),
