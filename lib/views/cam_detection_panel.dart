@@ -126,23 +126,70 @@ class _CamDetectionPanelState extends State<CamDetectionPanel> {
               ),
             ),
 
-          // ── Label bar ────────────────────────────────────────────────────
+          // ── Label bar with YOLO detection status ────────────────────────
           Positioned(
             bottom: 0,
             left: 0,
             right: 0,
             child: Container(
-              padding: const EdgeInsets.symmetric(vertical: 6),
+              padding: const EdgeInsets.symmetric(vertical: 6, horizontal: 8),
               color: Colors.redAccent.withValues(alpha: 0.88),
-              child: Text(
-                '📷  ${widget.label}',
-                textAlign: TextAlign.center,
-                style: const TextStyle(
-                  color: Colors.white,
-                  fontSize: 12,
-                  fontWeight: FontWeight.w800,
-                  letterSpacing: 0.5,
-                ),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Text(
+                    '\u{1F4F7}  ${widget.label}',
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 12,
+                      fontWeight: FontWeight.w800,
+                      letterSpacing: 0.5,
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 6,
+                      vertical: 2,
+                    ),
+                    decoration: BoxDecoration(
+                      color: _latestDetections == null
+                          ? Colors.orange.withValues(alpha: 0.9)
+                          : _latestDetections!.detections.isEmpty
+                          ? Colors.green.withValues(alpha: 0.9)
+                          : Colors.blue.withValues(alpha: 0.9),
+                      borderRadius: BorderRadius.circular(4),
+                    ),
+                    child: Text(
+                      _latestDetections == null
+                          ? '🔍 YOLO Loading…'
+                          : _latestDetections!.detections.isEmpty
+                          ? '🔍 YOLO Active'
+                          : () {
+                              // Group by label and count, e.g. "PERSON ×2, CAR"
+                              final counts = <String, int>{};
+                              for (final d in _latestDetections!.detections) {
+                                counts[d.label.toUpperCase()] =
+                                    (counts[d.label.toUpperCase()] ?? 0) + 1;
+                              }
+                              final parts = counts.entries
+                                  .map(
+                                    (e) => e.value > 1
+                                        ? '${e.key} ×${e.value}'
+                                        : e.key,
+                                  )
+                                  .join('  ');
+                              return '🔍 $parts';
+                            }(),
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 10,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                  ),
+                ],
               ),
             ),
           ),
@@ -190,6 +237,8 @@ class _PanelDetectionPainter extends CustomPainter {
     'bicycle': Color(0xFFFFCC00),
     'dog': Color(0xFF34C759), // green
     'cat': Color(0xFF34C759),
+    'traffic light': Color(0xFF5AC8FA), // light blue
+    'stop sign': Color(0xFFFF2D55), // bright red
   };
 
   @override
@@ -251,28 +300,30 @@ class _PanelDetectionPainter extends CustomPainter {
         canvas.drawLine(pts[0], pts[2], boxPaint);
       }
 
-      // Label with coloured background
+      // ── Label: class name + confidence ──────────────────────────────────
       final labelText =
-          '  ${det.label} ${(det.confidence * 100).toStringAsFixed(0)}%  ';
+          ' ${det.label.toUpperCase()}  ${(det.confidence * 100).toStringAsFixed(0)}% ';
       final tp = TextPainter(
         text: TextSpan(
           text: labelText,
           style: TextStyle(
-            color: Colors.black,
-            fontSize: 10,
-            fontWeight: FontWeight.bold,
-            background: Paint()..color = color,
+            color: Colors.white,
+            fontSize: 13,
+            fontWeight: FontWeight.w900,
+            letterSpacing: 0.4,
+            background: Paint()..color = color.withValues(alpha: 1.0),
           ),
         ),
         textDirection: TextDirection.ltr,
       )..layout(maxWidth: size.width - left);
 
-      final labelY = top > tp.height + 4 ? top - tp.height - 2 : bottom + 2;
+      // Place above box; if no room, place inside top of box.
+      final labelY = top >= tp.height + 2 ? top - tp.height : top + 2;
       tp.paint(
         canvas,
         Offset(
-          left.clamp(0, size.width - tp.width),
-          labelY.clamp(0, size.height - tp.height),
+          left.clamp(0.0, (size.width - tp.width).clamp(0.0, size.width)),
+          labelY.clamp(0.0, size.height - tp.height),
         ),
       );
     }

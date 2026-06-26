@@ -97,6 +97,9 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   bool _isConnectedToEsp32 = false;
   // True when REAR was opened via the REAR button (manual). Reverting clears this.
   bool _rearManualOverride = false;
+  // True when FRONT was opened manually (top button or banner button). Prevents
+  // _pollBlindSpotSensors from auto-closing the panel when the sensor reads clear.
+  bool _frontManualOverride = false;
 
   ReversingDetectorService? _reversingDetector;
   // ── Single active camera mode ─────────────────────────────────────────────
@@ -1239,7 +1242,10 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     }
   }
 
-  Future<String?> _generateIncidentVideo(List<Uint8List> frames, String eventType) async {
+  Future<String?> _generateIncidentVideo(
+    List<Uint8List> frames,
+    String eventType,
+  ) async {
     if (frames.isEmpty || _state.documentsDirectoryPath == null) return null;
     try {
       final docsDir = _state.documentsDirectoryPath!;
@@ -1249,21 +1255,26 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
 
       // Write frames to disk
       for (int i = 0; i < frames.length; i++) {
-        final file = File('${tempDir.path}/img${i.toString().padLeft(3, '0')}.jpg');
+        final file = File(
+          '${tempDir.path}/img${i.toString().padLeft(3, '0')}.jpg',
+        );
         await file.writeAsBytes(frames[i]);
       }
 
       final outputPath = '$docsDir/incident_video_${eventType}_$timestamp.mp4';
       // FFmpeg: framerate 3, 15 frames = 5 seconds
       // -c:v libx264 -pix_fmt yuv420p for wide compatibility
-      final command = '-y -framerate 3 -i "${tempDir.path}/img%03d.jpg" -c:v libx264 -preset ultrafast -pix_fmt yuv420p "$outputPath"';
-      
+      final command =
+          '-y -framerate 3 -i "${tempDir.path}/img%03d.jpg" -c:v libx264 -preset ultrafast -pix_fmt yuv420p "$outputPath"';
+
       final session = await FFmpegKit.execute(command);
       final returnCode = await session.getReturnCode();
-      
+
       // Clean up temp dir
-      try { await tempDir.delete(recursive: true); } catch (_) {}
-      
+      try {
+        await tempDir.delete(recursive: true);
+      } catch (_) {}
+
       if (ReturnCode.isSuccess(returnCode)) {
         return outputPath;
       }
@@ -1798,7 +1809,10 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
                 width: double.infinity,
                 height: double.infinity,
                 fullScreen: true,
-                onClose: () => _setCamMode(CamMode.driverMonitoring),
+                onClose: () {
+                  _frontManualOverride = false;
+                  _setCamMode(CamMode.driverMonitoring);
+                },
               ),
             ),
 
@@ -1916,8 +1930,10 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
                 child: GestureDetector(
                   onTap: () {
                     if (_camMode == CamMode.front) {
+                      _frontManualOverride = false;
                       _setCamMode(CamMode.driverMonitoring);
                     } else {
+                      _frontManualOverride = true;
                       _setCamMode(CamMode.front);
                     }
                   },
@@ -2254,6 +2270,8 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       } else if (right != null && right < 50.0) {
         _setCamMode(CamMode.right);
       } else if (front != null && front < 50.0) {
+        // Sensor triggered — not a manual open, so override is off.
+        _frontManualOverride = false;
         _setCamMode(CamMode.front);
       } else {
         final bool leftClear = left == null || left > 60.0;
@@ -2264,7 +2282,8 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
             frontClear &&
             (_camMode == CamMode.left ||
                 _camMode == CamMode.right ||
-                _camMode == CamMode.front)) {
+                // Only auto-close front cam if it was NOT manually opened.
+                (_camMode == CamMode.front && !_frontManualOverride))) {
           _setCamMode(CamMode.driverMonitoring);
         }
       }
@@ -2663,61 +2682,59 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
               ),
             ),
             GestureDetector(
-                onTap: () {
-                  if (_camMode == CamMode.rear && _rearManualOverride) {
-                    _rearManualOverride = false;
-                    _setCamMode(CamMode.driverMonitoring);
-                  } else {
-                    _rearManualOverride = true;
-                    _setCamMode(CamMode.rear);
-                  }
-                },
-                child: Container(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 10,
-                    vertical: 6,
-                  ),
-                  decoration: BoxDecoration(
+              onTap: () {
+                if (_camMode == CamMode.rear && _rearManualOverride) {
+                  _rearManualOverride = false;
+                  _setCamMode(CamMode.driverMonitoring);
+                } else {
+                  _rearManualOverride = true;
+                  _setCamMode(CamMode.rear);
+                }
+              },
+              child: Container(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 10,
+                  vertical: 6,
+                ),
+                decoration: BoxDecoration(
+                  color: _camMode == CamMode.rear
+                      ? Colors.redAccent.withValues(alpha: 0.9)
+                      : Colors.white.withValues(alpha: 0.15),
+                  borderRadius: BorderRadius.circular(6),
+                  border: Border.all(
                     color: _camMode == CamMode.rear
-                        ? Colors.redAccent.withValues(alpha: 0.9)
-                        : Colors.white.withValues(alpha: 0.15),
-                    borderRadius: BorderRadius.circular(6),
-                    border: Border.all(
-                      color: _camMode == CamMode.rear
-                          ? Colors.redAccent
-                          : Colors.white30,
-                      width: 1,
-                    ),
-                  ),
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: const [
-                      Icon(
-                        Icons.videocam_rounded,
-                        color: Colors.white,
-                        size: 16,
-                      ),
-                      SizedBox(width: 4),
-                      Text(
-                        'REAR',
-                        style: TextStyle(
-                          color: Colors.white,
-                          fontSize: 11,
-                          fontWeight: FontWeight.w700,
-                          letterSpacing: 0.5,
-                        ),
-                      ),
-                    ],
+                        ? Colors.redAccent
+                        : Colors.white30,
+                    width: 1,
                   ),
                 ),
-              )
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: const [
+                    Icon(Icons.videocam_rounded, color: Colors.white, size: 16),
+                    SizedBox(width: 4),
+                    Text(
+                      'REAR',
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontSize: 11,
+                        fontWeight: FontWeight.w700,
+                        letterSpacing: 0.5,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
             // ── FRONT cam toggle button ──
             const SizedBox(width: 6),
             GestureDetector(
               onTap: () {
                 if (_camMode == CamMode.front) {
+                  _frontManualOverride = false;
                   _setCamMode(CamMode.driverMonitoring);
                 } else {
+                  _frontManualOverride = true;
                   _setCamMode(CamMode.front);
                 }
               },

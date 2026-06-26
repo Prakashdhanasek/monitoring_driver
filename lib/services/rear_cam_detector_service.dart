@@ -187,7 +187,9 @@ const List<String> _kCoco80 = [
   'toothbrush',
 ];
 
-/// Only these classes are relevant for a rear/reversing camera.
+/// Obstacle classes detected by ALL cameras (rear, front, left, right).
+/// This single set is shared — both the rear overlay and the front/side
+/// CamDetectionPanel use the same RearCamDetectorService isolate.
 const Set<String> _kRelevant = {
   'person',
   'bicycle',
@@ -197,6 +199,8 @@ const Set<String> _kRelevant = {
   'truck',
   'dog',
   'cat',
+  'traffic light',
+  'stop sign',
 };
 
 const double _kConf = 0.30;

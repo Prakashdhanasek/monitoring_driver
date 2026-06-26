@@ -500,6 +500,8 @@ class _RearDetectionPainter extends CustomPainter {
     'bicycle': Color(0xFFFFCC00),
     'dog': Color(0xFF34C759), // green
     'cat': Color(0xFF34C759),
+    'traffic light': Color(0xFF5AC8FA), // light blue
+    'stop sign': Color(0xFFFF2D55), // bright red
   };
 
   @override
@@ -550,24 +552,32 @@ class _RearDetectionPainter extends CustomPainter {
         canvas.drawLine(pts[0], pts[2], boxPaint);
       }
 
-      // Label
+      // ── Label: class name + confidence ──────────────────────────────────
       final label =
-          '  ${det.label} ${(det.confidence * 100).toStringAsFixed(0)}%  ';
+          ' ${det.label.toUpperCase()}  ${(det.confidence * 100).toStringAsFixed(0)}% ';
       final tp = TextPainter(
         text: TextSpan(
           text: label,
           style: TextStyle(
-            color: Colors.black,
-            fontSize: 11,
-            fontWeight: FontWeight.bold,
-            background: Paint()..color = color,
+            color: Colors.white,
+            fontSize: 13,
+            fontWeight: FontWeight.w900,
+            letterSpacing: 0.4,
+            background: Paint()..color = color.withValues(alpha: 1.0),
           ),
         ),
         textDirection: TextDirection.ltr,
       )..layout();
 
-      final labelY = top > tp.height + 4 ? top - tp.height - 2 : bottom + 2;
-      tp.paint(canvas, Offset(left, labelY.clamp(0, size.height - tp.height)));
+      // Place above box; if no room, place inside top of box.
+      final labelY = top >= tp.height + 2 ? top - tp.height : top + 2;
+      tp.paint(
+        canvas,
+        Offset(
+          left.clamp(0.0, (size.width - tp.width).clamp(0.0, size.width)),
+          labelY.clamp(0.0, size.height - tp.height),
+        ),
+      );
     }
   }
 
