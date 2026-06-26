@@ -743,6 +743,8 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     // Initialize reversing detector
     _reversingDetector = ReversingDetectorService();
     _reversingDetector!.onReversingChanged.listen((reversing) {
+      // Disable automatic switching to rear camera
+      /*
       if (!mounted) return;
       if (reversing) {
         _setCamMode(CamMode.rear);
@@ -750,6 +752,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
         // Auto-return only when reversing ends AND rear wasn't manually opened.
         _setCamMode(CamMode.driverMonitoring);
       }
+      */
     });
 
     // Connect to ESP32 WiFi at startup to stay connected and minimize latency
@@ -1690,56 +1693,50 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
             ),
           ),
 
-          // ── Side cam overlays (monitoring phase) ──
+          // ── Side cam overlays (monitoring phase) — full-screen ──
           if (_phase == Phase.monitoring &&
               !_tripCompleted &&
               _camMode == CamMode.left)
-            Positioned(
-              bottom: 90,
-              left: 44,
+            Positioned.fill(
               child: CamDetectionPanel(
                 streamUrl: _leftCamIp != null
                     ? 'http://$_leftCamIp:86/'
                     : _kLeftCamStreamUrl,
                 label: 'LEFT CAM',
-                width: 200,
-                height: 260,
+                width: double.infinity,
+                height: double.infinity,
+                fullScreen: true,
                 onClose: () => _setCamMode(CamMode.driverMonitoring),
               ),
             ),
           if (_phase == Phase.monitoring &&
               !_tripCompleted &&
               _camMode == CamMode.right)
-            Positioned(
-              bottom: 90,
-              right: 44,
+            Positioned.fill(
               child: CamDetectionPanel(
                 streamUrl: _rightCamIp != null
                     ? 'http://$_rightCamIp:80/'
                     : _kRightCamStreamUrl,
                 label: 'RIGHT CAM',
-                width: 200,
-                height: 260,
+                width: double.infinity,
+                height: double.infinity,
+                fullScreen: true,
                 onClose: () => _setCamMode(CamMode.driverMonitoring),
               ),
             ),
           if (_phase == Phase.monitoring &&
               !_tripCompleted &&
               _camMode == CamMode.front)
-            Positioned(
-              bottom: 90,
-              left: 0,
-              right: 0,
-              child: Center(
-                child: CamDetectionPanel(
-                  streamUrl: _frontCamIp != null
-                      ? 'http://$_frontCamIp:84/'
-                      : _kFrontCamStreamUrl,
-                  label: 'FRONT CAM',
-                  width: 260,
-                  height: 200,
-                  onClose: () => _setCamMode(CamMode.driverMonitoring),
-                ),
+            Positioned.fill(
+              child: CamDetectionPanel(
+                streamUrl: _frontCamIp != null
+                    ? 'http://$_frontCamIp:84/'
+                    : _kFrontCamStreamUrl,
+                label: 'FRONT CAM',
+                width: double.infinity,
+                height: double.infinity,
+                fullScreen: true,
+                onClose: () => _setCamMode(CamMode.driverMonitoring),
               ),
             ),
 
@@ -1837,6 +1834,59 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
                         ),
                         Icon(
                           Icons.chevron_right_rounded,
+                          color: Colors.white,
+                          size: 20,
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            ),
+
+          // ── Front cam toggle button (top edge, centred, monitoring phase) ──
+          if (_phase == Phase.monitoring && !_tripCompleted)
+            Positioned(
+              top: 0,
+              left: 0,
+              right: 0,
+              child: Center(
+                child: GestureDetector(
+                  onTap: () {
+                    if (_camMode == CamMode.front) {
+                      _setCamMode(CamMode.driverMonitoring);
+                    } else {
+                      _setCamMode(CamMode.front);
+                    }
+                  },
+                  child: Container(
+                    width: 64,
+                    height: 36,
+                    decoration: BoxDecoration(
+                      color: _camMode == CamMode.front
+                          ? Colors.orangeAccent.withValues(alpha: 0.85)
+                          : Colors.black54,
+                      borderRadius: const BorderRadius.only(
+                        bottomLeft: Radius.circular(10),
+                        bottomRight: Radius.circular(10),
+                      ),
+                      border: Border.all(
+                        color: _camMode == CamMode.front
+                            ? Colors.orangeAccent
+                            : Colors.white24,
+                        width: 1.2,
+                      ),
+                    ),
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: const [
+                        Icon(
+                          Icons.videocam_rounded,
+                          color: Colors.white,
+                          size: 14,
+                        ),
+                        Icon(
+                          Icons.expand_more_rounded,
                           color: Colors.white,
                           size: 20,
                         ),
@@ -2550,8 +2600,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
                 ),
               ),
             ),
-            if (_isConnectedToEsp32)
-              GestureDetector(
+            GestureDetector(
                 onTap: () {
                   if (_camMode == CamMode.rear && _rearManualOverride) {
                     _rearManualOverride = false;
@@ -2600,12 +2649,6 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
                   ),
                 ),
               )
-            else if (!_isConnectingToEsp32)
-              const Icon(
-                Icons.refresh_rounded,
-                color: Colors.white70,
-                size: 16,
-              ),
             // ── FRONT cam toggle button ──
             const SizedBox(width: 6),
             GestureDetector(

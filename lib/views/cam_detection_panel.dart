@@ -19,6 +19,7 @@ class CamDetectionPanel extends StatefulWidget {
   final double width;
   final double height;
   final VoidCallback onClose;
+  final bool fullScreen;
 
   const CamDetectionPanel({
     super.key,
@@ -27,6 +28,7 @@ class CamDetectionPanel extends StatefulWidget {
     required this.width,
     required this.height,
     required this.onClose,
+    this.fullScreen = false,
   });
 
   @override
@@ -68,9 +70,14 @@ class _CamDetectionPanelState extends State<CamDetectionPanel> {
       height: widget.height,
       decoration: BoxDecoration(
         color: Colors.black,
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: Colors.redAccent, width: 2),
-        boxShadow: const [BoxShadow(color: Colors.black54, blurRadius: 12)],
+        borderRadius:
+            widget.fullScreen ? BorderRadius.zero : BorderRadius.circular(12),
+        border: widget.fullScreen
+            ? null
+            : Border.all(color: Colors.redAccent, width: 2),
+        boxShadow: widget.fullScreen
+            ? null
+            : const [BoxShadow(color: Colors.black54, blurRadius: 12)],
       ),
       clipBehavior: Clip.hardEdge,
       child: Stack(
