@@ -543,6 +543,7 @@ class IncidentsService {
     String snapshotUrl = 'string',
     String snapshotPath = '',
     String videoClipUrl = 'string',
+    String videoPath = '',
     bool isOnline = true,
   }) {
     // IMPORTANT FIX:
@@ -571,6 +572,7 @@ class IncidentsService {
       if (exactSnapshotPath.isNotEmpty) 'snapshotPath': exactSnapshotPath,
 
       'videoClipUrl': videoClipUrl.isEmpty ? 'string' : videoClipUrl,
+      if (videoPath.isNotEmpty) 'videoPath': videoPath,
       'status': 'Open',
       'occurredAt': DateTime.now().toUtc().toIso8601String(),
 
@@ -677,6 +679,42 @@ class IncidentsService {
 
             // Device path API-il ayakkenda — neekkuka.
             decoded.remove('snapshotPath');
+          }
+
+          // ── STEP 1.5: videoPath ──
+          final String? videoPath = decoded['videoPath'] as String?;
+          if (videoPath != null && videoPath.isNotEmpty) {
+            final File videoFile = File(videoPath);
+            if (await videoFile.exists()) {
+              debugPrint(
+                '[IncidentsService] Uploading video evidence file: ${videoFile.path}',
+              );
+
+              final uploadedUrl = await _uploadEvidence(videoFile);
+
+              if (uploadedUrl != null && uploadedUrl.isNotEmpty) {
+                decoded['videoClipUrl'] = uploadedUrl;
+                debugPrint(
+                  '[IncidentsService] Video uploaded -> $uploadedUrl',
+                );
+              } else {
+                debugPrint(
+                  '[IncidentsService] Video upload failed; sending without video clip.',
+                );
+              }
+              
+              // Clean up the local temporary video file after attempting upload
+              try {
+                await videoFile.delete();
+              } catch (_) {}
+            } else {
+              debugPrint(
+                '[IncidentsService] Video file not found: $videoPath',
+              );
+            }
+
+            // Remove device path from payload
+            decoded.remove('videoPath');
           }
 
           final String finalBody = jsonEncode(decoded);

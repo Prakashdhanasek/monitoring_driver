@@ -15,6 +15,8 @@ import 'package:permission_handler/permission_handler.dart';
 import 'package:multicast_dns/multicast_dns.dart';
 import 'package:http/http.dart' as http;
 import 'package:wakelock_plus/wakelock_plus.dart';
+import 'package:ffmpeg_kit_flutter_new_min_gpl/ffmpeg_kit.dart';
+import 'package:ffmpeg_kit_flutter_new_min_gpl/return_code.dart';
 
 import 'core/face_auth_engine.dart';
 import 'core/monitoring_engine.dart';
@@ -167,6 +169,9 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   // Latest camera frame as JPEG — updated every object detection frame.
   // Used for incident snapshots so the correct detection-time image is uploaded.
   Uint8List? _latestFrameJpeg;
+
+  // Rolling buffer of the last 15 JPEG frames (~5 seconds at 3 fps) for incident video.
+  final List<Uint8List> _recentFrames = [];
 
   // Trip counting: a trip ends when the driver is gone for >= 30s, and the
   // next time a driver appears it becomes the next trip.
@@ -746,6 +751,11 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       // Disable automatic switching to rear camera
       /*
       if (!mounted) return;
+      
+      // Only trigger automatic reverse camera during the active monitoring phase.
+      // This prevents the camera from suddenly opening due to phone handling during face verification.
+      if (_phase != Phase.monitoring) return;
+
       if (reversing) {
         _setCamMode(CamMode.rear);
       } else if (_camMode == CamMode.rear && !_rearManualOverride) {
@@ -930,9 +940,15 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
             // Object detection (phone / cigarette / seatbelt) every 5 frames.
             if (_frame % 5 == 0) {
               _objectDetector.processFrame(image, _state, _getCameraRotation());
-              // Capture current frame for incident snapshot (so the correct
-              // detection-time image is available for upload).
-              _latestFrameJpeg = _captureFaceJpeg(image);
+              // Capture current frame for incident snapshot and video buffer
+              final jpeg = _captureFaceJpeg(image);
+              if (jpeg != null) {
+                _latestFrameJpeg = jpeg;
+                _recentFrames.add(jpeg);
+                if (_recentFrames.length > 15) {
+                  _recentFrames.removeAt(0); // Maintain max 15 frames (~5s)
+                }
+              }
             }
 
             // Play an alert sound on new warnings.
@@ -1151,6 +1167,16 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
         snapshotPath = await _findLatestEvidenceFolder() ?? '';
       }
 
+      // Generate 3-second incident video if frames are available
+      String videoPath = '';
+      if (_recentFrames.isNotEmpty && _state.documentsDirectoryPath != null) {
+        final vPath = await _generateIncidentVideo(_recentFrames, eventType);
+        if (vPath != null) {
+          videoPath = vPath;
+          debugPrint('[Flow] Incident video generated: $videoPath');
+        }
+      }
+
       // FIX: Never create an incident before face verification is complete.
       // This prevents blank images and stale/random driver names from being sent.
       if (_phase != Phase.monitoring || _driverId == '—') {
@@ -1182,6 +1208,8 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
         vehicleRegistrationNumber: _vehicleRegNo,
         snapshotUrl: '',
         snapshotPath: snapshotPath,
+        videoClipUrl: '', // Let IncidentsService upload the file and fill this
+        videoPath: videoPath, // Pass the path to the video file
         isOnline: _isOnline,
       );
 
@@ -1209,6 +1237,40 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     } catch (e) {
       debugPrint('[Flow] Failed to send trip end: $e');
     }
+  }
+
+  Future<String?> _generateIncidentVideo(List<Uint8List> frames, String eventType) async {
+    if (frames.isEmpty || _state.documentsDirectoryPath == null) return null;
+    try {
+      final docsDir = _state.documentsDirectoryPath!;
+      final timestamp = DateTime.now().millisecondsSinceEpoch;
+      final tempDir = Directory('$docsDir/temp_vid_$timestamp');
+      await tempDir.create();
+
+      // Write frames to disk
+      for (int i = 0; i < frames.length; i++) {
+        final file = File('${tempDir.path}/img${i.toString().padLeft(3, '0')}.jpg');
+        await file.writeAsBytes(frames[i]);
+      }
+
+      final outputPath = '$docsDir/incident_video_${eventType}_$timestamp.mp4';
+      // FFmpeg: framerate 3, 15 frames = 5 seconds
+      // -c:v libx264 -pix_fmt yuv420p for wide compatibility
+      final command = '-y -framerate 3 -i "${tempDir.path}/img%03d.jpg" -c:v libx264 -preset ultrafast -pix_fmt yuv420p "$outputPath"';
+      
+      final session = await FFmpegKit.execute(command);
+      final returnCode = await session.getReturnCode();
+      
+      // Clean up temp dir
+      try { await tempDir.delete(recursive: true); } catch (_) {}
+      
+      if (ReturnCode.isSuccess(returnCode)) {
+        return outputPath;
+      }
+    } catch (e) {
+      debugPrint('[Flow] Error generating incident video: $e');
+    }
+    return null;
   }
 
   Future<String?> _findLatestEvidenceFolder() async {
