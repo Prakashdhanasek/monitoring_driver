@@ -1358,6 +1358,17 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   // ─────────────────────────────────────────────────────────
   // ALERT AUDIO & INCIDENTS
   // ─────────────────────────────────────────────────────────
+  bool _checkCooldown(String label) {
+    final now = DateTime.now();
+    final lastTime = _lastIncidentReportAt[label];
+    // 5 minutes cooldown for ALL distractions/incidents
+    if (lastTime == null || now.difference(lastTime).inSeconds >= 5 * 60) {
+      _lastIncidentReportAt[label] = now;
+      return true;
+    }
+    return false;
+  }
+
   void _handleAlertSounds() {
     final now = DateTime.now();
     final phone = _state.hasPhone;
@@ -1366,30 +1377,34 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     bool loud = false;
     bool soft = false;
 
-    // 1. Fire on the TRANSITION into state-based warnings.
-    if (_state.authStatus == AuthStatus.unauthorized &&
-        _prevAuthSound != AuthStatus.unauthorized) {
-      loud = true;
-      _reportIncident('UnauthorizedDriver', 'High', 1.0);
-      _tts.speak('Unauthorized driver detected.');
+    // 1. Fire on state-based warnings (throttled by cooldown).
+    if (_state.authStatus == AuthStatus.unauthorized) {
+      if (_checkCooldown('UnauthorizedDriver')) {
+        loud = true;
+        _reportIncident('Unauthorized Driver', 'High', 1.0);
+        _tts.speak('Unauthorized driver detected.');
+      }
     }
-    if (_state.drowsinessLevel == DrowsinessLevel.asleep &&
-        _prevDrowsy != DrowsinessLevel.asleep) {
-      loud = true;
-      _reportIncident('Drowsiness', 'High', 1.0);
-      _tts.speak('Warning! Wake up. You are falling asleep.');
+    if (_state.drowsinessLevel == DrowsinessLevel.asleep) {
+      if (_checkCooldown('Asleep')) {
+        loud = true;
+        _reportIncident('Drowsiness', 'High', 1.0);
+        _tts.speak('Warning! Wake up. You are falling asleep.');
+      }
     }
-    if (_state.drowsinessLevel == DrowsinessLevel.drowsy &&
-        _prevDrowsy == DrowsinessLevel.alert) {
-      soft = true;
-      _reportIncident('Drowsiness', 'Medium', 0.8);
-      _tts.speak('You look drowsy. Stay alert.');
+    if (_state.drowsinessLevel == DrowsinessLevel.drowsy) {
+      if (_checkCooldown('Drowsiness')) {
+        soft = true;
+        _reportIncident('Drowsiness', 'Medium', 0.8);
+        _tts.speak('You look drowsy. Stay alert.');
+      }
     }
-    if (_state.distractionStatus == DistractionStatus.distracted &&
-        _prevDistract == DistractionStatus.forward) {
-      soft = true;
-      _reportIncident('Distraction', 'Medium', 0.8);
-      _tts.speak('Keep your eyes on the road.');
+    if (_state.distractionStatus == DistractionStatus.distracted) {
+      if (_checkCooldown('Distraction')) {
+        soft = true;
+        _reportIncident('Distraction', 'Medium', 0.8);
+        _tts.speak('Keep your eyes on the road.');
+      }
     }
 
     // 2. Report only high-confidence object detections at intervals.
@@ -1406,10 +1421,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       if (threshold == null || obj.confidence <= threshold) continue;
       if (label == 'seatbelt') continue;
 
-      final lastTime = _lastIncidentReportAt[label];
-      if (lastTime == null || now.difference(lastTime).inSeconds >= 10) {
-        _lastIncidentReportAt[label] = now;
-
+      if (_checkCooldown(label)) {
         String eventType = label;
         String voice = '';
         if (label == 'phone') {
