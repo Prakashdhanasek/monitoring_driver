@@ -25,8 +25,8 @@ class MainActivity : FlutterActivity() {
     private var wifiCallback: ConnectivityManager.NetworkCallback? = null
 
     companion object {
-        private const val WIFI_SSID = "iPhone"
-        private const val WIFI_PASSWORD = "********"
+        private const val WIFI_SSID = "motorola edge 50 pro"
+        private const val WIFI_PASSWORD = "Rohit@1213"
     }
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {

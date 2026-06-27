@@ -108,13 +108,13 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   CamMode _camMode = CamMode.driverMonitoring;
   // String _esp32StreamUrl = 'http://10.119.135.95:82/';
 
-  String _esp32StreamUrl = 'http://172.20.10.5:82/';
+  String _esp32StreamUrl = 'http://10.119.135.87:82/';
 
   // ── Side cameras (blind spot)
   // Left cam  — video :86,  sensor :87
   // Right cam  — video :80,  sensor :81
   // Front cam  — video :84,  sensor :85
-  // Rear cam   — video :82,  sensor :83  (rearcam.local → 172.20.10.5)
+  // Rear cam   — video :82,  sensor :83  (rearcam.local → 10.119.135.87)
   static const String _kLeftCamStreamUrl = 'http://leftcam.local:86/';
   static const String _kRightCamStreamUrl = 'http://rightcam.local:80/';
   static const String _kFrontCamStreamUrl = 'http://frontcam.local:84/';
@@ -126,9 +126,9 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   // String?
   // _frontCamIp; // video :84
 
-  String? _leftCamIp = '192.168.1.61'; // video :86  sensor :87
-  String? _rightCamIp = '192.168.1.129'; // video :80  sensor :81
-  String? _frontCamIp = '192.168.1.130'; // video :84  sensor :85
+  String? _leftCamIp = '10.119.135.95'; // video :86  sensor :87
+  String? _rightCamIp = '10.119.135.65'; // video :80  sensor :81
+  String? _frontCamIp = '10.119.135.115'; // video :84  sensor :85
   // (resolved by scanner, not shown in strict mode)
   DateTime? _lastSideCamScanAt; // throttle scanner to once per 60 s
   Timer? _blindSpotTimer;
@@ -521,13 +521,13 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       _isConnectingToEsp32 = true;
     });
 
-    const String targetSsid = 'iPhone';
+    const String targetSsid = 'motorola edge 50 pro';
     // String streamUrl = 'http://10.119.135.95:82/';
     // String esp32Host = '10.119.135.95';
     // const int esp32Port = 82;
 
-    String streamUrl = 'http://172.20.10.5:82/';
-    String esp32Host = '172.20.10.5';
+    String streamUrl = 'http://10.119.135.87:82/';
+    String esp32Host = '10.119.135.87';
     const int esp32Port = 82;
 
     debugPrint('==================================================');
@@ -555,7 +555,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
         '[Esp32Wifi] ✗ Not on any Wi-Fi. Trying to connect to: $targetSsid',
       );
       debugPrint('==================================================');
-      final apConnected = await _espWifiService.connectToEsp32(targetSsid);
+      final apConnected = await _espWifiService.connectToEsp32(targetSsid, password: 'Rohit@1213');
       if (!apConnected) {
         debugPrint('[ESP32] ✗ Could not connect to ESP32 Access Point.');
         if (mounted) {
@@ -2205,7 +2205,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       try {
         final res = await http
             .get(Uri.parse(url))
-            .timeout(const Duration(milliseconds: 1500));
+            .timeout(const Duration(milliseconds: 3000));
         if (res.statusCode == 200) {
           final data = jsonDecode(res.body) as Map<String, dynamic>;
           final dist = (data['distance_cm'] as num?)?.toDouble();
