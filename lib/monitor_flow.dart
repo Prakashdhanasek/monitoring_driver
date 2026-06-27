@@ -2670,123 +2670,130 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       text = 'ESP32-CAM: Disconnected (Tap to connect)';
     }
 
-    return GestureDetector(
-      onTap: _connectToEsp32Wifi,
-      child: Container(
-        margin: const EdgeInsets.only(left: 12, right: 12, top: 8),
-        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-        decoration: BoxDecoration(
-          color: bgColor.withValues(alpha: 0.92),
-          borderRadius: BorderRadius.circular(10),
-        ),
-        child: Row(
-          children: [
-            Icon(icon, color: Colors.white, size: 18),
-            const SizedBox(width: 8),
-            Expanded(
-              child: Text(
-                text,
-                style: const TextStyle(
-                  color: Colors.white,
-                  fontSize: 13,
-                  fontWeight: FontWeight.w600,
-                ),
+    return Container(
+      margin: const EdgeInsets.only(left: 12, right: 12, top: 8),
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+      decoration: BoxDecoration(
+        color: bgColor.withValues(alpha: 0.92),
+        borderRadius: BorderRadius.circular(10),
+      ),
+      child: Row(
+        children: [
+          // ── Tap icon+text area to connect to ESP32 WiFi ──
+          Expanded(
+            child: GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              onTap: _connectToEsp32Wifi,
+              child: Row(
+                children: [
+                  Icon(icon, color: Colors.white, size: 16),
+                  const SizedBox(width: 6),
+                  Expanded(
+                    child: Text(
+                      text,
+                      overflow: TextOverflow.ellipsis,
+                      maxLines: 1,
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 11,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ),
+                ],
               ),
             ),
-            GestureDetector(
-              onTap: () {
-                if (_camMode == CamMode.rear && _rearManualOverride) {
-                  _rearManualOverride = false;
-                  _setCamMode(CamMode.driverMonitoring);
-                } else {
-                  _rearManualOverride = true;
-                  _setCamMode(CamMode.rear);
-                }
-              },
-              child: Container(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 10,
-                  vertical: 6,
-                ),
-                decoration: BoxDecoration(
+          ),
+          const SizedBox(width: 8),
+          GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onTap: () {
+              if (_camMode == CamMode.rear && _rearManualOverride) {
+                _rearManualOverride = false;
+                _setCamMode(CamMode.driverMonitoring);
+              } else {
+                _rearManualOverride = true;
+                _setCamMode(CamMode.rear);
+              }
+            },
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+              decoration: BoxDecoration(
+                color: _camMode == CamMode.rear
+                    ? Colors.redAccent.withValues(alpha: 0.9)
+                    : Colors.white.withValues(alpha: 0.15),
+                borderRadius: BorderRadius.circular(6),
+                border: Border.all(
                   color: _camMode == CamMode.rear
-                      ? Colors.redAccent.withValues(alpha: 0.9)
-                      : Colors.white.withValues(alpha: 0.15),
-                  borderRadius: BorderRadius.circular(6),
-                  border: Border.all(
-                    color: _camMode == CamMode.rear
-                        ? Colors.redAccent
-                        : Colors.white30,
-                    width: 1,
-                  ),
-                ),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: const [
-                    Icon(Icons.videocam_rounded, color: Colors.white, size: 16),
-                    SizedBox(width: 4),
-                    Text(
-                      'REAR',
-                      style: TextStyle(
-                        color: Colors.white,
-                        fontSize: 11,
-                        fontWeight: FontWeight.w700,
-                        letterSpacing: 0.5,
-                      ),
-                    ),
-                  ],
+                      ? Colors.redAccent
+                      : Colors.white30,
+                  width: 1,
                 ),
               ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: const [
+                  Icon(Icons.videocam_rounded, color: Colors.white, size: 16),
+                  SizedBox(width: 4),
+                  Text(
+                    'REAR',
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontSize: 11,
+                      fontWeight: FontWeight.w700,
+                      letterSpacing: 0.5,
+                    ),
+                  ),
+                ],
+              ),
             ),
-            // ── FRONT cam toggle button ──
-            const SizedBox(width: 6),
-            GestureDetector(
-              onTap: () {
-                if (_camMode == CamMode.front) {
-                  _frontManualOverride = false;
-                  _setCamMode(CamMode.driverMonitoring);
-                } else {
-                  _frontManualOverride = true;
-                  _setCamMode(CamMode.front);
-                }
-              },
-              child: Container(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 10,
-                  vertical: 6,
-                ),
-                decoration: BoxDecoration(
+          ),
+          // ── FRONT cam toggle button ──
+          const SizedBox(width: 6),
+          GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onTap: () {
+              if (_camMode == CamMode.front) {
+                _frontManualOverride = false;
+                _setCamMode(CamMode.driverMonitoring);
+              } else {
+                _frontManualOverride = true;
+                _setCamMode(CamMode.front);
+              }
+            },
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+              decoration: BoxDecoration(
+                color: _camMode == CamMode.front
+                    ? Colors.orangeAccent.withValues(alpha: 0.9)
+                    : Colors.white.withValues(alpha: 0.15),
+                borderRadius: BorderRadius.circular(6),
+                border: Border.all(
                   color: _camMode == CamMode.front
-                      ? Colors.orangeAccent.withValues(alpha: 0.9)
-                      : Colors.white.withValues(alpha: 0.15),
-                  borderRadius: BorderRadius.circular(6),
-                  border: Border.all(
-                    color: _camMode == CamMode.front
-                        ? Colors.orangeAccent
-                        : Colors.white30,
-                    width: 1,
-                  ),
-                ),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: const [
-                    Icon(Icons.videocam_rounded, color: Colors.white, size: 16),
-                    SizedBox(width: 4),
-                    Text(
-                      'FRONT',
-                      style: TextStyle(
-                        color: Colors.white,
-                        fontSize: 11,
-                        fontWeight: FontWeight.w700,
-                        letterSpacing: 0.5,
-                      ),
-                    ),
-                  ],
+                      ? Colors.orangeAccent
+                      : Colors.white30,
+                  width: 1,
                 ),
               ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: const [
+                  Icon(Icons.videocam_rounded, color: Colors.white, size: 16),
+                  SizedBox(width: 4),
+                  Text(
+                    'FRONT',
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontSize: 11,
+                      fontWeight: FontWeight.w700,
+                      letterSpacing: 0.5,
+                    ),
+                  ),
+                ],
+              ),
             ),
-          ],
-        ),
+          ),
+        ],
       ),
     );
   }

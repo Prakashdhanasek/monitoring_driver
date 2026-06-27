@@ -300,32 +300,25 @@ class _PanelDetectionPainter extends CustomPainter {
         canvas.drawLine(pts[0], pts[2], boxPaint);
       }
 
-      // ── Label: class name + confidence ──────────────────────────────────
+      // ── Label: class name + confidence (small, inside top-left of box) ──────
       final labelText =
-          ' ${det.label.toUpperCase()}  ${(det.confidence * 100).toStringAsFixed(0)}% ';
+          ' ${det.label.toUpperCase()} ${(det.confidence * 100).toStringAsFixed(0)}% ';
       final tp = TextPainter(
         text: TextSpan(
           text: labelText,
           style: TextStyle(
             color: Colors.white,
-            fontSize: 13,
-            fontWeight: FontWeight.w900,
-            letterSpacing: 0.4,
-            background: Paint()..color = color.withValues(alpha: 1.0),
+            fontSize: 10,
+            fontWeight: FontWeight.w700,
+            letterSpacing: 0.2,
+            background: Paint()..color = color.withValues(alpha: 0.85),
           ),
         ),
         textDirection: TextDirection.ltr,
-      )..layout(maxWidth: size.width - left);
+      )..layout(maxWidth: rect.width.clamp(40.0, size.width));
 
-      // Place above box; if no room, place inside top of box.
-      final labelY = top >= tp.height + 2 ? top - tp.height : top + 2;
-      tp.paint(
-        canvas,
-        Offset(
-          left.clamp(0.0, (size.width - tp.width).clamp(0.0, size.width)),
-          labelY.clamp(0.0, size.height - tp.height),
-        ),
-      );
+      // Always draw inside the box at the top-left corner.
+      tp.paint(canvas, Offset(rect.left, rect.top));
     }
   }
 
