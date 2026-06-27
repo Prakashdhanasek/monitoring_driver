@@ -355,7 +355,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     // FIX: Don't re-report cable unplug unless driver is verified and monitoring
     if (_phase != Phase.monitoring || _driverId == '—') return;
     final last = _lastCableReportAt;
-    if (last == null || DateTime.now().difference(last).inSeconds >= 30) {
+    if (last == null || DateTime.now().difference(last).inSeconds >= 5 * 60) {
       _lastCableReportAt = DateTime.now();
       _reportIncident('Cable Unplugged', 'High', 1.0);
     }
