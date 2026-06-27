@@ -25,7 +25,8 @@ class MainActivity : FlutterActivity() {
     private var wifiCallback: ConnectivityManager.NetworkCallback? = null
 
     companion object {
-        private const val WIFI_SSID = "BB SF ASIANET-2.4G"
+        private const val WIFI_SSID = "iPhone"
+        private const val WIFI_PASSWORD = "********"
     }
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
@@ -183,7 +184,7 @@ class MainActivity : FlutterActivity() {
     //   Binding the app to a single Network object routed all traffic through
     //   that one network, which had no route to the local ESP32 cameras
     //   (192.168.1.x) -> "No route to host (errno 113)".
-    //   The SSID LOCK above already keeps the device on BB SF ASIANET only,
+    //   The SSID LOCK above already keeps the device on the chosen Wi-Fi only,
     //   so the normal system Wi-Fi is used and BOTH the cameras and the
     //   internet are reachable.
     // ───────────────────────────────────────────────
