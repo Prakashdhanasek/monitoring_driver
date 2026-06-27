@@ -108,13 +108,13 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   CamMode _camMode = CamMode.driverMonitoring;
   // String _esp32StreamUrl = 'http://10.119.135.95:82/';
 
-  String _esp32StreamUrl = 'http://192.168.1.131:82/';
+  String _esp32StreamUrl = 'http://172.20.10.5:82/';
 
   // ── Side cameras (blind spot)
   // Left cam  — video :86,  sensor :87
   // Right cam  — video :80,  sensor :81
   // Front cam  — video :84,  sensor :85
-  // Rear cam   — video :82,  sensor :83
+  // Rear cam   — video :82,  sensor :83  (rearcam.local → 172.20.10.5)
   static const String _kLeftCamStreamUrl = 'http://leftcam.local:86/';
   static const String _kRightCamStreamUrl = 'http://rightcam.local:80/';
   static const String _kFrontCamStreamUrl = 'http://frontcam.local:84/';
@@ -521,13 +521,13 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       _isConnectingToEsp32 = true;
     });
 
-    const String targetSsid = 'BB SF ASIANET-2.4G';
+    const String targetSsid = 'iPhone';
     // String streamUrl = 'http://10.119.135.95:82/';
     // String esp32Host = '10.119.135.95';
     // const int esp32Port = 82;
 
-    String streamUrl = 'http://192.168.1.131:82/';
-    String esp32Host = '192.168.1.131';
+    String streamUrl = 'http://172.20.10.5:82/';
+    String esp32Host = '172.20.10.5';
     const int esp32Port = 82;
 
     debugPrint('==================================================');
@@ -2015,7 +2015,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
                         SizedBox(width: 10),
                         Expanded(
                           child: Text(
-                            '🔌 CHARGING CABLE UNPLUGGED · Reported to admin',
+                            '🔌 CHARGING CABLE UNPLUGGED  Reported to admin',
                             style: TextStyle(
                               color: Colors.white,
                               fontSize: 14,
@@ -2630,7 +2630,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
           SizedBox(width: 10),
           Expanded(
             child: Text(
-              '🔌 CHARGING CABLE UNPLUGGED · Reported to admin',
+              '🔌 CHARGING CABLE UNPLUGGED  Reported to admin',
               style: TextStyle(
                 color: Colors.white,
                 fontSize: 13,
