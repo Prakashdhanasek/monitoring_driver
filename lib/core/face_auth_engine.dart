@@ -35,8 +35,8 @@ class FaceAuthEngine {
 
   // Balanced threshold:
   // 0.72 was too strict and caused all faces to fail.
-  // 0.95 allows valid reference drivers while still blocking many unknown faces.
-  static const double kAuthThreshold = 1.15;
+  // 0.85 allows valid reference drivers while still blocking many unknown faces.
+  static const double kAuthThreshold = 0.95;
 
   int _consecutiveMatch = 0;
   int _consecutiveMiss = 0;
@@ -173,9 +173,16 @@ class FaceAuthEngine {
       _consecutiveMatch = 0;
       lastMatchedLabel = null;
 
-      // If already authenticated, allow 10 frames of mismatch before kicking them out
-      // to prevent false alarms from head turns. For unauthenticated, kick out fast.
-      final requiredMisses = state.authStatus == AuthStatus.authenticated
+      // If the tracking ID changed (different physical face) and it fails verification,
+      // kick them out quickly (sudden unauthorized).
+      final bool isDifferentFace = face.trackingId != null &&
+          state.authenticatedTrackingId != null &&
+          face.trackingId != state.authenticatedTrackingId;
+
+      // Allow 10 frames of mismatch for the SAME authenticated driver to prevent
+      // false alarms from head turns. Kick out after 2 frames for a different face
+      // or if not yet authenticated.
+      final requiredMisses = (state.authStatus == AuthStatus.authenticated && !isDifferentFace)
           ? 10
           : 2;
 
@@ -303,7 +310,11 @@ class FaceAuthEngine {
               embeddings.add(embedding);
               labels.add(label);
               print('[Auth] Enrolled API photo: $fileName -> label: $label');
+            } else {
+              print('[Auth] WARNING: Failed to extract face embedding from $fileName');
             }
+          } else {
+            print('[Auth] WARNING: ML Kit detected NO face in $fileName');
           }
         } catch (e) {
           print('[Auth] Error enrolling API photo ${file.path}: $e');

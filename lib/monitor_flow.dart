@@ -141,6 +141,10 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   bool _busy = false;
   bool _streaming = false;
   int _frame = 0;
+  bool _isRefreshingDrivers = false;
+  DateTime? _lastAuthAttemptAt;
+  bool _faceWasPresentLastFrame = false;
+  DateTime? _lastDriversRefreshAt;
 
   // Verified driver
   String _driverName = 'Driver';
@@ -888,8 +892,24 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
 
       switch (_phase) {
         case Phase.verifying:
+          final now = DateTime.now();
+          final shouldRefresh = !_authEngine.isEnrolled ||
+              _lastDriversRefreshAt == null ||
+              now.difference(_lastDriversRefreshAt!).inSeconds >= 15;
+
+          if (faces.isNotEmpty &&
+              !_faceWasPresentLastFrame &&
+              !_isRefreshingDrivers &&
+              shouldRefresh) {
+            _refreshDriversOnFaceDetection();
+          }
+          _faceWasPresentLastFrame = faces.isNotEmpty;
+
           if (faces.length == 1) {
-            if (_frame % 3 == 0) {
+            final now = DateTime.now();
+            if (_lastAuthAttemptAt == null ||
+                now.difference(_lastAuthAttemptAt!).inMilliseconds >= 1000) {
+              _lastAuthAttemptAt = now;
               _authEngine.processAuth(
                 faces.first,
                 _state,
@@ -929,7 +949,10 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
               _multiFace = 0;
               final face = faces.first;
               // Light continuous identity check (catches a driver swap mid-trip).
-              if (_frame % 5 == 0) {
+              final now = DateTime.now();
+              if (_lastAuthAttemptAt == null ||
+                  now.difference(_lastAuthAttemptAt!).inMilliseconds >= 1500) {
+                _lastAuthAttemptAt = now;
                 _authEngine.processAuth(
                   face,
                   _state,
@@ -1100,7 +1123,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
 
   /// Trip ended and a driver re-appeared — go back to the verify screen so the
   /// new driver is authenticated before the next trip's monitoring begins.
-  void _startReverification() {
+  Future<void> _startReverification() async {
     _tripCompleted = false;
     _capturedFace = null;
     _multiFace = 0;
@@ -1113,6 +1136,38 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     _driverId = '—';
     _driverName = 'Driver';
     _phase = Phase.verifying;
+    _faceWasPresentLastFrame = false;
+    _lastDriversRefreshAt = null;
+    if (mounted) setState(() {});
+
+    try {
+      debugPrint('[Flow] Trip completed. Fetching new drivers list...');
+      await _fetchAndDownloadDrivers();
+      debugPrint('[Flow] Re-enrolling drivers in auth engine...');
+      await _authEngine.resetAndReenroll();
+    } catch (e) {
+      debugPrint('[Flow] Reverification refresh error: $e');
+    }
+  }
+
+  Future<void> _refreshDriversOnFaceDetection() async {
+    try {
+      setState(() {
+        _isRefreshingDrivers = true;
+        _state.authStatus = AuthStatus.scanning;
+        _lastDriversRefreshAt = DateTime.now();
+      });
+      debugPrint('[Flow] Face detected. Fetching latest drivers list from API...');
+      await _fetchAndDownloadDrivers();
+      debugPrint('[Flow] Re-enrolling drivers in auth engine...');
+      await _authEngine.resetAndReenroll();
+    } catch (e) {
+      debugPrint('[Flow] Error refreshing drivers on face detection: $e');
+    } finally {
+      if (mounted) {
+        setState(() => _isRefreshingDrivers = false);
+      }
+    }
   }
 
   Future<void> _sendTripStart() async {
@@ -1812,20 +1867,22 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
           if (_phase == Phase.monitoring &&
               !_tripCompleted &&
               _camMode == CamMode.front)
-            Positioned.fill(
-              child: CamDetectionPanel(
-                streamUrl: _frontCamIp != null
-                    ? 'http://$_frontCamIp:84/'
-                    : _kFrontCamStreamUrl,
-                label: 'FRONT CAM',
-                width: double.infinity,
-                height: double.infinity,
-                fullScreen: true,
-                onClose: () {
-                  _frontManualOverride = false;
-                  _setCamMode(CamMode.driverMonitoring);
-                },
-              ),
+            ReversingCameraOverlay(
+              streamUrl: _frontCamIp != null
+                  ? 'http://$_frontCamIp:84/'
+                  : _kFrontCamStreamUrl,
+              speed: _state.vehicleSpeed,
+              latitude: _state.gpsLat,
+              longitude: _state.gpsLng,
+              isPreviewMode: _frontManualOverride,
+              onClosePreview: () {
+                _frontManualOverride = false;
+                _setCamMode(CamMode.driverMonitoring);
+              },
+              label: 'FRONT CAM ACTIVE',
+              symbol: 'F',
+              themeColor: Colors.orange,
+              enableYolo: false,
             ),
 
           // ── Side cam toggle buttons (monitoring phase) ──
@@ -2323,7 +2380,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
 
   // ── VERIFYING ──
   Widget _verifyingOverlay() {
-    if (!_initializing && !_authEngine.isEnrolled) {
+    if (!_initializing && !_authEngine.isEnrolled && !_isRefreshingDrivers) {
       return Container(
         color: Colors.black.withOpacity(0.85),
         child: const Center(
@@ -2402,6 +2459,42 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
                             : 'Hold still…')),
             style: const TextStyle(color: Colors.white70, fontSize: 14),
           ),
+          if (_state.faceCount > 0 && _state.authDistance >= 0 && !_initializing) ...[
+            const SizedBox(height: 24),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+              margin: const EdgeInsets.symmetric(horizontal: 24),
+              decoration: BoxDecoration(
+                color: Colors.black.withValues(alpha: 0.5),
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: Colors.white24, width: 1),
+              ),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    'Match Distance: ${_state.authDistance.toStringAsFixed(2)}  (Target: <${FaceAuthEngine.kAuthThreshold.toStringAsFixed(2)})',
+                    style: TextStyle(
+                      color: _state.authDistance < FaceAuthEngine.kAuthThreshold
+                          ? Colors.greenAccent
+                          : Colors.orangeAccent,
+                      fontSize: 16,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                  const SizedBox(height: 6),
+                  const Text(
+                    'Position face 30–40 cm from phone for faster verification',
+                    style: TextStyle(
+                      color: Colors.white70,
+                      fontSize: 12,
+                    ),
+                    textAlign: TextAlign.center,
+                  ),
+                ],
+              ),
+            ),
+          ],
         ],
       ),
     );
@@ -2461,25 +2554,25 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
                     fontWeight: FontWeight.w700,
                   ),
                 ),
-                const SizedBox(height: 14),
-                Container(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 18,
-                    vertical: 8,
-                  ),
-                  decoration: BoxDecoration(
-                    color: const Color(0xFF3B82F6).withValues(alpha: 0.10),
-                    borderRadius: BorderRadius.circular(20),
-                  ),
-                  child: Text(
-                    'Driver ID: $_driverId',
-                    style: const TextStyle(
-                      color: Color(0xFF2563EB),
-                      fontSize: 14,
-                      fontWeight: FontWeight.w600,
-                    ),
-                  ),
-                ),
+                // const SizedBox(height: 14),
+                // Container(
+                //   padding: const EdgeInsets.symmetric(
+                //     horizontal: 18,
+                //     vertical: 8,
+                //   ),
+                //   decoration: BoxDecoration(
+                //     color: const Color(0xFF3B82F6).withValues(alpha: 0.10),
+                //     borderRadius: BorderRadius.circular(20),
+                //   ),
+                //   child: Text(
+                //     'Driver ID: $_driverId',
+                //     style: const TextStyle(
+                //       color: Color(0xFF2563EB),
+                //       fontSize: 14,
+                //       fontWeight: FontWeight.w600,
+                //     ),
+                //   ),
+                // ),
               ],
             ),
           ),
@@ -2962,7 +3055,16 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     return Container(
       width: double.infinity,
       height: double.infinity,
-      color: Colors.white,
+      decoration: const BoxDecoration(
+        gradient: LinearGradient(
+          begin: Alignment.topCenter,
+          end: Alignment.bottomCenter,
+          colors: [
+            Color(0xFF0F172A),
+            Color(0xFF020617),
+          ],
+        ),
+      ),
       child: SafeArea(
         child: Center(
           child: SingleChildScrollView(
@@ -2970,65 +3072,117 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
+                // Frosted glass card containing the status
                 Container(
-                  width: 82,
-                  height: 82,
-                  decoration: const BoxDecoration(
-                    shape: BoxShape.circle,
-                    color: Color(0xFF16A34A),
-                  ),
-                  child: const Icon(
-                    Icons.check_rounded,
-                    color: Colors.white,
-                    size: 48,
-                  ),
-                ),
-                const SizedBox(height: 22),
-                Text(
-                  'Trip $_tripNumber Completed',
-                  textAlign: TextAlign.center,
-                  style: const TextStyle(
-                    color: Color(0xFF111827),
-                    fontSize: 24,
-                    fontWeight: FontWeight.w700,
-                  ),
-                ),
-                const SizedBox(height: 10),
-                const Padding(
-                  padding: EdgeInsets.symmetric(horizontal: 20),
-                  child: Text(
-                    'Driver left the seat. The next driver must verify to start the next trip.',
-                    textAlign: TextAlign.center,
-                    style: TextStyle(
-                      color: Color(0xFF6B7280),
-                      fontSize: 14,
-                      height: 1.4,
+                  padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 32),
+                  decoration: BoxDecoration(
+                    color: Colors.white.withValues(alpha: 0.05),
+                    borderRadius: BorderRadius.circular(24),
+                    border: Border.all(
+                      color: Colors.white.withValues(alpha: 0.08),
+                      width: 1,
                     ),
+                    boxShadow: [
+                      BoxShadow(
+                        color: Colors.black.withValues(alpha: 0.3),
+                        blurRadius: 24,
+                        offset: const Offset(0, 8),
+                      ),
+                    ],
+                  ),
+                  child: Column(
+                    children: [
+                      Container(
+                        width: 76,
+                        height: 76,
+                        decoration: BoxDecoration(
+                          shape: BoxShape.circle,
+                          color: const Color(0xFF10B981).withValues(alpha: 0.15),
+                          border: Border.all(
+                            color: const Color(0xFF10B981),
+                            width: 2,
+                          ),
+                          boxShadow: [
+                            BoxShadow(
+                              color: const Color(0xFF10B981).withValues(alpha: 0.3),
+                              blurRadius: 16,
+                              spreadRadius: 2,
+                            ),
+                          ],
+                        ),
+                        child: const Icon(
+                          Icons.check_circle_outline_rounded,
+                          color: Color(0xFF10B981),
+                          size: 44,
+                        ),
+                      ),
+                      const SizedBox(height: 24),
+                      Text(
+                        'Trip $_tripNumber Completed',
+                        textAlign: TextAlign.center,
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 24,
+                          fontWeight: FontWeight.bold,
+                          letterSpacing: 0.5,
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                      const Text(
+                        'Driver left the seat. The next driver must verify to start the next trip.',
+                        textAlign: TextAlign.center,
+                        style: TextStyle(
+                          color: Color(0xFF94A3B8),
+                          fontSize: 14,
+                          height: 1.5,
+                        ),
+                      ),
+                    ],
                   ),
                 ),
-                const SizedBox(height: 34),
+                const SizedBox(height: 40),
 
-                // Live camera + scanning pulse.
-                _ScanningPulse(child: _liveFaceCircle(150)),
+                // Camera Scanner Circular Preview with neon blue ring
+                _ScanningPulse(
+                  child: Container(
+                    padding: const EdgeInsets.all(4),
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      border: Border.all(
+                        color: const Color(0xFF3B82F6),
+                        width: 2,
+                      ),
+                      boxShadow: [
+                        BoxShadow(
+                          color: const Color(0xFF3B82F6).withValues(alpha: 0.25),
+                          blurRadius: 20,
+                          spreadRadius: 2,
+                        ),
+                      ],
+                    ),
+                    child: _liveFaceCircle(140),
+                  ),
+                ),
 
-                const SizedBox(height: 28),
+                const SizedBox(height: 32),
                 const Text(
                   'Look at the camera to verify',
                   textAlign: TextAlign.center,
                   style: TextStyle(
-                    color: Color(0xFF2563EB),
-                    fontSize: 17,
-                    fontWeight: FontWeight.w700,
+                    color: Color(0xFF60A5FA), // Soft blue
+                    fontSize: 18,
+                    fontWeight: FontWeight.bold,
+                    letterSpacing: 0.5,
                   ),
                 ),
-                const SizedBox(height: 12),
+                const SizedBox(height: 8),
                 const Text(
                   'Waiting for authentication…',
                   textAlign: TextAlign.center,
                   style: TextStyle(
-                    color: Colors.blue,
-                    fontSize: 14,
-                    fontWeight: FontWeight.w600,
+                    color: Color(0xFF94A3B8), // Soft slate
+                    fontSize: 13,
+                    fontWeight: FontWeight.w500,
                   ),
                 ),
               ],
@@ -3068,7 +3222,11 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     String? text;
     Color fg = Colors.white;
 
-    if (_state.authStatus == AuthStatus.unauthorized) {
+    if (phone) {
+      bg = const Color(0xFF7E22CE);
+      final percent = (_state.phoneConfidence * 100).toStringAsFixed(0);
+      text = '📵  PHONE DETECTED ($percent%)';
+    } else if (_state.authStatus == AuthStatus.unauthorized) {
       bg = const Color(0xFF7F1D1D);
       text = '🚫  UNAUTHORIZED DRIVER  🚫';
     } else if (_state.authStatus == AuthStatus.multipleFaces) {
@@ -3077,18 +3235,22 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     } else if (_state.drowsinessLevel == DrowsinessLevel.asleep) {
       bg = const Color(0xFFDC2626);
       text = '⚠  WAKE UP!  ⚠';
-    } else if (phone) {
-      bg = const Color(0xFF7E22CE);
-      text = '📵  PHONE DETECTED';
     } else if (smoke) {
       bg = const Color(0xFF7E22CE);
-      text = '🚬  SMOKING DETECTED';
+      final percent = (_state.cigaretteConfidence * 100).toStringAsFixed(0);
+      text = '🚬  SMOKING DETECTED ($percent%)';
     } else if (_state.hasEating || _state.isChewing) {
       bg = const Color(0xFFDC2626);
-      text = '🍔  EATING DETECTED';
+      if (_state.eatingConfidence > 0) {
+        final percent = (_state.eatingConfidence * 100).toStringAsFixed(0);
+        text = '🍔  EATING DETECTED ($percent%)';
+      } else {
+        text = '🍔  EATING DETECTED';
+      }
     } else if (_state.hasDrinking) {
       bg = const Color(0xFFEA580C);
-      text = '🥤  DRINKING DETECTED';
+      final percent = (_state.drinkingConfidence * 100).toStringAsFixed(0);
+      text = '🥤  DRINKING DETECTED ($percent%)';
     } else if (_state.drowsinessLevel == DrowsinessLevel.drowsy) {
       bg = const Color(0xFFD97706);
       text = '⚠  DROWSINESS DETECTED  ⚠';
@@ -3117,10 +3279,10 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   }
 
   String? _getMonitorBannerKey(bool phone, bool smoke) {
+    if (phone) return 'phone';
     if (_state.authStatus == AuthStatus.unauthorized) return 'unauthorized';
     if (_state.authStatus == AuthStatus.multipleFaces) return 'multiple_faces';
     if (_state.drowsinessLevel == DrowsinessLevel.asleep) return 'asleep';
-    if (phone) return 'phone';
     if (smoke) return 'smoke';
     if (_state.hasEating || _state.isChewing) return 'eating';
     if (_state.hasDrinking) return 'drinking';

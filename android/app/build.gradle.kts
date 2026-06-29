@@ -8,6 +8,7 @@ plugins {
 android {
     namespace = "com.example.monitoring_driver"
     compileSdk = flutter.compileSdkVersion
+
     ndkVersion = flutter.ndkVersion
 
     packaging {

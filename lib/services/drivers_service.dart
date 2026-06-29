@@ -148,7 +148,9 @@ class DriversService {
         if (photoPath == null) continue;
 
         try {
-          final imgUrl = Uri.parse('$_baseUrl$photoPath');
+          final imgUrl = photoPath.startsWith('http')
+              ? Uri.parse(photoPath)
+              : Uri.parse('$_baseUrl$photoPath');
           final res = await http.get(imgUrl);
           if (res.statusCode == 200) {
             final fileName =
@@ -156,6 +158,8 @@ class DriversService {
             final file = File('${photosDir.path}/$fileName');
             await file.writeAsBytes(res.bodyBytes);
             debugPrint('[DriversService] Downloaded photo for $driverName');
+          } else {
+            debugPrint('[DriversService] Failed to download photo from $imgUrl (Status: ${res.statusCode})');
           }
         } catch (e) {
           debugPrint('[DriversService] Error downloading $photoPath: $e');

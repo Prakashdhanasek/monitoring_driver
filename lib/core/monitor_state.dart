@@ -207,6 +207,10 @@ double vehicleSpeed = 0.0;
     hasCigarette = false;
     hasEating = false;
     hasDrinking = false;
+    phoneConfidence = 0.0;
+    cigaretteConfidence = 0.0;
+    eatingConfidence = 0.0;
+    drinkingConfidence = 0.0;
   }
 
   bool severeImpairmentWarning = false;
@@ -216,6 +220,11 @@ double vehicleSpeed = 0.0;
   bool hasCigarette = false;
   bool hasEating = false;
   bool hasDrinking = false;
+
+  double phoneConfidence = 0.0;
+  double cigaretteConfidence = 0.0;
+  double eatingConfidence = 0.0;
+  double drinkingConfidence = 0.0;
 }
 
 class DetectedObject {

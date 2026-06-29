@@ -9,7 +9,6 @@ import android.net.Network
 import android.net.NetworkCapabilities
 import android.net.NetworkRequest
 import android.net.wifi.WifiManager
-import android.net.wifi.WifiSsid
 import android.os.Build
 import android.telephony.TelephonyManager
 import io.flutter.embedding.android.FlutterActivity
@@ -23,11 +22,6 @@ class MainActivity : FlutterActivity() {
     // Keep references so we can clean up the Wi-Fi request.
     private var wifiCm: ConnectivityManager? = null
     private var wifiCallback: ConnectivityManager.NetworkCallback? = null
-
-    companion object {
-        private const val WIFI_SSID = "motorola edge 50 pro"
-        private const val WIFI_PASSWORD = "Rohit@1213"
-    }
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
@@ -149,23 +143,16 @@ class MainActivity : FlutterActivity() {
                 }
 
                 // ─────────────────────────────────────────────────────────
-                // WiFi LOCK — only allow connecting to WIFI_SSID.
-                // The device is blocked from joining any OTHER Wi-Fi network.
-                // This is a POLICY (not a socket bind), so local cameras
-                // (192.168.1.x) and the internet both stay reachable on the
-                // same Wi-Fi. Requires device-owner + Android 13 (API 33)+.
+                // WiFi LOCK REMOVED.
+                // Previously this locked the device to a single SSID
+                // (setWifiSsidPolicy ALLOWLIST), which blocked every other
+                // Wi-Fi network. We now CLEAR any existing policy so the phone
+                // can join ANY network freely.
                 // ─────────────────────────────────────────────────────────
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                     try {
-                        val policy = WifiSsidPolicy(
-                            WifiSsidPolicy.WIFI_SSID_POLICY_TYPE_ALLOWLIST,
-                            setOf(
-                                WifiSsid.fromBytes(
-                                    WIFI_SSID.toByteArray(Charsets.UTF_8)
-                                )
-                            )
-                        )
-                        dpm.setWifiSsidPolicy(policy)
+                        // null = no SSID restriction (removes the old lock).
+                        dpm.setWifiSsidPolicy(null)
                     } catch (_: Throwable) {}
                 }
             }
@@ -178,15 +165,9 @@ class MainActivity : FlutterActivity() {
     }
 
     // ───────────────────────────────────────────────
-    // Just make sure Wi-Fi is ON. We do NOT bind the process to any network.
-    //
-    // Why no bindProcessToNetwork():
-    //   Binding the app to a single Network object routed all traffic through
-    //   that one network, which had no route to the local ESP32 cameras
-    //   (192.168.1.x) -> "No route to host (errno 113)".
-    //   The SSID LOCK above already keeps the device on the chosen Wi-Fi only,
-    //   so the normal system Wi-Fi is used and BOTH the cameras and the
-    //   internet are reachable.
+    // Just make sure Wi-Fi is ON. We do NOT bind the process to any network,
+    // and we do NOT restrict which SSID can be used — the phone may join any
+    // Wi-Fi the user selects.
     // ───────────────────────────────────────────────
     private fun connectToWifi() {
         try {
@@ -217,14 +198,12 @@ class MainActivity : FlutterActivity() {
                 wifiCallback = object : ConnectivityManager.NetworkCallback() {
                     override fun onAvailable(network: Network) {
                         super.onAvailable(network)
-                        // DO NOT bind — leave routing to the system so the
-                        // local ESP32 cameras (192.168.1.x) stay reachable.
-                        // cm.bindProcessToNetwork(network)  // <-- removed on purpose
+                        // DO NOT bind — leave routing to the system so local
+                        // devices (ESP32 cameras) stay reachable on any subnet.
                     }
 
                     override fun onLost(network: Network) {
                         super.onLost(network)
-                        // Nothing to undo since we never bound.
                     }
                 }
 
@@ -257,6 +236,7 @@ class MainActivity : FlutterActivity() {
         try {
             wifiCallback?.let { wifiCm?.unregisterNetworkCallback(it) }
         } catch (_: Exception) {}
+
         wifiCallback = null
         super.onDestroy()
     }

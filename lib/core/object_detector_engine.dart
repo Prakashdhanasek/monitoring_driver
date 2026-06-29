@@ -197,20 +197,37 @@ class ObjectDetectorEngine {
     const double kDrinkingConfidence = 0.55;
     const double kSeatbeltConfidence = 0.50;
 
-    state.hasEating =
-        result.detectedObjects.any(
-          (o) => o.label == 'eating' && o.confidence > kEatingConfidence,
-        ) ||
-        state.isChewing;
-    state.hasDrinking = result.detectedObjects.any(
+    final eatingDetections = result.detectedObjects.where(
+      (o) => o.label == 'eating' && o.confidence > kEatingConfidence,
+    );
+    state.hasEating = eatingDetections.isNotEmpty || state.isChewing;
+    state.eatingConfidence = eatingDetections.isNotEmpty
+        ? eatingDetections.map((o) => o.confidence).reduce((a, b) => a > b ? a : b)
+        : 0.0;
+
+    final drinkingDetections = result.detectedObjects.where(
       (o) => o.label == 'drinking' && o.confidence > kDrinkingConfidence,
     );
-    state.hasPhone = result.detectedObjects.any(
+    state.hasDrinking = drinkingDetections.isNotEmpty;
+    state.drinkingConfidence = drinkingDetections.isNotEmpty
+        ? drinkingDetections.map((o) => o.confidence).reduce((a, b) => a > b ? a : b)
+        : 0.0;
+
+    final phoneDetections = result.detectedObjects.where(
       (o) => o.label == 'phone' && o.confidence > kPhoneConfidence,
     );
-    state.hasCigarette = result.detectedObjects.any(
+    state.hasPhone = phoneDetections.isNotEmpty;
+    state.phoneConfidence = phoneDetections.isNotEmpty
+        ? phoneDetections.map((o) => o.confidence).reduce((a, b) => a > b ? a : b)
+        : 0.0;
+
+    final cigaretteDetections = result.detectedObjects.where(
       (o) => o.label == 'cigarette' && o.confidence > kCigaretteConfidence,
     );
+    state.hasCigarette = cigaretteDetections.isNotEmpty;
+    state.cigaretteConfidence = cigaretteDetections.isNotEmpty
+        ? cigaretteDetections.map((o) => o.confidence).reduce((a, b) => a > b ? a : b)
+        : 0.0;
 
     final now = DateTime.now();
     bool requestEvidenceDump = false;

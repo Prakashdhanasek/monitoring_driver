@@ -13,6 +13,11 @@ class ReversingCameraOverlay extends StatefulWidget {
   final bool isPreviewMode;
   final VoidCallback? onClosePreview;
 
+  final String label;
+  final String symbol;
+  final Color themeColor;
+  final bool enableYolo;
+
   const ReversingCameraOverlay({
     super.key,
     required this.streamUrl,
@@ -21,6 +26,10 @@ class ReversingCameraOverlay extends StatefulWidget {
     required this.longitude,
     this.isPreviewMode = false,
     this.onClosePreview,
+    this.label = 'REVERSE CAM ACTIVE',
+    this.symbol = 'R',
+    this.themeColor = Colors.red,
+    this.enableYolo = true,
   });
 
   @override
@@ -62,24 +71,29 @@ class _ReversingCameraOverlayState extends State<ReversingCameraOverlay>
       '[ReversingOverlay] Initializing HTTP MJPEG stream: ${widget.streamUrl}',
     );
 
-    // Start YOLO11n detection on rear-cam frames
-    _rearDetector.onResult = (result) {
-      if (mounted) setState(() => _latestDetections = result);
-    };
-    _rearDetector.initialize();
+    // Start YOLO11n detection on rear-cam frames if enabled
+    if (widget.enableYolo) {
+      _rearDetector.onResult = (result) {
+        if (mounted) setState(() => _latestDetections = result);
+      };
+      _rearDetector.initialize();
+    }
   }
 
   @override
   void dispose() {
     _clockTimer?.cancel();
     _blinkController.dispose();
-    _rearDetector.dispose();
+    if (widget.enableYolo) {
+      _rearDetector.dispose();
+    }
     _isLive = false;
     super.dispose();
   }
 
-  // Feed every 5th frame to the YOLO detector to avoid overloading the isolate.
+  // Feed every 5th frame to the YOLO detector to avoid overloading the isolate if enabled.
   void _onFrame(Uint8List jpegBytes) {
+    if (!widget.enableYolo) return;
     _frameCount++;
     if (_frameCount % 5 == 0) {
       _rearDetector.processFrame(jpegBytes);
@@ -285,8 +299,8 @@ class _ReversingCameraOverlayState extends State<ReversingCameraOverlay>
               ),
             ),
             const SizedBox(height: 24),
-            const Text(
-              'CONNECTING TO REAR ESP32-CAM...',
+            Text(
+              'CONNECTING TO ${widget.label}...',
               style: TextStyle(
                 color: Colors.white,
                 fontSize: 14,
@@ -309,7 +323,7 @@ class _ReversingCameraOverlayState extends State<ReversingCameraOverlay>
     return Row(
       mainAxisAlignment: MainAxisAlignment.spaceBetween,
       children: [
-        // R Indicator
+        // Indicator Symbol (e.g. R, F)
         Row(
           children: [
             AnimatedBuilder(
@@ -323,12 +337,12 @@ class _ReversingCameraOverlayState extends State<ReversingCameraOverlay>
                       vertical: 6,
                     ),
                     decoration: BoxDecoration(
-                      color: Colors.red,
+                      color: widget.themeColor,
                       borderRadius: BorderRadius.circular(6),
                     ),
-                    child: const Text(
-                      'R',
-                      style: TextStyle(
+                    child: Text(
+                      widget.symbol,
+                      style: const TextStyle(
                         color: Colors.white,
                         fontSize: 22,
                         fontWeight: FontWeight.w900,
@@ -342,9 +356,9 @@ class _ReversingCameraOverlayState extends State<ReversingCameraOverlay>
             Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                const Text(
-                  'REVERSE CAM ACTIVE',
-                  style: TextStyle(
+                Text(
+                  widget.label,
+                  style: const TextStyle(
                     color: Colors.white,
                     fontSize: 16,
                     fontWeight: FontWeight.bold,
