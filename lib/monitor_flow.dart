@@ -2422,7 +2422,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   Widget _verifyingOverlay() {
     if (!_initializing && !_authEngine.isEnrolled && !_isRefreshingDrivers) {
       return Container(
-        color: Colors.black.withOpacity(0.85),
+        color: Colors.black.withValues(alpha: 0.85),
         child: const Center(
           child: Column(
             mainAxisAlignment: MainAxisAlignment.center,
@@ -2453,89 +2453,165 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
         _state.authStatus == AuthStatus.unauthorized && _state.faceCount > 0;
     final isAuthenticating =
         _state.authStatus == AuthStatus.scanning && _state.faceCount > 0;
+    final Color themeColor = isUnverified ? Colors.redAccent : const Color(0xFF3B82F6);
 
     return Container(
-      color: Colors.black.withValues(alpha: 0.45),
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          SizedBox(
-            width: 64,
-            height: 64,
-            child: isUnverified
-                ? const Icon(
-                    Icons.error_outline,
-                    color: Colors.redAccent,
-                    size: 64,
-                  )
-                : const CircularProgressIndicator(
-                    strokeWidth: 3,
-                    color: Color(0xFF3B82F6),
+      color: Colors.black.withValues(alpha: 0.35),
+      child: SafeArea(
+        child: Center(
+          child: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                // Centered Status Info Header
+                Text(
+                  _initializing
+                      ? 'Initializing systems…'
+                      : (isUnverified
+                          ? 'Unverified'
+                          : (isAuthenticating
+                              ? 'Authenticating...'
+                              : 'Verifying your face…')),
+                  style: TextStyle(
+                    color: isUnverified ? Colors.redAccent : Colors.white,
+                    fontSize: 24,
+                    fontWeight: FontWeight.w800,
+                    letterSpacing: 0.5,
                   ),
-          ),
-          const SizedBox(height: 24),
-          Text(
-            _initializing
-                ? 'Initializing systems…'
-                : (isUnverified
-                      ? 'Unverified'
-                      : (isAuthenticating
-                            ? 'Authenticating...'
-                            : 'Verifying your face…')),
-            style: TextStyle(
-              color: isUnverified ? Colors.redAccent : Colors.white,
-              fontSize: 20,
-              fontWeight: FontWeight.w600,
-            ),
-          ),
-          const SizedBox(height: 8),
-          Text(
-            _state.faceCount == 0
-                ? 'Look at the camera'
-                : (isUnverified
-                      ? 'Face not recognised — keep looking'
-                      : (isAuthenticating
-                            ? 'Processing your face, please wait...'
-                            : 'Hold still…')),
-            style: const TextStyle(color: Colors.white70, fontSize: 14),
-          ),
-          if (_state.faceCount > 0 && _state.authDistance >= 0 && !_initializing) ...[
-            const SizedBox(height: 24),
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-              margin: const EdgeInsets.symmetric(horizontal: 24),
-              decoration: BoxDecoration(
-                color: Colors.black.withValues(alpha: 0.5),
-                borderRadius: BorderRadius.circular(12),
-                border: Border.all(color: Colors.white24, width: 1),
-              ),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Text(
-                    'Match Distance: ${_state.authDistance.toStringAsFixed(2)}  (Target: <${FaceAuthEngine.kAuthThreshold.toStringAsFixed(2)})',
-                    style: TextStyle(
-                      color: _state.authDistance < FaceAuthEngine.kAuthThreshold
-                          ? Colors.greenAccent
-                          : Colors.orangeAccent,
-                      fontSize: 16,
-                      fontWeight: FontWeight.bold,
-                    ),
+                ),
+                const SizedBox(height: 6),
+                Text(
+                  _state.faceCount == 0
+                      ? 'Look at the camera'
+                      : (isUnverified
+                          ? 'Face not recognised — keep looking'
+                          : (isAuthenticating
+                              ? 'Processing your face, please wait...'
+                              : 'Hold still…')),
+                  style: const TextStyle(
+                    color: Colors.white70,
+                    fontSize: 14,
+                    fontWeight: FontWeight.w500,
                   ),
-                  const SizedBox(height: 6),
-                  const Text(
-                    'Position face 30–40 cm from phone for faster verification',
-                    style: TextStyle(
-                      color: Colors.white70,
-                      fontSize: 12,
+                ),
+                const SizedBox(height: 32),
+
+                // High-Tech Scanner scope in the center
+                SizedBox(
+                  width: 260,
+                  height: 260,
+                  child: Stack(
+                    clipBehavior: Clip.none,
+                    children: [
+                      Container(
+                        width: 260,
+                        height: 260,
+                        decoration: BoxDecoration(
+                          color: Colors.black.withValues(alpha: 0.15),
+                          borderRadius: BorderRadius.circular(20),
+                          border: Border.all(
+                            color: themeColor.withValues(alpha: 0.3),
+                            width: 1,
+                          ),
+                        ),
+                        child: ClipRRect(
+                          borderRadius: BorderRadius.circular(20),
+                          child: Stack(
+                            children: [
+                              _FaceScannerLine(color: themeColor),
+                            ],
+                          ),
+                        ),
+                      ),
+                      // Left-Top Corner
+                      Positioned(
+                        left: -4,
+                        top: -4,
+                        child: _ScannerCorner(isTop: true, isLeft: true, color: themeColor),
+                      ),
+                      // Right-Top Corner
+                      Positioned(
+                        right: -4,
+                        top: -4,
+                        child: _ScannerCorner(isTop: true, isLeft: false, color: themeColor),
+                      ),
+                      // Left-Bottom Corner
+                      Positioned(
+                        left: -4,
+                        bottom: -4,
+                        child: _ScannerCorner(isTop: false, isLeft: true, color: themeColor),
+                      ),
+                      // Right-Bottom Corner
+                      Positioned(
+                        right: -4,
+                        bottom: -4,
+                        child: _ScannerCorner(isTop: false, isLeft: false, color: themeColor),
+                      ),
+
+                      // Small circular progress spinner or error icon at the center
+                      Align(
+                        alignment: Alignment.center,
+                        child: SizedBox(
+                          width: 54,
+                          height: 54,
+                          child: isUnverified
+                              ? const Icon(
+                                  Icons.error_outline,
+                                  color: Colors.redAccent,
+                                  size: 54,
+                                )
+                              : CircularProgressIndicator(
+                                  strokeWidth: 3,
+                                  color: themeColor,
+                                ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+
+                // Centered feedback card below scanner (only when a face is detected)
+                if (_state.faceCount > 0 && _state.authDistance >= 0 && !_initializing) ...[
+                  const SizedBox(height: 32),
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                    margin: const EdgeInsets.symmetric(horizontal: 24),
+                    decoration: BoxDecoration(
+                      color: Colors.black.withValues(alpha: 0.65),
+                      borderRadius: BorderRadius.circular(16),
+                      border: Border.all(color: Colors.white12, width: 1),
                     ),
-                    textAlign: TextAlign.center,
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Text(
+                          'Match Distance: ${_state.authDistance.toStringAsFixed(2)}  (Target: <${FaceAuthEngine.kAuthThreshold.toStringAsFixed(2)})',
+                          style: TextStyle(
+                            color: _state.authDistance < FaceAuthEngine.kAuthThreshold
+                                ? Colors.greenAccent
+                                : Colors.orangeAccent,
+                            fontSize: 15,
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                        const SizedBox(height: 6),
+                        const Text(
+                          'Position face 30–40 cm from phone for faster verification',
+                          style: TextStyle(
+                            color: Colors.white60,
+                            fontSize: 11,
+                          ),
+                          textAlign: TextAlign.center,
+                        ),
+                      ],
+                    ),
                   ),
                 ],
-              ),
+              ],
             ),
-          ],
-        ],
+          ),
+        ),
       ),
     );
   }
@@ -3671,6 +3747,123 @@ class _ScanningPulseState extends State<_ScanningPulse>
             RepaintBoundary(child: widget.child),
           ],
         ),
+      ),
+    );
+  }
+}
+
+class _FaceScannerLine extends StatefulWidget {
+  final Color color;
+  const _FaceScannerLine({required this.color});
+
+  @override
+  State<_FaceScannerLine> createState() => _FaceScannerLineState();
+}
+
+class _FaceScannerLineState extends State<_FaceScannerLine>
+    with SingleTickerProviderStateMixin {
+  late AnimationController _controller;
+  late Animation<double> _animation;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = AnimationController(
+      duration: const Duration(milliseconds: 2000),
+      vsync: this,
+    )..repeat(reverse: true);
+    _animation = Tween<double>(begin: 0.0, end: 260.0).animate(_controller);
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: _animation,
+      builder: (context, child) {
+        return Positioned(
+          top: _animation.value,
+          left: 0,
+          right: 0,
+          child: Container(
+            height: 3,
+            decoration: BoxDecoration(
+              boxShadow: [
+                BoxShadow(
+                  color: widget.color.withValues(alpha: 0.8),
+                  blurRadius: 10,
+                  spreadRadius: 2,
+                )
+              ],
+              gradient: LinearGradient(
+                colors: [
+                  widget.color.withValues(alpha: 0.1),
+                  widget.color,
+                  widget.color.withValues(alpha: 0.1),
+                ],
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
+}
+
+class _ScannerCorner extends StatelessWidget {
+  final bool isTop;
+  final bool isLeft;
+  final Color color;
+
+  const _ScannerCorner({
+    required this.isTop,
+    required this.isLeft,
+    required this.color,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    const double length = 20.0;
+    const double thickness = 4.0;
+    return SizedBox(
+      width: length,
+      height: length,
+      child: Stack(
+        children: [
+          Positioned(
+            left: isLeft ? 0 : null,
+            right: !isLeft ? 0 : null,
+            top: isTop ? 0 : null,
+            bottom: !isTop ? 0 : null,
+            child: Container(
+              width: length,
+              height: thickness,
+              decoration: BoxDecoration(
+                color: color,
+                borderRadius: BorderRadius.circular(2),
+              ),
+            ),
+          ),
+          Positioned(
+            left: isLeft ? 0 : null,
+            right: !isLeft ? 0 : null,
+            top: isTop ? 0 : null,
+            bottom: !isTop ? 0 : null,
+            child: Container(
+              width: thickness,
+              height: length,
+              decoration: BoxDecoration(
+                color: color,
+                borderRadius: BorderRadius.circular(2),
+              ),
+            ),
+          ),
+        ],
       ),
     );
   }
