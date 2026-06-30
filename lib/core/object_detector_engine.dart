@@ -191,10 +191,10 @@ class ObjectDetectorEngine {
     }
 
     // Map detections to state booleans using stronger per-label confidence thresholds
-    const double kPhoneConfidence = 0.60;
-    const double kCigaretteConfidence = 0.60;
-    const double kEatingConfidence = 0.55;
-    const double kDrinkingConfidence = 0.55;
+    const double kPhoneConfidence = 0.62;
+    const double kCigaretteConfidence = 0.50;
+    const double kEatingConfidence = 0.50;
+    const double kDrinkingConfidence = 0.50;
     const double kSeatbeltConfidence = 0.50;
 
     final eatingDetections = result.detectedObjects.where(

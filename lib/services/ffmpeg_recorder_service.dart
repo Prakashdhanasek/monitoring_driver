@@ -7,8 +7,8 @@ import 'package:ffmpeg_kit_flutter_new_min_gpl/return_code.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:path/path.dart' as p;
 
-/// Duration of each video chunk in seconds (2 minutes).
-const int _kChunkDurationSeconds = 120;
+/// Duration of each video chunk in seconds (1 minute).
+const int _kChunkDurationSeconds = 60;
 
 class FFmpegVideoRecorderService {
   bool _isRecording = false;

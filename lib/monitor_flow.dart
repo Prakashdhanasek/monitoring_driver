@@ -277,6 +277,34 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
         debugPrint('==================================================');
       }
     }
+
+    // ESP32-CAM connection check (disconnect check)
+    if (_isConnectedToEsp32) {
+      try {
+        final uri = Uri.parse(_esp32StreamUrl);
+        final host = uri.host;
+        final port = uri.port == 0 ? 82 : uri.port;
+        
+        final socket = await Socket.connect(host, port).timeout(
+          const Duration(seconds: 2),
+        );
+        await socket.close();
+        
+        // If reachable and recording stopped, restart it
+        if (!_ffmpegRecorderService.isRecording) {
+          await _ffmpegRecorderService.startRecording(_esp32StreamUrl);
+        }
+      } catch (e) {
+        // Ping failed -> ESP32 got disconnected
+        debugPrint('[ESP32] ✗ Connection lost to ESP32: $e');
+        if (mounted) {
+          setState(() {
+            _isConnectedToEsp32 = false;
+          });
+        }
+        await _ffmpegRecorderService.stopRecording();
+      }
+    }
   }
 
   // ─────────────────────────────────────────────────────────
@@ -676,6 +704,9 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
         _isConnectedToEsp32 = cameraReachable;
         _esp32StreamUrl = streamUrl;
       });
+      if (cameraReachable) {
+        _ffmpegRecorderService.startRecording(streamUrl);
+      }
     }
   }
 
@@ -918,7 +949,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
               );
             }
             if (_state.authStatus == AuthStatus.authenticated) {
-              _capturedFace = _captureFaceJpeg(image);
+              _capturedFace = _captureFaceJpeg(image, targetWidth: 480);
               _onVerified();
             }
           }
@@ -967,7 +998,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
             if (_frame % 5 == 0) {
               _objectDetector.processFrame(image, _state, _getCameraRotation());
               // Capture current frame for incident snapshot and video buffer
-              final jpeg = _captureFaceJpeg(image);
+              final jpeg = _captureFaceJpeg(image, targetWidth: 240);
               if (jpeg != null) {
                 _latestFrameJpeg = jpeg;
                 _recentFrames.add(jpeg);
@@ -1540,11 +1571,17 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
 
   /// Converts the current YUV camera frame to an upright (mirrored for the
   /// front camera) JPEG — used as the captured still on the verified screen.
-  Uint8List? _captureFaceJpeg(CameraImage image) {
+  Uint8List? _captureFaceJpeg(CameraImage image, {int targetWidth = 360}) {
     try {
       if (image.planes.length < 3) return null;
-      final int w = image.width;
-      final int h = image.height;
+      final int srcW = image.width;
+      final int srcH = image.height;
+
+      // Determine downscaling factor
+      final double scale = srcW > targetWidth ? targetWidth / srcW : 1.0;
+      final int w = (srcW * scale).toInt();
+      final int h = (srcH * scale).toInt();
+
       final out = img.Image(width: w, height: h);
 
       final yP = image.planes[0];
@@ -1558,9 +1595,12 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       final int uvPix = uP.bytesPerPixel ?? 1;
 
       for (int y = 0; y < h; y++) {
+        final int sy = (y / scale).toInt().clamp(0, srcH - 1);
         for (int x = 0; x < w; x++) {
-          final int yi = y * yRow + x;
-          final int uvi = (y >> 1) * uvRow + (x >> 1) * uvPix;
+          final int sx = (x / scale).toInt().clamp(0, srcW - 1);
+
+          final int yi = sy * yRow + sx;
+          final int uvi = (sy >> 1) * uvRow + (sx >> 1) * uvPix;
           final int Y = yi < yBytes.length ? yBytes[yi] : 0;
           final int U = uvi < uBytes.length ? uBytes[uvi] - 128 : 0;
           final int V = uvi < vBytes.length ? vBytes[uvi] - 128 : 0;
@@ -1587,7 +1627,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
         fixed = img.flipHorizontal(fixed);
       }
 
-      return Uint8List.fromList(img.encodeJpg(fixed, quality: 85));
+      return Uint8List.fromList(img.encodeJpg(fixed, quality: 80));
     } catch (e) {
       debugPrint('[Flow] capture error: $e');
       return null;

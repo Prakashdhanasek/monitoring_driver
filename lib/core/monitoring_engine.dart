@@ -927,7 +927,7 @@ class MonitoringEngine {
 
   void _checkSleepByEyes(DateTime now) {
     if (state.eyesClosedSince == null) return;
-    if (now.difference(state.eyesClosedSince!).inSeconds < 5) return;
+    if (now.difference(state.eyesClosedSince!).inMilliseconds < 3500) return;
 
     final recentAlert = state.recentAlerts.any((a) =>
         a.type == 'flag_sleeping' && now.difference(a.timestamp).inSeconds < 8);
@@ -935,7 +935,7 @@ class MonitoringEngine {
       state.drowsinessLevel = DrowsinessLevel.asleep;
       state.addAlert(AlertEvent(
         type: 'flag_sleeping',
-        message: 'WAKE UP! EYES CLOSED >= 5s',
+        message: 'WAKE UP! EYES CLOSED >= 3.5s',
         needsScreenshot: true,
         isMajorFlag: true,
       ));
@@ -947,7 +947,7 @@ class MonitoringEngine {
 
   void _checkSleepByHeadDrop(DateTime now) {
     if (state.headDropSince == null) return;
-    if (now.difference(state.headDropSince!).inSeconds < 5) return;
+    if (now.difference(state.headDropSince!).inMilliseconds < 3500) return;
 
     final recentAlert = state.recentAlerts.any((a) =>
         a.type == 'flag_head_drop' && now.difference(a.timestamp).inSeconds < 8);
@@ -955,7 +955,7 @@ class MonitoringEngine {
       state.drowsinessLevel = DrowsinessLevel.asleep;
       state.addAlert(AlertEvent(
         type: 'flag_head_drop',
-        message: 'WAKE UP! HEAD DROPPED >= 5s',
+        message: 'WAKE UP! HEAD DROPPED >= 3.5s',
         needsScreenshot: true,
         isMajorFlag: true,
       ));
