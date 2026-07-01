@@ -2549,24 +2549,20 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
                         child: _ScannerCorner(isTop: false, isLeft: false, color: themeColor),
                       ),
 
-                      // Small circular progress spinner or error icon at the center
-                      Align(
-                        alignment: Alignment.center,
-                        child: SizedBox(
-                          width: 54,
-                          height: 54,
-                          child: isUnverified
-                              ? const Icon(
-                                  Icons.error_outline,
-                                  color: Colors.redAccent,
-                                  size: 54,
-                                )
-                              : CircularProgressIndicator(
-                                  strokeWidth: 3,
-                                  color: themeColor,
-                                ),
+                      // Show error icon at the center only when verification fails (unverified)
+                      if (isUnverified)
+                        const Align(
+                          alignment: Alignment.center,
+                          child: SizedBox(
+                            width: 54,
+                            height: 54,
+                            child: Icon(
+                              Icons.error_outline,
+                              color: Colors.redAccent,
+                              size: 54,
+                            ),
+                          ),
                         ),
-                      ),
                     ],
                   ),
                 ),

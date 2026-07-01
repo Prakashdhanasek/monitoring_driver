@@ -211,6 +211,8 @@ double vehicleSpeed = 0.0;
     cigaretteConfidence = 0.0;
     eatingConfidence = 0.0;
     drinkingConfidence = 0.0;
+    recentAlerts.clear();
+    alertCooldowns.clear();
   }
 
   bool severeImpairmentWarning = false;
