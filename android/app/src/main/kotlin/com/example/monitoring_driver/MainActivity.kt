@@ -4,6 +4,7 @@ import android.app.admin.DevicePolicyManager
 import android.app.admin.WifiSsidPolicy
 import android.content.ComponentName
 import android.content.Context
+import android.content.Intent
 import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
@@ -62,6 +63,45 @@ class MainActivity : FlutterActivity() {
                             }
                         } catch (e: Exception) {
                             result.error("ERROR", e.message, null)
+                        }
+                    }
+                    else -> result.notImplemented()
+                }
+            }
+
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "com.example.monitoring_driver/settings")
+            .setMethodCallHandler { call, result ->
+                when (call.method) {
+                    "openHotspotSettings" -> {
+                        try {
+                            // Temporarily unlock kiosk so settings can open
+                            try { stopLockTask() } catch (_: Exception) {}
+
+                            // Try direct hotspot/tethering settings first
+                            val intent = Intent()
+                            intent.setClassName(
+                                "com.android.settings",
+                                "com.android.settings.TetherSettings"
+                            )
+                            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                            startActivity(intent)
+                            result.success(true)
+                        } catch (e: Exception) {
+                            try {
+                                val intent = Intent("android.settings.TETHERING_SETTINGS")
+                                intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                startActivity(intent)
+                                result.success(true)
+                            } catch (e2: Exception) {
+                                try {
+                                    val intent = Intent(android.provider.Settings.ACTION_WIRELESS_SETTINGS)
+                                    intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                    startActivity(intent)
+                                    result.success(true)
+                                } catch (e3: Exception) {
+                                    result.error("ERROR", e3.message, null)
+                                }
+                            }
                         }
                     }
                     else -> result.notImplemented()

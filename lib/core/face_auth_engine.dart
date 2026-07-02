@@ -36,7 +36,7 @@ class FaceAuthEngine {
   // Balanced threshold:
   // 0.72 was too strict and caused all faces to fail.
   // 0.85 allows valid reference drivers while still blocking many unknown faces.
-  static const double kAuthThreshold = 0.89;
+  static const double kAuthThreshold = 0.95;
 
   int _consecutiveMatch = 0;
   int _consecutiveMiss = 0;
@@ -253,7 +253,7 @@ class FaceAuthEngine {
         enableContours: false,
         enableLandmarks: false,
         enableTracking: false,
-        performanceMode: FaceDetectorMode.accurate,
+        performanceMode: FaceDetectorMode.fast,
       ),
     );
 
