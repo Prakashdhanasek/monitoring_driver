@@ -95,6 +95,14 @@ class MainActivity : FlutterActivity() {
                 dpm.setLockTaskPackages(admin, arrayOf(packageName))
 
                 try {
+                    dpm.setGlobalSetting(
+                        admin,
+                        android.provider.Settings.Global.STAY_ON_WHILE_PLUGGED_IN,
+                        "7"
+                    )
+                } catch (_: Throwable) {}
+
+                try {
                     android.provider.Settings.System.putInt(
                         contentResolver,
                         android.provider.Settings.System.SCREEN_OFF_TIMEOUT,

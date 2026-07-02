@@ -937,20 +937,24 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
           _faceWasPresentLastFrame = faces.isNotEmpty;
 
           if (faces.length == 1) {
-            final now = DateTime.now();
-            if (_lastAuthAttemptAt == null ||
-                now.difference(_lastAuthAttemptAt!).inMilliseconds >= 1000) {
-              _lastAuthAttemptAt = now;
-              _authEngine.processAuth(
-                faces.first,
-                _state,
-                image,
-                _getCameraRotation(),
-              );
-            }
-            if (_state.authStatus == AuthStatus.authenticated) {
-              _capturedFace = _captureFaceJpeg(image, targetWidth: 480);
-              _onVerified();
+            if (!_isRefreshingDrivers) {
+              final now = DateTime.now();
+              if (_lastAuthAttemptAt == null ||
+                  now.difference(_lastAuthAttemptAt!).inMilliseconds >= 250) {
+                _lastAuthAttemptAt = now;
+                _authEngine.processAuth(
+                  faces.first,
+                  _state,
+                  image,
+                  _getCameraRotation(),
+                );
+              }
+              if (_state.authStatus == AuthStatus.authenticated) {
+                _capturedFace = _captureFaceJpeg(image, targetWidth: 480);
+                _onVerified();
+              }
+            } else {
+              _state.authStatus = AuthStatus.scanning;
             }
           }
           break;
@@ -1172,12 +1176,21 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     if (mounted) setState(() {});
 
     try {
+      setState(() {
+        _isRefreshingDrivers = true;
+      });
       debugPrint('[Flow] Trip completed. Fetching new drivers list...');
       await _fetchAndDownloadDrivers();
       debugPrint('[Flow] Re-enrolling drivers in auth engine...');
       await _authEngine.resetAndReenroll();
     } catch (e) {
       debugPrint('[Flow] Reverification refresh error: $e');
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isRefreshingDrivers = false;
+        });
+      }
     }
   }
 
@@ -1495,10 +1508,8 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
 
     // 2. Report only high-confidence object detections at intervals.
     const reportThresholds = {
-      'phone': 0.5,
-      'cigarette': 0.5,
-      'eating': 0.5,
-      'drinking': 0.5,
+      'phone': 0.62,
+      'cigarette': 0.35,
     };
 
     for (final obj in _state.detectedObjects) {
@@ -2549,20 +2560,24 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
                         child: _ScannerCorner(isTop: false, isLeft: false, color: themeColor),
                       ),
 
-                      // Show error icon at the center only when verification fails (unverified)
-                      if (isUnverified)
-                        const Align(
-                          alignment: Alignment.center,
-                          child: SizedBox(
-                            width: 54,
-                            height: 54,
-                            child: Icon(
-                              Icons.error_outline,
-                              color: Colors.redAccent,
-                              size: 54,
-                            ),
-                          ),
+                      // Small circular progress spinner or error icon at the center
+                      Align(
+                        alignment: Alignment.center,
+                        child: SizedBox(
+                          width: 54,
+                          height: 54,
+                          child: isUnverified
+                              ? const Icon(
+                                  Icons.error_outline,
+                                  color: Colors.redAccent,
+                                  size: 54,
+                                )
+                              : CircularProgressIndicator(
+                                  strokeWidth: 3,
+                                  color: themeColor,
+                                ),
                         ),
+                      ),
                     ],
                   ),
                 ),
@@ -3351,18 +3366,6 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       bg = const Color(0xFF7E22CE);
       final percent = (_state.cigaretteConfidence * 100).toStringAsFixed(0);
       text = '🚬  SMOKING DETECTED ($percent%)';
-    } else if (_state.hasEating || _state.isChewing) {
-      bg = const Color(0xFFDC2626);
-      if (_state.eatingConfidence > 0) {
-        final percent = (_state.eatingConfidence * 100).toStringAsFixed(0);
-        text = '🍔  EATING DETECTED ($percent%)';
-      } else {
-        text = '🍔  EATING DETECTED';
-      }
-    } else if (_state.hasDrinking) {
-      bg = const Color(0xFFEA580C);
-      final percent = (_state.drinkingConfidence * 100).toStringAsFixed(0);
-      text = '🥤  DRINKING DETECTED ($percent%)';
     } else if (_state.drowsinessLevel == DrowsinessLevel.drowsy) {
       bg = const Color(0xFFD97706);
       text = '⚠  DROWSINESS DETECTED  ⚠';
@@ -3396,8 +3399,6 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     if (_state.authStatus == AuthStatus.multipleFaces) return 'multiple_faces';
     if (_state.drowsinessLevel == DrowsinessLevel.asleep) return 'asleep';
     if (smoke) return 'smoke';
-    if (_state.hasEating || _state.isChewing) return 'eating';
-    if (_state.hasDrinking) return 'drinking';
     if (_state.drowsinessLevel == DrowsinessLevel.drowsy) return 'drowsy';
     if (_state.distractionStatus == DistractionStatus.distracted)
       return 'distracted';
