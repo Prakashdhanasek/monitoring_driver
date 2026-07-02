@@ -1042,8 +1042,10 @@ class MonitoringEngine {
 
     // ── Distraction via yaw ──────────────────────────────────────────────
     if (yaw.abs() > kYawThreshold) {
-      state.distractionStatus = DistractionStatus.distracted;
       state.distractedSince ??= now;
+      if (now.difference(state.distractedSince!).inMilliseconds >= 2500) {
+        state.distractionStatus = DistractionStatus.distracted;
+      }
     } else {
       state.distractionStatus = DistractionStatus.forward;
       state.distractedSince = null;

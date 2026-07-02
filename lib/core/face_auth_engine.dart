@@ -519,16 +519,17 @@ class FaceAuthEngine {
       final uvRowStride = uPlane.bytesPerRow;
       final uvPixelStride = uPlane.bytesPerPixel ?? 1;
 
-      final double scaleX = box.width / 112.0;
-      final double scaleY = box.height / 112.0;
+      // Ensure crop dimensions are valid
+      final cw = box.width.toInt().clamp(1, 1000);
+      final ch = box.height.toInt().clamp(1, 1000);
 
-      final croppedImg = img.Image(width: 112, height: 112);
+      final croppedImg = img.Image(width: cw, height: ch);
 
-      // Extract the exact face bounding box using YUV->RGB directly at 112x112 scale
-      for (int ty = 0; ty < 112; ty++) {
-        final double ry = box.top + (ty * scaleY);
-        for (int tx = 0; tx < 112; tx++) {
-          final double rx = box.left + (tx * scaleX);
+      // Extract the exact face bounding box using YUV->RGB
+      for (int ty = 0; ty < ch; ty++) {
+        for (int tx = 0; tx < cw; tx++) {
+          final rx = box.left + tx;
+          final ry = box.top + ty;
 
           int sx = 0;
           int sy = 0;
@@ -564,7 +565,8 @@ class FaceAuthEngine {
         }
       }
 
-      final resized = croppedImg;
+      // High-quality bilinear resize to exactly match the reference photo processing
+      final resized = img.copyResize(croppedImg, width: 112, height: 112);
 
       final pixels = Float32List(112 * 112 * 3);
       int idx = 0;
