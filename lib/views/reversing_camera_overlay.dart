@@ -17,6 +17,7 @@ class ReversingCameraOverlay extends StatefulWidget {
   final String symbol;
   final Color themeColor;
   final bool enableYolo;
+  final void Function(List<RearDetection> detections)? onDetection;
 
   const ReversingCameraOverlay({
     super.key,
@@ -30,6 +31,7 @@ class ReversingCameraOverlay extends StatefulWidget {
     this.symbol = 'R',
     this.themeColor = Colors.red,
     this.enableYolo = true,
+    this.onDetection,
   });
 
   @override
@@ -74,7 +76,13 @@ class _ReversingCameraOverlayState extends State<ReversingCameraOverlay>
     // Start YOLO11n detection on rear-cam frames if enabled
     if (widget.enableYolo) {
       _rearDetector.onResult = (result) {
-        if (mounted) setState(() => _latestDetections = result);
+        if (mounted) {
+          setState(() => _latestDetections = result);
+          // Notify parent about detections for alert/sound
+          if (result.detections.isNotEmpty && widget.onDetection != null) {
+            widget.onDetection!(result.detections);
+          }
+        }
       };
       _rearDetector.initialize();
     }

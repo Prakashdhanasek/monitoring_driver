@@ -46,6 +46,10 @@ class MainActivity : FlutterActivity() {
                         connectToWifi()
                         result.success(true)
                     }
+                    "enableMobileData" -> {
+                        enableMobileData()
+                        result.success(true)
+                    }
                     else -> result.notImplemented()
                 }
             }
@@ -209,13 +213,36 @@ class MainActivity : FlutterActivity() {
         } catch (_: Exception) {
         }
 
-        connectToWifi()
+        // ─────────────────────────────────────────────────────────
+        // On app launch: DO NOT auto-enable / connect Wi-Fi anymore.
+        // Instead, turn ON mobile data automatically (device owner only).
+        // ─────────────────────────────────────────────────────────
+        enableMobileData()
+    }
+
+    // ───────────────────────────────────────────────
+    // Turn ON mobile data (device owner only). Uses the hidden global setting
+    // key "mobile_data" (= Settings.Global.MOBILE_DATA). Needs a SIM + data
+    // plan; may be silently blocked on some OEM / Android versions, in which
+    // case the try/catch keeps the app from crashing.
+    // ───────────────────────────────────────────────
+    private fun enableMobileData() {
+        try {
+            val dpm = getSystemService(Context.DEVICE_POLICY_SERVICE) as DevicePolicyManager
+            val admin = ComponentName(this, KioskAdminReceiver::class.java)
+            if (dpm.isDeviceOwnerApp(packageName)) {
+                dpm.setGlobalSetting(admin, "mobile_data", "1")
+            }
+        } catch (_: Throwable) {
+        }
     }
 
     // ───────────────────────────────────────────────
     // Just make sure Wi-Fi is ON. We do NOT bind the process to any network,
     // and we do NOT restrict which SSID can be used — the phone may join any
     // Wi-Fi the user selects.
+    // NOTE: This is NO LONGER called on app launch. It only runs when the Dart
+    // side explicitly invokes the "connectWifi" method channel.
     // ───────────────────────────────────────────────
     private fun connectToWifi() {
         try {
