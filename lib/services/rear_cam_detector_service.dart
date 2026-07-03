@@ -64,9 +64,11 @@ class RearCamDetectorService {
 
   Future<void> initialize() async {
     try {
+      print('[RearDetector] Initializing service, loading yolo11n_full_int8.tflite asset...');
       final bytes = await rootBundle.load(
         'assets/models/yolo11n_full_int8.tflite',
       );
+      print('[RearDetector] Asset loaded. Size: ${bytes.lengthInBytes} bytes. Spawning isolate...');
       _isolate = await Isolate.spawn(
         _isolateWorker,
         _InitMsg(_receivePort.sendPort, bytes.buffer.asUint8List()),
@@ -75,12 +77,13 @@ class RearCamDetectorService {
         if (msg is SendPort) {
           _sendPort = msg;
           _isReady = true;
-          print('[RearDetector] Isolate ready');
+          print('[RearDetector] Isolate ready and SendPort received.');
         } else if (msg is RearDetectionResult) {
           _busy = false;
+          print('[RearDetector] Received results from isolate. Detections count: ${msg.detections.length}');
           onResult?.call(msg);
         } else if (msg is String) {
-          print('[RearDetector] $msg');
+          print('[RearDetector] Isolate Message: $msg');
         }
       });
     } catch (e) {
@@ -91,8 +94,20 @@ class RearCamDetectorService {
   /// Feed a raw JPEG frame for detection.
   /// Silently ignored if the previous frame is still being processed.
   void processFrame(Uint8List jpegBytes) {
-    if (!_isReady || _busy || _sendPort == null) return;
+    if (!_isReady) {
+      print('[RearDetector] processFrame ignored: Service not ready.');
+      return;
+    }
+    if (_busy) {
+      // Ignored silently to avoid log spam, as previous frame is still running
+      return;
+    }
+    if (_sendPort == null) {
+      print('[RearDetector] processFrame ignored: SendPort is null.');
+      return;
+    }
     _busy = true;
+    print('[RearDetector] Sending JPEG frame to isolate for inference (${jpegBytes.length} bytes)...');
     _sendPort!.send(_FrameMsg(jpegBytes));
   }
 
@@ -270,6 +285,9 @@ void _isolateWorker(_InitMsg init) {
     try {
       inScale = inTensor.params.scale;
       inZeroPoint = inTensor.params.zeroPoint;
+      if (inScale == 0.0) {
+        inScale = 1.0 / 255.0;
+      }
     } catch (_) {}
   }
 
@@ -277,16 +295,18 @@ void _isolateWorker(_InitMsg init) {
   final outputBuf = Float32List(numRows * numBoxes);
 
   init.replyTo.send(
-    'READY: in=${inShape} type=${inType.name} | '
+    'READY: in=${inShape} type=${inType.name} inScale=$inScale inZP=$inZeroPoint | '
     'out=$outShape type=${outType.name} transposed=$isTransposed | '
     'outScale=$outScale outZP=$outZeroPoint',
   );
 
   port.listen((msg) {
     if (msg is! _FrameMsg) return;
+    final stopwatch = Stopwatch()..start();
     try {
       final decoded = img.decodeJpg(msg.jpegBytes);
       if (decoded == null) {
+        init.replyTo.send('FRAME_ERROR: JPEG decoding failed.');
         init.replyTo.send(RearDetectionResult([], 0, 0));
         return;
       }
@@ -300,21 +320,22 @@ void _isolateWorker(_InitMsg init) {
       if (inIsInt8) {
         // Full int8 signed input: pixel_uint8 → int8 via quantization params
         // Formula: q = clamp(round(f / scale) + zeroPoint, -128, 127)
-        // where f = pixel / 255.0  (YOLO standard normalisation)
+        // If scale is small (< 0.1), f is pixel / 255.0. Otherwise f is pixel.
+        final double scaleFactor = (inScale < 0.1) ? 255.0 : 1.0;
         final buf = Int8List(H * W * 3);
         int idx = 0;
         for (int y = 0; y < H; y++) {
           for (int x = 0; x < W; x++) {
             final p = resized.getPixel(x, y);
-            buf[idx++] = ((p.r / 255.0) / inScale + inZeroPoint).round().clamp(
+            buf[idx++] = ((p.r / scaleFactor) / inScale + inZeroPoint).round().clamp(
               -128,
               127,
             );
-            buf[idx++] = ((p.g / 255.0) / inScale + inZeroPoint).round().clamp(
+            buf[idx++] = ((p.g / scaleFactor) / inScale + inZeroPoint).round().clamp(
               -128,
               127,
             );
-            buf[idx++] = ((p.b / 255.0) / inScale + inZeroPoint).round().clamp(
+            buf[idx++] = ((p.b / scaleFactor) / inScale + inZeroPoint).round().clamp(
               -128,
               127,
             );
@@ -323,14 +344,26 @@ void _isolateWorker(_InitMsg init) {
         inTensor.setTo(buf);
       } else if (inIsUint8) {
         // Uint8 input: pass raw pixel values [0, 255] directly
+        // Formula: q = clamp(round(f / scale) + zeroPoint, 0, 255)
+        // If scale is small (< 0.1), f is pixel / 255.0. Otherwise f is pixel.
+        final double scaleFactor = (inScale < 0.1) ? 255.0 : 1.0;
         final buf = Uint8List(H * W * 3);
         int idx = 0;
         for (int y = 0; y < H; y++) {
           for (int x = 0; x < W; x++) {
             final p = resized.getPixel(x, y);
-            buf[idx++] = p.r.toInt();
-            buf[idx++] = p.g.toInt();
-            buf[idx++] = p.b.toInt();
+            buf[idx++] = ((p.r / scaleFactor) / inScale + inZeroPoint).round().clamp(
+              0,
+              255,
+            );
+            buf[idx++] = ((p.g / scaleFactor) / inScale + inZeroPoint).round().clamp(
+              0,
+              255,
+            );
+            buf[idx++] = ((p.b / scaleFactor) / inScale + inZeroPoint).round().clamp(
+              0,
+              255,
+            );
           }
         }
         inTensor.setTo(buf);
@@ -354,17 +387,17 @@ void _isolateWorker(_InitMsg init) {
 
       // ── Read + dequantize output ───────────────────────────────────────────
       if (outIsFloat32) {
-        final raw = outTensor.data.buffer.asFloat32List();
+        final raw = Float32List.sublistView(outTensor.data);
         outputBuf.setRange(0, raw.length.clamp(0, outputBuf.length), raw);
       } else if (outIsInt8) {
         // int8 bytes: 1 byte per value → dequantize to float
-        final raw = outTensor.data.buffer.asInt8List();
+        final raw = Int8List.sublistView(outTensor.data);
         final total = min(numRows * numBoxes, raw.length);
         for (int i = 0; i < total; i++) {
           outputBuf[i] = (raw[i] - outZeroPoint) * outScale;
         }
       } else if (outIsUint8) {
-        final raw = outTensor.data.buffer.asUint8List();
+        final raw = Uint8List.sublistView(outTensor.data);
         final total = min(numRows * numBoxes, raw.length);
         for (int i = 0; i < total; i++) {
           outputBuf[i] = (raw[i] - outZeroPoint) * outScale;
@@ -379,6 +412,7 @@ void _isolateWorker(_InitMsg init) {
           : outputBuf[row * numBoxes + box];
 
       final dets = <RearDetection>[];
+      int rawAboveConf = 0;
       for (int b = 0; b < numBoxes; b++) {
         double maxScore = 0.0;
         int maxClass = -1;
@@ -390,6 +424,7 @@ void _isolateWorker(_InitMsg init) {
           }
         }
         if (maxScore < _kConf) continue;
+        rawAboveConf++;
         if (maxClass < 0 || maxClass >= _kCoco80.length) continue;
 
         final label = _kCoco80[maxClass];
@@ -418,7 +453,15 @@ void _isolateWorker(_InitMsg init) {
         );
       }
 
-      init.replyTo.send(RearDetectionResult(_nms(dets), origW, origH));
+      final nmsResult = _nms(dets);
+      final elapsed = stopwatch.elapsedMilliseconds;
+      init.replyTo.send(
+        'Inference done in ${elapsed}ms. '
+        'Raw detections above conf($_kConf): $rawAboveConf. '
+        'Relevant detections after NMS: ${nmsResult.map((d) => "${d.label}(${(d.confidence*100).toStringAsFixed(0)}%)").toList()}'
+      );
+
+      init.replyTo.send(RearDetectionResult(nmsResult, origW, origH));
     } catch (e) {
       init.replyTo.send('FRAME_ERROR: $e');
       init.replyTo.send(RearDetectionResult([], 0, 0));

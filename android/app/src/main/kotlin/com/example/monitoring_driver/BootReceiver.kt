@@ -1,11 +1,12 @@
 package com.example.monitoring_driver
 
+import android.app.admin.DevicePolicyManager
 import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothManager
 import android.content.BroadcastReceiver
+import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
-import android.net.wifi.WifiManager
 
 
 class BootReceiver : BroadcastReceiver() {
@@ -21,14 +22,20 @@ class BootReceiver : BroadcastReceiver() {
                 }
             } catch (_: Exception) {}
 
+            // ─────────────────────────────────────────────────────────
+            // Wi-Fi auto-enable REMOVED. On boot we no longer force Wi-Fi on.
+            // Instead, turn ON mobile data (device owner only). Needs a SIM +
+            // data plan; may be silently blocked on some OEM / Android
+            // versions, in which case the try/catch keeps boot from crashing.
+            // ─────────────────────────────────────────────────────────
             try {
-                val wifi = context.applicationContext
-                        .getSystemService(Context.WIFI_SERVICE) as? WifiManager
-                if (wifi != null && !wifi.isWifiEnabled) {
-                    @Suppress("DEPRECATION")
-                    wifi.isWifiEnabled = true
+                val dpm = context.getSystemService(Context.DEVICE_POLICY_SERVICE)
+                        as DevicePolicyManager
+                val admin = ComponentName(context, KioskAdminReceiver::class.java)
+                if (dpm.isDeviceOwnerApp(context.packageName)) {
+                    dpm.setGlobalSetting(admin, "mobile_data", "1")
                 }
-            } catch (_: Exception) {}
+            } catch (_: Throwable) {}
 
             val launch = context.packageManager
                 .getLaunchIntentForPackage(context.packageName)

@@ -454,7 +454,7 @@ void _yoloIsolateEntryPoint(IsolateInitMessage initMessage) async {
         try {
           inA.setTo(isQuantizedA ? inputUint8A : inputFloatA);
           interpA.invoke();
-          final rawA = outA.data.buffer.asFloat32List();
+          final rawA = Float32List.sublistView(outA.data);
           outputFlatA.setRange(
             0,
             rawA.length.clamp(0, outputFlatA.length),
@@ -485,7 +485,7 @@ void _yoloIsolateEntryPoint(IsolateInitMessage initMessage) async {
           try {
             inB.setTo(isQuantizedB ? inputUint8B : inputFloatB);
             interpB.invoke();
-            final rawB = outB.data.buffer.asFloat32List();
+            final rawB = Float32List.sublistView(outB.data);
             outputFlatB.setRange(
               0,
               rawB.length.clamp(0, outputFlatB.length),

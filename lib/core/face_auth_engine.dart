@@ -253,7 +253,7 @@ class FaceAuthEngine {
         enableContours: false,
         enableLandmarks: false,
         enableTracking: false,
-        performanceMode: FaceDetectorMode.accurate,
+        performanceMode: FaceDetectorMode.fast,
       ),
     );
 

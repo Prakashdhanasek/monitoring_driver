@@ -4,6 +4,7 @@ import android.app.admin.DevicePolicyManager
 import android.app.admin.WifiSsidPolicy
 import android.content.ComponentName
 import android.content.Context
+import android.content.Intent
 import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
@@ -45,6 +46,10 @@ class MainActivity : FlutterActivity() {
                         connectToWifi()
                         result.success(true)
                     }
+                    "enableMobileData" -> {
+                        enableMobileData()
+                        result.success(true)
+                    }
                     else -> result.notImplemented()
                 }
             }
@@ -79,6 +84,45 @@ class MainActivity : FlutterActivity() {
                             }
                         } catch (e: Exception) {
                             result.error("ERROR", e.message, null)
+                        }
+                    }
+                    else -> result.notImplemented()
+                }
+            }
+
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "com.example.monitoring_driver/settings")
+            .setMethodCallHandler { call, result ->
+                when (call.method) {
+                    "openHotspotSettings" -> {
+                        try {
+                            // Temporarily unlock kiosk so settings can open
+                            try { stopLockTask() } catch (_: Exception) {}
+
+                            // Try direct hotspot/tethering settings first
+                            val intent = Intent()
+                            intent.setClassName(
+                                "com.android.settings",
+                                "com.android.settings.TetherSettings"
+                            )
+                            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                            startActivity(intent)
+                            result.success(true)
+                        } catch (e: Exception) {
+                            try {
+                                val intent = Intent("android.settings.TETHERING_SETTINGS")
+                                intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                startActivity(intent)
+                                result.success(true)
+                            } catch (e2: Exception) {
+                                try {
+                                    val intent = Intent(android.provider.Settings.ACTION_WIRELESS_SETTINGS)
+                                    intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                    startActivity(intent)
+                                    result.success(true)
+                                } catch (e3: Exception) {
+                                    result.error("ERROR", e3.message, null)
+                                }
+                            }
                         }
                     }
                     else -> result.notImplemented()
@@ -186,13 +230,36 @@ class MainActivity : FlutterActivity() {
         } catch (_: Exception) {
         }
 
-        connectToWifi()
+        // ─────────────────────────────────────────────────────────
+        // On app launch: DO NOT auto-enable / connect Wi-Fi anymore.
+        // Instead, turn ON mobile data automatically (device owner only).
+        // ─────────────────────────────────────────────────────────
+        enableMobileData()
+    }
+
+    // ───────────────────────────────────────────────
+    // Turn ON mobile data (device owner only). Uses the hidden global setting
+    // key "mobile_data" (= Settings.Global.MOBILE_DATA). Needs a SIM + data
+    // plan; may be silently blocked on some OEM / Android versions, in which
+    // case the try/catch keeps the app from crashing.
+    // ───────────────────────────────────────────────
+    private fun enableMobileData() {
+        try {
+            val dpm = getSystemService(Context.DEVICE_POLICY_SERVICE) as DevicePolicyManager
+            val admin = ComponentName(this, KioskAdminReceiver::class.java)
+            if (dpm.isDeviceOwnerApp(packageName)) {
+                dpm.setGlobalSetting(admin, "mobile_data", "1")
+            }
+        } catch (_: Throwable) {
+        }
     }
 
     // ───────────────────────────────────────────────
     // Just make sure Wi-Fi is ON. We do NOT bind the process to any network,
     // and we do NOT restrict which SSID can be used — the phone may join any
     // Wi-Fi the user selects.
+    // NOTE: This is NO LONGER called on app launch. It only runs when the Dart
+    // side explicitly invokes the "connectWifi" method channel.
     // ───────────────────────────────────────────────
     private fun connectToWifi() {
         try {

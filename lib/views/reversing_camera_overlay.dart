@@ -17,6 +17,7 @@ class ReversingCameraOverlay extends StatefulWidget {
   final String symbol;
   final Color themeColor;
   final bool enableYolo;
+  final void Function(List<RearDetection> detections)? onDetection;
 
   const ReversingCameraOverlay({
     super.key,
@@ -30,6 +31,7 @@ class ReversingCameraOverlay extends StatefulWidget {
     this.symbol = 'R',
     this.themeColor = Colors.red,
     this.enableYolo = true,
+    this.onDetection,
   });
 
   @override
@@ -73,8 +75,17 @@ class _ReversingCameraOverlayState extends State<ReversingCameraOverlay>
 
     // Start YOLO11n detection on rear-cam frames if enabled
     if (widget.enableYolo) {
+      debugPrint('[ReversingOverlay (${widget.symbol})] Initializing detector service...');
       _rearDetector.onResult = (result) {
-        if (mounted) setState(() => _latestDetections = result);
+        if (mounted) {
+          debugPrint('[ReversingOverlay (${widget.symbol})] Detections callback fired. Count: ${result.detections.length}');
+          setState(() => _latestDetections = result);
+          // Notify parent about detections for alert/sound
+          if (result.detections.isNotEmpty && widget.onDetection != null) {
+            debugPrint('[ReversingOverlay (${widget.symbol})] Notifying parent of active detections...');
+            widget.onDetection!(result.detections);
+          }
+        }
       };
       _rearDetector.initialize();
     }
@@ -85,6 +96,7 @@ class _ReversingCameraOverlayState extends State<ReversingCameraOverlay>
     _clockTimer?.cancel();
     _blinkController.dispose();
     if (widget.enableYolo) {
+      debugPrint('[ReversingOverlay (${widget.symbol})] Disposing detector service...');
       _rearDetector.dispose();
     }
     _isLive = false;
@@ -96,6 +108,7 @@ class _ReversingCameraOverlayState extends State<ReversingCameraOverlay>
     if (!widget.enableYolo) return;
     _frameCount++;
     if (_frameCount % 5 == 0) {
+      debugPrint('[ReversingOverlay (${widget.symbol})] Feeding frame $_frameCount to detector service (${jpegBytes.length} bytes)...');
       _rearDetector.processFrame(jpegBytes);
     }
   }
