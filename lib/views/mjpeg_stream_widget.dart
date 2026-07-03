@@ -74,18 +74,19 @@ class _MjpegStreamWidgetState extends State<MjpegStreamWidget> {
   /// Boundary string from the Content-Type header.
   String? _boundary;
 
+  int _retryCount = 0;
+
   @override
   void initState() {
     super.initState();
-    _connect();
+    _connect(isRetry: false);
   }
 
   @override
   void didUpdateWidget(covariant MjpegStreamWidget oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.streamUrl != widget.streamUrl) {
-      _disconnect();
-      _connect();
+      _connect(isRetry: false);
     }
   }
 
@@ -104,9 +105,13 @@ class _MjpegStreamWidgetState extends State<MjpegStreamWidget> {
     _buffer.clear();
   }
 
-  Future<void> _connect() async {
+  Future<void> _connect({bool isRetry = false}) async {
     _disconnect();
     if (!mounted) return;
+
+    if (!isRetry) {
+      _retryCount = 0;
+    }
 
     setState(() {
       _isConnecting = true;
@@ -144,6 +149,12 @@ class _MjpegStreamWidgetState extends State<MjpegStreamWidget> {
         _onData,
         onError: (error) {
           debugPrint('[MjpegStream] Stream error: $error');
+          if (mounted && _retryCount < 5) {
+            _retryCount++;
+            debugPrint('[MjpegStream] Retrying connection ($_retryCount/5) in 1.5 seconds due to stream error...');
+            Future.delayed(const Duration(milliseconds: 1500), () => _connect(isRetry: true));
+            return;
+          }
           if (mounted) {
             setState(() {
               _hasError = true;
@@ -164,6 +175,12 @@ class _MjpegStreamWidgetState extends State<MjpegStreamWidget> {
       );
     } catch (e) {
       debugPrint('[MjpegStream] Connection error: $e');
+      if (mounted && _retryCount < 5) {
+        _retryCount++;
+        debugPrint('[MjpegStream] Retrying connection ($_retryCount/5) in 1.5 seconds due to connection error...');
+        Future.delayed(const Duration(milliseconds: 1500), () => _connect(isRetry: true));
+        return;
+      }
       if (mounted) {
         setState(() {
           _isConnecting = false;
@@ -227,6 +244,7 @@ class _MjpegStreamWidgetState extends State<MjpegStreamWidget> {
         setState(() {
           _currentFrame = MemoryImage(jpegFrame);
           _hasFrame = true;
+          _retryCount = 0;
         });
         // Notify external consumers (e.g. YOLO detection engine)
         widget.onFrame?.call(jpegFrame);

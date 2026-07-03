@@ -31,7 +31,7 @@ import 'services/trip_service.dart';
 import 'services/tts_service.dart';
 import 'services/esp32_wifi_service.dart';
 import 'services/ffmpeg_recorder_service.dart';
-import 'services/sftp_upload_service.dart';
+import 'services/http_video_upload_service.dart';
 
 import 'services/reversing_detector_service.dart';
 import 'views/reversing_camera_overlay.dart';
@@ -80,12 +80,8 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   final Esp32WifiService _espWifiService = Esp32WifiService();
   final FFmpegVideoRecorderService _ffmpegRecorderService =
       FFmpegVideoRecorderService();
-  final SftpUploadService _sftpUploadService = SftpUploadService(
-    host: 'sftp.example.com',
-    port: 22,
-    username: 'upload_user',
-    password: 'secret_password',
-  );
+
+  final HttpVideoUploadService _httpUploadService = HttpVideoUploadService();
 
   // ── Connectivity tracking ──
   bool _isOnline = true;
@@ -108,27 +104,27 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   CamMode _camMode = CamMode.driverMonitoring;
   // String _esp32StreamUrl = 'http://10.119.135.95:82/';
 
-  String _esp32StreamUrl = 'http://10.119.135.87:82/';
+  String _esp32StreamUrl = 'http://192.168.1.44:94/';
 
   // ── Side cameras (blind spot)
   // Left cam  — video :86,  sensor :87
   // Right cam  — video :80,  sensor :81
-  // Front cam  — video :84,  sensor :85
+  // Front cam  — video :94,  sensor :95
   // Rear cam   — video :82,  sensor :83  (rearcam.local → 10.119.135.87)
   static const String _kLeftCamStreamUrl = 'http://leftcam.local:86/';
   static const String _kRightCamStreamUrl = 'http://rightcam.local:80/';
-  static const String _kFrontCamStreamUrl = 'http://frontcam.local:84/';
+  static const String _kFrontCamStreamUrl = 'http://192.168.1.44:94/';
   // Resolved IPs for all ESP32 cams — found by subnet scanner on startup.
   // Null until resolved; sensors and panels are skipped while null.
   // Reset to null if we switch networks so the scanner re-discovers them.
   // String? _leftCamIp; // video :86  sensor :87
   // String? _rightCamIp; // video :80  sensor :81
   // String?
-  // _frontCamIp; // video :84
+  // _frontCamIp; // video :94
 
-  String? _leftCamIp = '10.119.135.95'; // video :86  sensor :87
-  String? _rightCamIp = '10.119.135.65'; // video :80  sensor :81
-  String? _frontCamIp = '10.119.135.115'; // video :84  sensor :85
+  String? _leftCamIp; // video :86  sensor :87
+  String? _rightCamIp; // video :80  sensor :81
+  String? _frontCamIp; // video :94  sensor :95
   // (resolved by scanner, not shown in strict mode)
   DateTime? _lastSideCamScanAt; // throttle scanner to once per 60 s
   Timer? _blindSpotTimer;
@@ -216,6 +212,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     _syncTimer = Timer.periodic(const Duration(seconds: 30), (_) {
       _syncIncidentsTask();
       _maybeReReportCable();
+      _triggerVideoUpload();
     });
 
     // Check connectivity every 5 seconds
@@ -240,7 +237,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
 
     // Resolve cam IPs after 10 s so app startup isn't flooded with 150+
     // concurrent subnet probe requests the moment the app opens.
-    // Future.delayed(const Duration(seconds: 10), _resolveSideCamIps);
+    Future.delayed(const Duration(seconds: 2), _resolveSideCamIps);
 
     // Blind spot sensor polling every 500 ms
     _blindSpotTimer = Timer.periodic(const Duration(milliseconds: 500), (_) {
@@ -265,7 +262,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
         // Auto-sync immediately when we come back online
         if (_isOnline) {
           _syncIncidentsTask();
-          _triggerSftpUpload();
+          _triggerVideoUpload();
         }
       }
     } catch (_) {
@@ -279,11 +276,11 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     }
 
     // ESP32-CAM connection check (disconnect check)
-    if (_isConnectedToEsp32) {
+    if (_isConnectedToEsp32 && _camMode != CamMode.front) {
       try {
         final uri = Uri.parse(_esp32StreamUrl);
         final host = uri.host;
-        final port = uri.port == 0 ? 82 : uri.port;
+        final port = uri.port == 0 ? 94 : uri.port;
         
         final socket = await Socket.connect(host, port).timeout(
           const Duration(seconds: 2),
@@ -291,7 +288,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
         await socket.close();
         
         // If reachable and recording stopped, restart it
-        if (!_ffmpegRecorderService.isRecording) {
+        if (!_ffmpegRecorderService.isRecording && _camMode != CamMode.front) {
           await _ffmpegRecorderService.startRecording(_esp32StreamUrl);
         }
       } catch (e) {
@@ -422,7 +419,18 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       debugPrint('[Flow] No device_id stored. Skipping API fetch.');
       return;
     }
-    await _driversService.fetchAndCacheDrivers(deviceId);
+    final list = await _driversService.fetchAndCacheDrivers(deviceId);
+    if (list.isNotEmpty) {
+      for (final driver in list) {
+        final assignedId = driver['assignedVehicleId'] as String?;
+        if (assignedId != null && assignedId.isNotEmpty) {
+          _vehicleId = assignedId;
+          _vehicleRegNo = driver['vehicleRegistrationNumber'] as String?;
+          debugPrint('[Flow] Resolved active Vehicle ID from drivers list: $_vehicleId');
+          break;
+        }
+      }
+    }
   }
 
   Future<String?> _findEsp32IpFromArpTable() async {
@@ -554,13 +562,9 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     });
 
     const String targetSsid = 'motorola edge 50 pro';
-    // String streamUrl = 'http://10.119.135.95:82/';
-    // String esp32Host = '10.119.135.95';
-    // const int esp32Port = 82;
-
-    String streamUrl = 'http://10.119.135.87:82/';
-    String esp32Host = '10.119.135.87';
-    const int esp32Port = 82;
+    String streamUrl = 'http://192.168.1.44:94/';
+    String esp32Host = '192.168.1.44';
+    const int esp32Port = 94;
 
     debugPrint('==================================================');
     debugPrint('[ESP32 STREAM STATUS CHECK]');
@@ -616,7 +620,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
         final arpIp = await _findEsp32IpFromArpTable();
         if (arpIp != null) {
           esp32Host = arpIp;
-          streamUrl = 'http://$esp32Host:82/';
+          streamUrl = 'http://$esp32Host:94/';
           debugPrint('[ESP32] ✓ Resolved via ARP table to IP: $esp32Host');
         } else {
           debugPrint('[ESP32] ✗ ARP table lookup did not find ESP32.');
@@ -633,7 +637,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
                   )
                   .timeout(const Duration(seconds: 4))) {
             esp32Host = record.address.address;
-            streamUrl = 'http://$esp32Host:82/';
+            streamUrl = 'http://$esp32Host:94/';
             debugPrint('[ESP32] ✓ Resolved mDNS to IP: $esp32Host');
             break;
           }
@@ -675,7 +679,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
             ).timeout(const Duration(seconds: 3));
             await socket.close();
             esp32Host = arpIp;
-            streamUrl = 'http://$esp32Host:82/';
+            streamUrl = 'http://$esp32Host:94/';
             cameraReachable = true;
             debugPrint(
               '[ESP32] ✓ Fallback camera reachable at $esp32Host:$esp32Port',
@@ -704,15 +708,28 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
         _isConnectedToEsp32 = cameraReachable;
         _esp32StreamUrl = streamUrl;
       });
-      if (cameraReachable) {
+      if (cameraReachable && _camMode != CamMode.front) {
         _ffmpegRecorderService.startRecording(streamUrl);
       }
     }
   }
 
-  Future<void> _triggerSftpUpload() async {
-    debugPrint('[Flow] Online. Starting SFTP background upload...');
-    await _sftpUploadService.uploadPendingFiles('/var/www/uploads/videos');
+  Future<void> _triggerVideoUpload() async {
+    if (!_isOnline) return;
+
+    if (_vehicleId == null || _vehicleId!.isEmpty) {
+      debugPrint('[Flow] Skipping HTTP video upload: No valid VehicleId resolved yet.');
+      return;
+    }
+
+    debugPrint('[Flow] Online. Starting HTTP REST API video chunks upload for vehicle: $_vehicleId...');
+
+    await _httpUploadService.uploadPendingFiles(
+      uploadUrl: 'https://proximity-driver-api.prod-app.in/api/video-recordings/upload',
+      vehicleId: _vehicleId!,
+      driverId: _driverId == '—' ? null : _driverId,
+      cameraType: 'front',
+    );
   }
 
   Future<void> _init() async {
@@ -1920,7 +1937,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
               _camMode == CamMode.front)
             ReversingCameraOverlay(
               streamUrl: _frontCamIp != null
-                  ? 'http://$_frontCamIp:84/'
+                  ? 'http://$_frontCamIp:94/'
                   : _kFrontCamStreamUrl,
               speed: _state.vehicleSpeed,
               latitude: _state.gpsLat,
@@ -2178,8 +2195,14 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   /// Switches to [mode], stopping the phone camera image stream when leaving
   /// driver monitoring and resuming it when returning.
   /// This is the ONLY place [_camMode] is written — never set it directly.
-  void _setCamMode(CamMode mode) {
+  Future<void> _setCamMode(CamMode mode) async {
     if (_camMode == mode) return;
+    if (mode == CamMode.front) {
+      debugPrint('[CamMode] Stopping background FFmpeg recorder to free ESP32 for preview overlay...');
+      await _ffmpegRecorderService.stopRecording();
+      // Ensure the network socket is fully closed by the OS before starting preview stream
+      await Future.delayed(const Duration(milliseconds: 500));
+    }
     final wasMonitoring = _camMode == CamMode.driverMonitoring;
     final nowMonitoring = mode == CamMode.driverMonitoring;
     _camMode = mode;
@@ -2203,16 +2226,16 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   // ─────────────────────────────────────────────────────────
 
   /// Scans the local subnet to resolve direct IPs for all three ESP32 cams.
-  /// Left sensor: port 87 | Right sensor: port 81 | Front sensor: port 85
+  /// Left sensor: port 87 | Right sensor: port 81 | Front sensor: port 95
   /// Direct IPs are used because .local mDNS is unreliable on Android.
   Future<void> _resolveSideCamIps() async {
     if (_leftCamIp != null && _rightCamIp != null && _frontCamIp != null)
       return;
 
-    // Throttle: never scan more than once every 60 seconds.
+    // Throttle: never scan more than once every 10 seconds.
     final now = DateTime.now();
     if (_lastSideCamScanAt != null &&
-        now.difference(_lastSideCamScanAt!) < const Duration(seconds: 60))
+        now.difference(_lastSideCamScanAt!) < const Duration(seconds: 10))
       return;
     _lastSideCamScanAt = now;
 
@@ -2223,15 +2246,34 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
         type: InternetAddressType.IPv4,
         includeLoopback: false,
       );
+      // Prioritize Wi-Fi interface (wlan)
       for (final iface in interfaces) {
-        for (final addr in iface.addresses) {
-          final parts = addr.address.split('.');
-          if (parts.length == 4 && parts[0] != '127') {
-            subnet = '${parts[0]}.${parts[1]}.${parts[2]}';
-            break;
+        if (iface.name.toLowerCase().contains('wlan')) {
+          for (final addr in iface.addresses) {
+            final parts = addr.address.split('.');
+            if (parts.length == 4 && parts[0] != '127') {
+              subnet = '${parts[0]}.${parts[1]}.${parts[2]}';
+              debugPrint('[SideCam] Wi-Fi interface detected (${iface.name}). Subnet: $subnet');
+              break;
+            }
           }
         }
         if (subnet != null) break;
+      }
+
+      // Fallback: If no wlan interface was identified, try any active non-loopback interface
+      if (subnet == null) {
+        for (final iface in interfaces) {
+          for (final addr in iface.addresses) {
+            final parts = addr.address.split('.');
+            if (parts.length == 4 && parts[0] != '127') {
+              subnet = '${parts[0]}.${parts[1]}.${parts[2]}';
+              debugPrint('[SideCam] Fallback interface selected (${iface.name}). Subnet: $subnet');
+              break;
+            }
+          }
+          if (subnet != null) break;
+        }
       }
     } catch (e) {
       debugPrint('[SideCam] Cannot get local IP: $e');
@@ -2239,7 +2281,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     }
     if (subnet == null) return;
     debugPrint(
-      '[SideCam] Scanning $subnet.1-254 — left:87, right:81, front:85',
+      '[SideCam] Scanning $subnet.1-254 — left:87, right:81, front:95',
     );
 
     final String sub = subnet;
@@ -2258,8 +2300,16 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
         return null;
       }
 
-      for (int start = 1; start <= 254; start += 50) {
-        final end = (start + 49).clamp(1, 254);
+      // Fast Path: Try default camera IP first to avoid scan latency
+      final String fallbackIp = (sensorPort == 95) ? '192.168.1.44' : '10.119.135.95';
+      final fastCheck = await probe(fallbackIp);
+      if (fastCheck != null) {
+        return fastCheck;
+      }
+
+      // Batch size of 15 to avoid Android socket exhaustion limits
+      for (int start = 1; start <= 254; start += 15) {
+        final end = (start + 14).clamp(1, 254);
         final batch = [for (int i = start; i <= end; i++) probe('$sub.$i')];
         final results = await Future.wait(batch);
         final found = results.firstWhere((r) => r != null, orElse: () => null);
@@ -2275,22 +2325,30 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
         ? scanForPort(81)
         : Future.value(_rightCamIp);
     final frontFuture = _frontCamIp == null
-        ? scanForPort(85)
+        ? scanForPort(95)
         : Future.value(_frontCamIp);
 
     final results = await Future.wait([leftFuture, rightFuture, frontFuture]);
 
+    bool changed = false;
     if (_leftCamIp == null && results[0] != null) {
       _leftCamIp = results[0];
       debugPrint('[SideCam] Left cam IP → $_leftCamIp');
+      changed = true;
     }
     if (_rightCamIp == null && results[1] != null) {
       _rightCamIp = results[1];
       debugPrint('[SideCam] Right cam IP → $_rightCamIp');
+      changed = true;
     }
     if (_frontCamIp == null && results[2] != null) {
       _frontCamIp = results[2];
       debugPrint('[SideCam] Front cam IP → $_frontCamIp');
+      _esp32StreamUrl = 'http://$_frontCamIp:94/';
+      changed = true;
+    }
+    if (changed && mounted) {
+      setState(() {});
     }
   }
 
@@ -2304,7 +2362,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
 
     // Trigger IP resolution in the background if left or right cam is unknown.
     // Non-blocking: polls continue with whatever IPs are already resolved.
-    if (_leftCamIp == null || _rightCamIp == null) {
+    if (_leftCamIp == null || _rightCamIp == null || _frontCamIp == null) {
       _resolveSideCamIps(); // fire-and-forget
     }
 
@@ -2324,6 +2382,14 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
         }
       } catch (e) {
         debugPrint('[BlindSpot] $url → ERROR: $e');
+        // Self-healing: if connection fails, reset IP to force a re-scan
+        if (url.contains(_leftCamIp ?? '_____')) {
+          _leftCamIp = null;
+        } else if (url.contains(_rightCamIp ?? '_____')) {
+          _rightCamIp = null;
+        } else if (url.contains(_frontCamIp ?? '_____')) {
+          _frontCamIp = null;
+        }
       }
       return null;
     }
@@ -2367,7 +2433,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
         ? 'http://$_rightCamIp:81/sensor'
         : null;
     final frontUrl = _frontCamIp != null
-        ? 'http://$_frontCamIp:85/sensor'
+        ? 'http://$_frontCamIp:95/sensor'
         : null;
 
     final results = await Future.wait([

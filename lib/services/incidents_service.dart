@@ -780,7 +780,7 @@ class IncidentsService {
       debugPrint('[IncidentsService] Evidence file path -> ${imageFile.path}');
 
       final streamed = await request.send().timeout(
-            const Duration(seconds: 20),
+            const Duration(seconds: 60),
           );
 
       final response = await http.Response.fromStream(streamed);
