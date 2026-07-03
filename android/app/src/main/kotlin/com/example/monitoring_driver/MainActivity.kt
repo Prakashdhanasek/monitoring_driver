@@ -69,6 +69,23 @@ class MainActivity : FlutterActivity() {
                             result.error("ERROR", e.message, null)
                         }
                     }
+                    "scanFile" -> {
+                        try {
+                            val path = call.argument<String>("path")
+                            if (path != null) {
+                                android.media.MediaScannerConnection.scanFile(
+                                    applicationContext,
+                                    arrayOf(path),
+                                    null
+                                ) { _, _ -> }
+                                result.success(true)
+                            } else {
+                                result.error("INVALID_ARGUMENT", "Path is null", null)
+                            }
+                        } catch (e: Exception) {
+                            result.error("ERROR", e.message, null)
+                        }
+                    }
                     else -> result.notImplemented()
                 }
             }

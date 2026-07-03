@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:io';
 import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
 import 'package:ffmpeg_kit_flutter_new_min_gpl/ffmpeg_kit.dart';
 import 'package:ffmpeg_kit_flutter_new_min_gpl/ffmpeg_session.dart';
 import 'package:ffmpeg_kit_flutter_new_min_gpl/return_code.dart';
@@ -267,6 +268,17 @@ class FFmpegVideoRecorderService {
     return p.join(segmentsDir.path, fileName);
   }
 
+  static const _deviceChannel = MethodChannel('com.proximity.driver/device_info');
+
+  Future<void> _scanFileWithScanner(String filePath) async {
+    try {
+      await _deviceChannel.invokeMethod('scanFile', {'path': filePath});
+      debugPrint('[FFmpegRecorder] Triggered MediaScanner for: $filePath');
+    } catch (e) {
+      debugPrint('[FFmpegRecorder] Error triggering MediaScanner: $e');
+    }
+  }
+
   /// COPIES the playable chunk to a permanent phone-visible folder.
   /// Path: /Download/monitoring_driver/esp32_videos/
   Future<void> _saveToPhoneStorage(String filePath) async {
@@ -282,6 +294,9 @@ class FFmpegVideoRecorderService {
       final sizeKB = (await File(savedPath).length()) ~/ 1024;
       debugPrint('[FFmpegRecorder] 💾 SAVED TO PHONE: $fileName (${sizeKB} KB)');
       debugPrint('[FFmpegRecorder]    Path: ${videosDir.path}/$fileName');
+      
+      // Notify Android MediaStore to scan the newly copied file
+      await _scanFileWithScanner(savedPath);
     } catch (e) {
       debugPrint('[FFmpegRecorder] Error saving to phone storage: $e');
     }

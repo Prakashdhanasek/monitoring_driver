@@ -100,6 +100,8 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   // True when FRONT was opened manually (top button or banner button). Prevents
   // _pollBlindSpotSensors from auto-closing the panel when the sensor reads clear.
   bool _frontManualOverride = false;
+  bool _leftManualOverride = false;
+  bool _rightManualOverride = false;
 
   ReversingDetectorService? _reversingDetector;
   // ── Single active camera mode ─────────────────────────────────────────────
@@ -1416,7 +1418,8 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
 
       // FIX: Never create an incident before face verification is complete.
       // This prevents blank images and stale/random driver names from being sent.
-      if (_phase != Phase.monitoring || _driverId == '—') {
+      // Exception: Allow if the driver is explicitly unauthorized.
+      if (_phase != Phase.monitoring || (_driverId == '—' && _state.authStatus != AuthStatus.unauthorized)) {
         debugPrint(
           '[Flow] Skipping incident "$eventType" — driver not verified (phase=$_phase, id=$_driverId).',
         );
@@ -1431,6 +1434,9 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
         return;
       }
 
+      final effectiveDriverId = (_state.authStatus == AuthStatus.unauthorized) ? 'unknown' : _driverId;
+      final effectiveDriverName = (_state.authStatus == AuthStatus.unauthorized) ? 'Unknown Person' : _driverName;
+
       _incidentsService.queueIncident(
         deviceTabletId: deviceId,
         eventType: eventType,
@@ -1439,8 +1445,8 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
         vehicleSpeed: _state.vehicleSpeed,
         gpsLatitude: _state.gpsLat,
         gpsLongitude: _state.gpsLng,
-        driverId: _driverId,
-        driverName: _driverName,
+        driverId: effectiveDriverId,
+        driverName: effectiveDriverName,
         vehicleId: _vehicleId,
         vehicleRegistrationNumber: _vehicleRegNo,
         snapshotUrl: '',
@@ -2105,6 +2111,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
               !_tripCompleted &&
               _camMode == CamMode.rear)
             ReversingCameraOverlay(
+              key: const ValueKey('rear_camera_overlay'),
               streamUrl: _esp32StreamUrl,
               speed: _state.vehicleSpeed,
               latitude: _state.gpsLat,
@@ -2148,12 +2155,16 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
               _camMode == CamMode.left &&
               _leftCamIp != null)
             ReversingCameraOverlay(
+              key: const ValueKey('left_camera_overlay'),
               streamUrl: 'http://$_leftCamIp:86/',
               speed: _state.vehicleSpeed,
               latitude: _state.gpsLat,
               longitude: _state.gpsLng,
-              isPreviewMode: true,
-              onClosePreview: () => _setCamMode(CamMode.driverMonitoring),
+              isPreviewMode: _leftManualOverride,
+              onClosePreview: () {
+                _leftManualOverride = false;
+                _setCamMode(CamMode.driverMonitoring);
+              },
               label: 'LEFT CAM ACTIVE',
               symbol: 'L',
               themeColor: Colors.redAccent,
@@ -2179,12 +2190,16 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
               _camMode == CamMode.right &&
               _rightCamIp != null)
             ReversingCameraOverlay(
+              key: const ValueKey('right_camera_overlay'),
               streamUrl: 'http://$_rightCamIp:80/',
               speed: _state.vehicleSpeed,
               latitude: _state.gpsLat,
               longitude: _state.gpsLng,
-              isPreviewMode: true,
-              onClosePreview: () => _setCamMode(CamMode.driverMonitoring),
+              isPreviewMode: _rightManualOverride,
+              onClosePreview: () {
+                _rightManualOverride = false;
+                _setCamMode(CamMode.driverMonitoring);
+              },
               label: 'RIGHT CAM ACTIVE',
               symbol: 'R',
               themeColor: Colors.redAccent,
@@ -2195,6 +2210,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
               _camMode == CamMode.front &&
               _frontCamIp != null)
             ReversingCameraOverlay(
+              key: const ValueKey('front_camera_overlay'),
               streamUrl: 'http://$_frontCamIp:84/',
               speed: _state.vehicleSpeed,
               latitude: _state.gpsLat,
@@ -2221,8 +2237,10 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
                 child: GestureDetector(
                   onTap: () {
                     if (_camMode == CamMode.left) {
+                      _leftManualOverride = false;
                       _setCamMode(CamMode.driverMonitoring);
                     } else {
+                      _leftManualOverride = true;
                       _setCamMode(CamMode.left);
                     }
                   },
@@ -2272,8 +2290,10 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
                 child: GestureDetector(
                   onTap: () {
                     if (_camMode == CamMode.right) {
+                      _rightManualOverride = false;
                       _setCamMode(CamMode.driverMonitoring);
                     } else {
+                      _rightManualOverride = true;
                       _setCamMode(CamMode.right);
                     }
                   },
@@ -2751,7 +2771,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
 
     // Trigger IP resolution in the background if left or right cam is unknown.
     // Non-blocking: polls continue with whatever IPs are already resolved.
-    if (_leftCamIp == null || _rightCamIp == null) {
+    if (_leftCamIp == null || _rightCamIp == null || _frontCamIp == null) {
       _resolveSideCamIps(); // fire-and-forget
     }
 
@@ -2833,8 +2853,10 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
 
     if (_camMode != CamMode.rear && !_rearManualOverride) {
       if (left != null && left < 50.0) {
+        _leftManualOverride = false;
         _setCamMode(CamMode.left);
       } else if (right != null && right < 50.0) {
+        _rightManualOverride = false;
         _setCamMode(CamMode.right);
       } else if (front != null && front < 50.0) {
         // Sensor triggered — not a manual open, so override is off.
@@ -2847,8 +2869,8 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
         if (leftClear &&
             rightClear &&
             frontClear &&
-            (_camMode == CamMode.left ||
-                _camMode == CamMode.right ||
+            ((_camMode == CamMode.left && !_leftManualOverride) ||
+                (_camMode == CamMode.right && !_rightManualOverride) ||
                 // Only auto-close front cam if it was NOT manually opened.
                 (_camMode == CamMode.front && !_frontManualOverride))) {
           _setCamMode(CamMode.driverMonitoring);
@@ -3931,12 +3953,6 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       bg = const Color(0xFF7E22CE);
       final percent = (_state.phoneConfidence * 100).toStringAsFixed(0);
       text = '📵  PHONE DETECTED ($percent%)';
-    } else if (_state.authStatus == AuthStatus.unauthorized) {
-      bg = const Color(0xFF7F1D1D);
-      text = '🚫  UNAUTHORIZED DRIVER  🚫';
-    } else if (_state.authStatus == AuthStatus.multipleFaces) {
-      bg = const Color(0xFFEA580C);
-      text = '⚠  MULTIPLE PEOPLE DETECTED  ⚠';
     } else if (_state.drowsinessLevel == DrowsinessLevel.asleep) {
       bg = const Color(0xFFDC2626);
 
@@ -3982,6 +3998,12 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       bg = const Color(0xFFEAB308);
       fg = Colors.black;
       text = '⚠  DISTRACTION DETECTED EYES ON THE ROAD ⚠';
+    } else if (_state.authStatus == AuthStatus.unauthorized) {
+      bg = const Color(0xFF7F1D1D);
+      text = '🚫  UNAUTHORIZED DRIVER  🚫';
+    } else if (_state.authStatus == AuthStatus.multipleFaces) {
+      bg = const Color(0xFFEA580C);
+      text = '⚠  MULTIPLE PEOPLE DETECTED  ⚠';
     }
 
     if (bg == null || text == null) return const SizedBox.shrink();
@@ -4004,8 +4026,6 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
 
   String? _getMonitorBannerKey(bool phone, bool smoke) {
     if (phone) return 'phone';
-    if (_state.authStatus == AuthStatus.unauthorized) return 'unauthorized';
-    if (_state.authStatus == AuthStatus.multipleFaces) return 'multiple_faces';
     if (_state.drowsinessLevel == DrowsinessLevel.asleep) return 'asleep';
     if (smoke) return 'smoke';
     if (_state.hasEating || _state.isChewing) return 'eating';
@@ -4013,6 +4033,8 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     if (_state.drowsinessLevel == DrowsinessLevel.drowsy) return 'drowsy';
     if (_state.distractionStatus == DistractionStatus.distracted)
       return 'distracted';
+    if (_state.authStatus == AuthStatus.unauthorized) return 'unauthorized';
+    if (_state.authStatus == AuthStatus.multipleFaces) return 'multiple_faces';
     return null;
   }
 
