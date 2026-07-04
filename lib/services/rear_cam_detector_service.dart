@@ -59,6 +59,9 @@ class RearCamDetectorService {
   bool _isReady = false;
   bool _busy = false;
 
+  bool get isReady => _isReady;
+  bool get isBusy => _busy;
+
   /// Fired on the main thread after each inference completes.
   void Function(RearDetectionResult result)? onResult;
 
@@ -218,7 +221,7 @@ const Set<String> _kRelevant = {
   'stop sign',
 };
 
-const double _kConf = 0.30;
+const double _kConf = 0.25;
 const double _kIou = 0.45;
 
 // ── Isolate worker ────────────────────────────────────────────────────────────
@@ -231,7 +234,7 @@ void _isolateWorker(_InitMsg init) {
   try {
     interp = Interpreter.fromBuffer(
       init.modelBytes,
-      options: InterpreterOptions()..threads = 2,
+      options: InterpreterOptions()..threads = 4,
     );
   } catch (e) {
     init.replyTo.send('INIT_ERROR: $e');
@@ -314,7 +317,12 @@ void _isolateWorker(_InitMsg init) {
       final origW = decoded.width;
       final origH = decoded.height;
 
-      final resized = img.copyResize(decoded, width: W, height: H);
+      final resized = img.copyResize(
+        decoded,
+        width: W,
+        height: H,
+        interpolation: img.Interpolation.nearest,
+      );
 
       // ── Build input buffer ─────────────────────────────────────────────────
       if (inIsInt8) {
@@ -410,6 +418,17 @@ void _isolateWorker(_InitMsg init) {
       double _get(int row, int box) => isTransposed
           ? outputBuf[box * numRows + row]
           : outputBuf[row * numBoxes + box];
+
+      double minVal = 9999.0;
+      double maxVal = -9999.0;
+      for (int i = 0; i < outputBuf.length; i++) {
+        final v = outputBuf[i];
+        if (v < minVal) minVal = v;
+        if (v > maxVal) maxVal = v;
+      }
+      init.replyTo.send('DEBUG: outputBuf min=${minVal.toStringAsFixed(4)} max=${maxVal.toStringAsFixed(4)} length=${outputBuf.length}');
+      final temp = [for (int r = 0; r < min(15, numRows); r++) _get(r, 0).toStringAsFixed(4)];
+      init.replyTo.send('DEBUG: Box 0 rows 0..15: $temp');
 
       final dets = <RearDetection>[];
       int rawAboveConf = 0;
