@@ -204,6 +204,9 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   // next time a driver appears it becomes the next trip.
   int _tripNumber = 0; // incremented to 1 on the first verification
   bool _tripCompleted = false;
+  DateTime? _unauthorizedStart;
+  bool _unauthorizedTripStop = false;
+  DateTime? _tripCompletedAt;
   DateTime? _noFaceSince;
   static const int _kTripEndSeconds = 30;
 
@@ -1106,6 +1109,10 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
             // A driver is in view.
             _noFaceSince = null;
             if (_tripCompleted) {
+              if (_tripCompletedAt != null &&
+                  DateTime.now().difference(_tripCompletedAt!).inSeconds < 10) {
+                break;
+              }
               // Driver returned after the trip ended -> RE-VERIFY for the next
               // trip (it might be a different driver in the same vehicle).
               _startReverification();
@@ -1151,7 +1158,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
             }
 
             // Play an alert sound on new warnings.
-            _handleAlertSounds();
+            await _handleAlertSounds(image);
           } else {
             // No driver in view — start / continue the "gone" timer.
             _multiFace = 0;
@@ -1161,6 +1168,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
                 DateTime.now().difference(_noFaceSince!).inSeconds >=
                     _kTripEndSeconds) {
               _tripCompleted = true;
+              _tripCompletedAt = DateTime.now();
               _sendTripEnd();
               // _showVerifyToast();
             }
@@ -1244,6 +1252,9 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
 
   void _onVerified() {
     if (_phase != Phase.verifying) return;
+    _unauthorizedStart = null;
+    _unauthorizedTripStop = false;
+    _tripCompletedAt = null;
     _tripNumber++; // trip 1 on first verify, trip 2 after a completed trip, ...
 
     // API-driven identity only. FaceAuthEngine returns the matched label as
@@ -1304,6 +1315,9 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   /// new driver is authenticated before the next trip's monitoring begins.
   Future<void> _startReverification() async {
     _tripCompleted = false;
+    _unauthorizedStart = null;
+    _unauthorizedTripStop = false;
+    _tripCompletedAt = null;
     _capturedFace = null;
     _multiFace = 0;
     _noFaceSince = null;
@@ -1458,7 +1472,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
 
       // If online, upload immediately in real-time
       if (_isOnline) {
-        _syncIncidentsTask();
+        await _syncIncidentsTask();
       }
     } catch (e) {
       debugPrint('[Flow] Error queueing incident: $e');
@@ -1480,6 +1494,14 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     } catch (e) {
       debugPrint('[Flow] Failed to send trip end: $e');
     }
+  }
+
+  bool _driverHasReferencePhoto() {
+    if (_driverId == '—' || _driverId.isEmpty) return false;
+    final driver = _driversService.getDriverById(_driverId);
+    if (driver == null) return false;
+    final facePhotos = driver['facePhotos'] as List<dynamic>?;
+    return facePhotos != null && facePhotos.isNotEmpty;
   }
 
   Future<String?> _generateIncidentVideo(
@@ -1609,7 +1631,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     return false;
   }
 
-  void _handleAlertSounds() {
+  Future<void> _handleAlertSounds(CameraImage? currentImage) async {
     final now = DateTime.now();
     final phone = _state.hasPhone;
     final smoke = _state.hasCigarette;
@@ -1659,12 +1681,36 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     }
 
     // ── GENERAL ALERTS (sound + report on 5-min cooldown) ────────────────
-    if (_state.authStatus == AuthStatus.unauthorized) {
-      if (_checkCooldown('UnauthorizedDriver')) {
-        loud = true;
-        _reportIncident('Unauthorized Driver', 'High', 1.0);
-        _tts.speak('Unauthorized driver detected.');
+    if (_state.authStatus == AuthStatus.unauthorized &&
+        _phase == Phase.monitoring &&
+        !_tripCompleted) {
+      if (_unauthorizedStart == null) {
+        _unauthorizedStart = now;
+      } else if (now.difference(_unauthorizedStart!).inSeconds >= 10) {
+        final hasPhoto = _driverHasReferencePhoto();
+        if (hasPhoto) {
+          // Capture current frame immediately to ensure fresh snapshot
+          if (currentImage != null) {
+            final jpeg = _captureFaceJpeg(currentImage, targetWidth: 240);
+            if (jpeg != null) {
+              _latestFrameJpeg = jpeg;
+            }
+          }
+
+          // Always report unauthorized driver incidents immediately without cooldown
+          loud = true;
+          await _reportIncident('Unauthorized Driver', 'High', 1.0);
+          _tts.speak('Someone not authorized found.');
+
+          _tripCompleted = true;
+          _tripCompletedAt = now;
+          _unauthorizedTripStop = true;
+          await _sendTripEnd();
+        }
+        _unauthorizedStart = null; // Reset after checking
       }
+    } else {
+      _unauthorizedStart = null;
     }
     if (_state.drowsinessLevel == DrowsinessLevel.asleep) {
       if (_checkCooldown('Asleep')) {
@@ -3773,6 +3819,12 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   }
 
   Widget _tripCompletedOverlay() {
+    int remaining = 0;
+    if (_tripCompletedAt != null) {
+      remaining = 10 - DateTime.now().difference(_tripCompletedAt!).inSeconds;
+      if (remaining < 0) remaining = 0;
+    }
+
     return Container(
       width: double.infinity,
       height: double.infinity,
@@ -3818,32 +3870,42 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
                         height: 76,
                         decoration: BoxDecoration(
                           shape: BoxShape.circle,
-                          color: const Color(
-                            0xFF10B981,
-                          ).withValues(alpha: 0.15),
+                          color: (_unauthorizedTripStop
+                                  ? const Color(0xFFEF4444)
+                                  : const Color(0xFF10B981))
+                              .withValues(alpha: 0.15),
                           border: Border.all(
-                            color: const Color(0xFF10B981),
+                            color: _unauthorizedTripStop
+                                ? const Color(0xFFEF4444)
+                                : const Color(0xFF10B981),
                             width: 2,
                           ),
                           boxShadow: [
                             BoxShadow(
-                              color: const Color(
-                                0xFF10B981,
-                              ).withValues(alpha: 0.3),
+                              color: (_unauthorizedTripStop
+                                      ? const Color(0xFFEF4444)
+                                      : const Color(0xFF10B981))
+                                  .withValues(alpha: 0.3),
                               blurRadius: 16,
                               spreadRadius: 2,
                             ),
                           ],
                         ),
-                        child: const Icon(
-                          Icons.check_circle_outline_rounded,
-                          color: Color(0xFF10B981),
+                        child: Icon(
+                          _unauthorizedTripStop
+                              ? Icons.warning_amber_rounded
+                              : Icons.check_circle_outline_rounded,
+                          color: _unauthorizedTripStop
+                              ? const Color(0xFFEF4444)
+                              : const Color(0xFF10B981),
                           size: 44,
                         ),
                       ),
                       const SizedBox(height: 24),
                       Text(
-                        'Trip $_tripNumber Completed',
+                        _unauthorizedTripStop
+                            ? 'Trip $_tripNumber Stopped'
+                            : 'Trip $_tripNumber Completed',
                         textAlign: TextAlign.center,
                         style: const TextStyle(
                           color: Colors.white,
@@ -3853,15 +3915,29 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
                         ),
                       ),
                       const SizedBox(height: 12),
-                      const Text(
-                        'Driver left the seat. The next driver must verify to start the next trip.',
+                      Text(
+                        _unauthorizedTripStop
+                            ? 'Someone not authorized was found. Please look at the camera to verify the driver.'
+                            : 'Driver left the seat. The next driver must verify to start the next trip.',
                         textAlign: TextAlign.center,
-                        style: TextStyle(
+                        style: const TextStyle(
                           color: Color(0xFF94A3B8),
                           fontSize: 14,
                           height: 1.5,
                         ),
                       ),
+                      if (remaining > 0) ...[
+                        const SizedBox(height: 16),
+                        Text(
+                          'Re-verifying in $remaining seconds...',
+                          textAlign: TextAlign.center,
+                          style: const TextStyle(
+                            color: Color(0xFF3B82F6),
+                            fontSize: 14,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                      ],
                     ],
                   ),
                 ),
