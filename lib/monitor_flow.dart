@@ -3956,14 +3956,14 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     } else if (_state.drowsinessLevel == DrowsinessLevel.asleep) {
       bg = const Color(0xFFDC2626);
 
-      final avgEar = (_state.leftEar + _state.rightEar) / 2;
-      final thr = _state.earThreshold;
-      final asleepPct = thr > 0
-          ? (((thr - avgEar) / thr) * 100).clamp(0, 100).toStringAsFixed(0)
-          : '0';
-      text = '⚠  WAKE UP! ($asleepPct%)  ⚠';
+      // final avgEar = (_state.leftEar + _state.rightEar) / 2;
+      // final thr = _state.earThreshold;
+      // final asleepPct = thr > 0
+      //     ? (((thr - avgEar) / thr) * 100).clamp(0, 100).toStringAsFixed(0)
+      //     : '0';
+      // text = '⚠  WAKE UP! ($asleepPct%)  ⚠';
     
-      // text = '⚠  WAKE UP!  ⚠';
+      text = '⚠  WAKE UP!  ⚠';
     } else if (smoke) {
       bg = const Color(0xFF7E22CE);
       final percent = (_state.cigaretteConfidence * 100).toStringAsFixed(0);
@@ -3982,15 +3982,15 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       text = '🥤  DRINKING DETECTED ($percent%)';
     } else if (_state.drowsinessLevel == DrowsinessLevel.drowsy) {
       bg = const Color(0xFFD97706);
-      // text = '⚠  DROWSINESS DETECTED  ⚠';
+      text = '⚠  DROWSINESS DETECTED  ⚠';
 
-       final avgEar = (_state.leftEar + _state.rightEar) / 2;
-      final thr = _state.earThreshold;
-      // Eye more closed than threshold → higher drowsiness %.
-      final drowsyPct = thr > 0
-          ? (((thr - avgEar) / thr) * 100).clamp(0, 100).toStringAsFixed(0)
-          : '0';
-      text = '⚠  DROWSINESS DETECTED ($drowsyPct%)  ⚠';
+      //  final avgEar = (_state.leftEar + _state.rightEar) / 2;
+      // final thr = _state.earThreshold;
+      // // Eye more closed than threshold → higher drowsiness %.
+      // final drowsyPct = thr > 0
+      //     ? (((thr - avgEar) / thr) * 100).clamp(0, 100).toStringAsFixed(0)
+      //     : '0';
+      // text = '⚠  DROWSINESS DETECTED ($drowsyPct%)  ⚠';
     
 
       
