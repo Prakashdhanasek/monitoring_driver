@@ -3955,6 +3955,13 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       text = '📵  PHONE DETECTED ($percent%)';
     } else if (_state.drowsinessLevel == DrowsinessLevel.asleep) {
       bg = const Color(0xFFDC2626);
+
+      // final avgEar = (_state.leftEar + _state.rightEar) / 2;
+      // final thr = _state.earThreshold;
+      // final asleepPct = thr > 0
+      //     ? (((thr - avgEar) / thr) * 100).clamp(0, 100).toStringAsFixed(0)
+      //     : '0';
+      // text = '⚠  WAKE UP! ($asleepPct%)';
       text = '⚠  WAKE UP!  ⚠';
     } else if (smoke) {
       bg = const Color(0xFF7E22CE);
@@ -3974,17 +3981,17 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       text = '🥤  DRINKING DETECTED ($percent%)';
     } else if (_state.drowsinessLevel == DrowsinessLevel.drowsy) {
       bg = const Color(0xFFD97706);
-      text = '⚠  DROWSINESS DETECTED  ⚠';
+      text = '⚠  DROWSINESS DETECTED';
     } else if (_state.distractionStatus == DistractionStatus.distracted) {
       bg = const Color(0xFFEAB308);
       fg = Colors.black;
-      text = '⚠  DISTRACTION DETECTED EYES ON THE ROAD ⚠';
+      text = '⚠  DISTRACTION DETECTED EYES ON THE ROAD';
     } else if (_state.authStatus == AuthStatus.unauthorized) {
       bg = const Color(0xFF7F1D1D);
-      text = '🚫  UNAUTHORIZED DRIVER  🚫';
+      text = '⚠ UNAUTHORIZED DRIVER';
     } else if (_state.authStatus == AuthStatus.multipleFaces) {
       bg = const Color(0xFFEA580C);
-      text = '⚠  MULTIPLE PEOPLE DETECTED  ⚠';
+      text = '⚠  MULTIPLE PEOPLE DETECTED ';
     }
 
     if (bg == null || text == null) return const SizedBox.shrink();
@@ -4038,7 +4045,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       child: Row(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
-          Icon(icon, color: Colors.white, size: 22),
+
           const SizedBox(width: 10),
           Text(
             text,
@@ -4940,14 +4947,14 @@ class _EspScannerScreenState extends State<_EspScannerScreen> {
           style: TextStyle(color: Colors.white),
         ),
         iconTheme: const IconThemeData(color: Colors.white),
-        actions: [
-          if (!_scanning)
-            IconButton(
-              icon: const Icon(Icons.refresh_rounded),
-              onPressed: _startScan,
-              tooltip: 'Rescan',
-            ),
-        ],
+        // actions: [
+        //   if (!_scanning)
+        //     IconButton(
+        //       icon: const Icon(Icons.refresh_rounded),
+        //       onPressed: _startScan,
+        //       tooltip: 'Rescan',
+        //     ),
+        // ],
       ),
       body: _scanning
           ? const Center(

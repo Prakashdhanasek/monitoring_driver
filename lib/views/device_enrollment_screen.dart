@@ -63,7 +63,6 @@ class _DeviceEnrollmentScreenState extends State<DeviceEnrollmentScreen> {
       }
     }
 
-    // Real hardware IMEI kittiyaal athu use cheyt save cheyyuka (mock overwrite).
     if (hardwareImei != null &&
         hardwareImei.length == 15 &&
         RegExp(r'^\d+$').hasMatch(hardwareImei)) {
@@ -73,14 +72,14 @@ class _DeviceEnrollmentScreenState extends State<DeviceEnrollmentScreen> {
       return hardwareImei;
     }
 
-    // 2. Hardware kittiyilla -> cached Hive id ഉണ്ടെങ്കil athu.
+
     if (_settings.hasValidImei()) {
       final imei = _settings.getDeviceId()!;
       debugPrint('[Enroll] Using existing cached IMEI: $imei');
       return imei;
     }
 
-    // 2b. Migration: Check secure storage if Hive is empty
+
     final storedImei = await _storage.read(key: 'device_id');
     if (storedImei != null &&
         storedImei.length == 15 &&
