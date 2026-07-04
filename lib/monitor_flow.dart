@@ -215,13 +215,13 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   DateTime? _firstExitTapAt;
   Timer? _syncTimer;
 
-  // ── Cable / charging monitor ──
-  final Battery _battery = Battery();
-  StreamSubscription<BatteryState>? _batterySub;
-  bool _cableUnplugged = false;
-  bool _showCableBanner = false;
-  Timer? _cableBannerTimer;
-  DateTime? _lastCableReportAt;
+  // // ── Cable / charging monitor ──
+  // final Battery _battery = Battery();
+  // StreamSubscription<BatteryState>? _batterySub;
+  // // bool _cableUnplugged = false;
+  // bool _showCableBanner = false;
+  // // Timer? _cableBannerTimer;
+  // DateTime? _lastCableReportAt;
 
   // ── Screenshot flash (alert varumbol screenshot effect) ──
   bool _flashScreenshot = false;
@@ -238,7 +238,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
 
     _syncTimer = Timer.periodic(const Duration(seconds: 30), (_) {
       _syncIncidentsTask();
-      _maybeReReportCable();
+      // _maybeReReportCable();
     });
 
     // Check connectivity every 5 seconds
@@ -268,7 +268,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       }
     });
 
-    _initBatteryMonitor();
+    // _initBatteryMonitor();
 
     // Resolve cam IPs after 10 s so app startup isn't flooded with 150+
     // concurrent subnet probe requests the moment the app opens.
@@ -458,88 +458,88 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   // ─────────────────────────────────────────────────────────
   // CABLE / CHARGING MONITOR
   // ─────────────────────────────────────────────────────────
-  Future<void> _initBatteryMonitor() async {
-    // Set up listener first — even if initial state check fails
-    try {
-      _batterySub = _battery.onBatteryStateChanged.listen(
-        _onBatteryStateChanged,
-      );
-    } catch (e) {
-      debugPrint('[Flow] battery listener setup error: $e');
-    }
+  // Future<void> _initBatteryMonitor() async {
+  //   // Set up listener first — even if initial state check fails
+  //   try {
+  //     _batterySub = _battery.onBatteryStateChanged.listen(
+  //       _onBatteryStateChanged,
+  //     );
+  //   } catch (e) {
+  //     debugPrint('[Flow] battery listener setup error: $e');
+  //   }
 
-    // Then check initial state
-    try {
-      final initial = await _battery.batteryState;
-      debugPrint('[Flow] 🔋 Initial battery state: $initial');
-      _cableUnplugged = _isUnplugged(initial);
-      if (mounted) setState(() {});
-    } catch (e) {
-      debugPrint('[Flow] battery initial state error: $e');
-    }
-  }
+  //   // Then check initial state
+  //   try {
+  //     final initial = await _battery.batteryState;
+  //     debugPrint('[Flow] 🔋 Initial battery state: $initial');
+  //     _cableUnplugged = _isUnplugged(initial);
+  //     if (mounted) setState(() {});
+  //   } catch (e) {
+  //     debugPrint('[Flow] battery initial state error: $e');
+  //   }
+  // }
 
-  bool _isUnplugged(BatteryState state) {
-    // Charging or full means cable is connected
-    if (state == BatteryState.charging || state == BatteryState.full) {
-      return false;
-    }
-    // Discharging or unknown means cable is NOT connected
-    // (some devices report unknown instead of discharging on unplug)
-    return true;
-  }
+  // bool _isUnplugged(BatteryState state) {
+  //   // Charging or full means cable is connected
+  //   if (state == BatteryState.charging || state == BatteryState.full) {
+  //     return false;
+  //   }
+  //   // Discharging or unknown means cable is NOT connected
+  //   // (some devices report unknown instead of discharging on unplug)
+  //   return true;
+  // }
 
-  void _onBatteryStateChanged(BatteryState state) {
-    debugPrint('[Flow] 🔋 Battery state changed: $state');
+  // void _onBatteryStateChanged(BatteryState state) {
+  //   debugPrint('[Flow] 🔋 Battery state changed: $state');
 
-    final nowUnplugged = _isUnplugged(state);
+  //   final nowUnplugged = _isUnplugged(state);
 
-    if (nowUnplugged && !_cableUnplugged) {
-      _cableUnplugged = true;
-      debugPrint('[Flow] ⚠️ Charging cable UNPLUGGED.');
+  //   if (nowUnplugged && !_cableUnplugged) {
+  //     _cableUnplugged = true;
+  //     debugPrint('[Flow] ⚠️ Charging cable UNPLUGGED.');
 
-      // FIX: Only report cable-unplug incident if a driver is verified.
-      // Before face verification, we have no confirmed driver — sending an
-      // incident would attach a blank image and possibly a stale driver name.
-      if (_phase == Phase.monitoring && _driverId != '—') {
-        _reportIncident('Cable Unplugged', 'High', 1.0);
-        _lastCableReportAt = DateTime.now();
-      } else {
-        debugPrint(
-          '[Flow] Skipping cable-unplug incident — no verified driver yet.',
-        );
-      }
+  //     // FIX: Only report cable-unplug incident if a driver is verified.
+  //     // Before face verification, we have no confirmed driver — sending an
+  //     // incident would attach a blank image and possibly a stale driver name.
+  //     if (_phase == Phase.monitoring && _driverId != '—') {
+  //       _reportIncident('Cable Unplugged', 'High', 1.0);
+  //       _lastCableReportAt = DateTime.now();
+  //     } else {
+  //       debugPrint(
+  //         '[Flow] Skipping cable-unplug incident — no verified driver yet.',
+  //       );
+  //     }
 
-      // Show banner for 5 seconds only
-      _showCableBanner = true;
-      _cableBannerTimer?.cancel();
-      _cableBannerTimer = Timer(const Duration(seconds: 5), () {
-        if (mounted) setState(() => _showCableBanner = false);
-      });
+  //     // Show banner for 5 seconds only
+  //     _showCableBanner = true;
+  //     _cableBannerTimer?.cancel();
+  //     _cableBannerTimer = Timer(const Duration(seconds: 5), () {
+  //       if (mounted) setState(() => _showCableBanner = false);
+  //     });
 
-      _playAlert('audio/alert_loud.mp3');
-      _tts.speak('Warning. Charging cable unplugged.');
-      if (mounted) setState(() {});
-    } else if (!nowUnplugged && _cableUnplugged) {
-      _cableUnplugged = false;
-      _showCableBanner = false;
-      _cableBannerTimer?.cancel();
-      _lastCableReportAt = null;
-      debugPrint('[Flow] Charging cable reconnected.');
-      if (mounted) setState(() {});
-    }
-  }
+  //     _playAlert('audio/alert_loud.mp3');
+  //     _tts.speak('Warning. Charging cable unplugged.');
+  //     if (mounted) setState(() {});
+  //   } else if (!nowUnplugged && _cableUnplugged) {
+  //     _cableUnplugged = false;
+  //     _showCableBanner = false;
+  //     _cableBannerTimer?.cancel();
+  //     _lastCableReportAt = null;
+  //     debugPrint('[Flow] Charging cable reconnected.');
+  //     if (mounted) setState(() {});
+  //   }
+  // }
 
-  void _maybeReReportCable() {
-    if (!_cableUnplugged) return;
-    // FIX: Don't re-report cable unplug unless driver is verified and monitoring
-    if (_phase != Phase.monitoring || _driverId == '—') return;
-    final last = _lastCableReportAt;
-    if (last == null || DateTime.now().difference(last).inSeconds >= 5 * 60) {
-      _lastCableReportAt = DateTime.now();
-      _reportIncident('Cable Unplugged', 'High', 1.0);
-    }
-  }
+  // void _maybeReReportCable() {
+  //   if (!_cableUnplugged) return;
+  //   // FIX: Don't re-report cable unplug unless driver is verified and monitoring
+  //   if (_phase != Phase.monitoring || _driverId == '—') return;
+  //   final last = _lastCableReportAt;
+  //   if (last == null || DateTime.now().difference(last).inSeconds >= 5 * 60) {
+  //     _lastCableReportAt = DateTime.now();
+  //     _reportIncident('Cable Unplugged', 'High', 1.0);
+  //   }
+  // }
 
   @override
   void dispose() {
@@ -548,8 +548,8 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     _telemetryTimer?.cancel();
     _sensorUiTimer?.cancel();
     _countdownTimer?.cancel();
-    _cableBannerTimer?.cancel();
-    _batterySub?.cancel();
+    // _cableBannerTimer?.cancel();
+    // _batterySub?.cancel();
     WidgetsBinding.instance.removeObserver(this);
     _camera?.dispose();
     _detector?.close();
@@ -1504,6 +1504,9 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     return facePhotos != null && facePhotos.isNotEmpty;
   }
 
+
+  
+
   Future<String?> _generateIncidentVideo(
     List<Uint8List> frames,
     String eventType,
@@ -1681,56 +1684,34 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     }
 
     // ── GENERAL ALERTS (sound + report on 5-min cooldown) ────────────────
-    if (_state.authStatus == AuthStatus.unauthorized &&
-        _phase == Phase.monitoring &&
-        !_tripCompleted) {
-      if (_unauthorizedStart == null) {
-        _unauthorizedStart = now;
-      } else if (now.difference(_unauthorizedStart!).inSeconds >= 10) {
-        final hasPhoto = _driverHasReferencePhoto();
-        if (hasPhoto) {
-          // Capture current frame immediately to ensure fresh snapshot
-          if (currentImage != null) {
-            final jpeg = _captureFaceJpeg(currentImage, targetWidth: 240);
-            if (jpeg != null) {
-              _latestFrameJpeg = jpeg;
-            }
-          }
-
-          // Always report unauthorized driver incidents immediately without cooldown
-          loud = true;
-          await _reportIncident('Unauthorized Driver', 'High', 1.0);
-          _tts.speak('Someone not authorized found.');
-
-          _tripCompleted = true;
-          _tripCompletedAt = now;
-          _unauthorizedTripStop = true;
-          await _sendTripEnd();
-        }
-        _unauthorizedStart = null; // Reset after checking
+    if (_state.authStatus == AuthStatus.unauthorized) {
+      if (_checkCooldown('UnauthorizedDriver')) {
+        loud = true;
+        _reportIncident('Unauthorized Driver', 'High', 1.0);
+        _tts.speak('Unauthorized driver detected.');
       }
-    } else {
-      _unauthorizedStart = null;
     }
     if (_state.drowsinessLevel == DrowsinessLevel.asleep) {
+              loud = true;
+
       if (_checkCooldown('Asleep')) {
-        loud = true;
         _reportIncident('Drowsiness', 'High', 1.0);
-        _tts.speak('Warning! Wake up. You are falling asleep.');
+        // _tts.speak('Warning! Wake up. You are falling asleep.');
       }
     }
     if (_state.drowsinessLevel == DrowsinessLevel.drowsy) {
+              soft = true;
+
       if (_checkCooldown('Drowsiness')) {
-        soft = true;
         _reportIncident('Drowsiness', 'Medium', 0.8);
-        _tts.speak('You look drowsy. Stay alert.');
+        // _tts.speak('You look drowsy. Stay alert.');
       }
     }
     if (_state.distractionStatus == DistractionStatus.distracted) {
+              soft = true;
       if (_checkCooldown('Distraction')) {
-        soft = true;
         _reportIncident('Distraction', 'Medium', 0.8);
-        _tts.speak('Keep your eyes on the road.');
+        // _tts.speak('Keep your eyes on the road.');
       }
     }
 
@@ -1747,6 +1728,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       final threshold = reportThresholds[label];
       if (threshold == null || obj.confidence <= threshold) continue;
       if (label == 'seatbelt') continue;
+               loud = true;
 
       if (_checkCooldown(label)) {
         String eventType = label;
@@ -1770,7 +1752,6 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
 
         _reportIncident(eventType, 'High', obj.confidence);
         if (voice.isNotEmpty) _tts.speak(voice);
-        loud = true;
       }
     }
 
@@ -2411,50 +2392,49 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
             ),
 
           // 👇 CABLE UNPLUGGED banner — shows for 5 seconds only.
-          if (_showCableBanner)
-            Positioned(
-              top: 0,
-              left: 0,
-              right: 0,
-              child: SafeArea(
-                child: Padding(
-                  padding: const EdgeInsets.all(12),
-                  child: Container(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 14,
-                      vertical: 12,
-                    ),
-                    decoration: BoxDecoration(
-                      color: const Color(0xFFB91C1C),
-                      borderRadius: BorderRadius.circular(12),
-                    ),
-                    child: Row(
-                      children: const [
-                        Icon(
-                          Icons.power_off_rounded,
-                          color: Colors.white,
-                          size: 22,
-                        ),
-                        SizedBox(width: 10),
-                        Expanded(
-                          child: Text(
-                            '🔌 CHARGING CABLE UNPLUGGED  Reported to admin',
-                            style: TextStyle(
-                              color: Colors.white,
-                              fontSize: 14,
-                              fontWeight: FontWeight.w700,
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
-              ),
-            ),
+          // if (_showCableBanner)
+          //   Positioned(
+            //   top: 0,
+            //   left: 0,
+            //   right: 0,
+            //   child: SafeArea(
+            //     child: Padding(
+            //       padding: const EdgeInsets.all(12),
+            //       child: Container(
+            //         padding: const EdgeInsets.symmetric(
+            //           horizontal: 14,
+            //           vertical: 12,
+            //         ),
+            //         decoration: BoxDecoration(
+            //           color: const Color(0xFFB91C1C),
+            //           borderRadius: BorderRadius.circular(12),
+            //         ),
+            //         child: Row(
+            //           children: const [
+            //             Icon(
+            //               Icons.power_off_rounded,
+            //               color: Colors.white,
+            //               size: 22,
+            //             ),
+            //             SizedBox(width: 10),
+            //             Expanded(
+            //               child: Text(
+            //                 '🔌 CHARGING CABLE UNPLUGGED  Reported to admin',
+            //                 style: TextStyle(
+            //                   color: Colors.white,
+            //                   fontSize: 14,
+            //                   fontWeight: FontWeight.w700,
+            //                 ),
+            //               ),
+            //             ),
+            //           ],
+            //         ),
+            //       ),
+            //     ),
+            //   ),
+            // ),
 
           // Screenshot effect — alert varumbol screen quick shrink + border + dim
-          // (phone-il screenshot edukkumbol pole).
           if (_flashScreenshot)
             Positioned.fill(
               child: IgnorePointer(
@@ -3362,7 +3342,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
               child: _syncIconButton(),
             ),
           ),
-          _cableUnpluggedBanner(),
+          // _cableUnpluggedBanner(),
           _monitorStatusBar(),
           _esp32StatusBanner(),
           _camConnectionStatusBar(),
@@ -3377,33 +3357,33 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     );
   }
 
-  Widget _cableUnpluggedBanner() {
-    if (!_showCableBanner) return const SizedBox.shrink();
-    return Container(
-      margin: const EdgeInsets.fromLTRB(12, 0, 12, 8),
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-      decoration: BoxDecoration(
-        color: const Color(0xFFB91C1C).withValues(alpha: 0.95),
-        borderRadius: BorderRadius.circular(12),
-      ),
-      child: Row(
-        children: const [
-          Icon(Icons.power_off_rounded, color: Colors.white, size: 20),
-          SizedBox(width: 10),
-          Expanded(
-            child: Text(
-              '🔌 CHARGING CABLE UNPLUGGED  Reported to admin',
-              style: TextStyle(
-                color: Colors.white,
-                fontSize: 13,
-                fontWeight: FontWeight.w700,
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
+  // Widget _cableUnpluggedBanner() {
+  //   if (!_showCableBanner) return const SizedBox.shrink();
+  //   return Container(
+  //     margin: const EdgeInsets.fromLTRB(12, 0, 12, 8),
+  //     padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+  //     decoration: BoxDecoration(
+  //       color: const Color(0xFFB91C1C).withValues(alpha: 0.95),
+  //       borderRadius: BorderRadius.circular(12),
+  //     ),
+  //     child: Row(
+  //       children: const [
+  //         Icon(Icons.power_off_rounded, color: Colors.white, size: 20),
+  //         SizedBox(width: 10),
+  //         Expanded(
+  //           child: Text(
+  //             '🔌 CHARGING CABLE UNPLUGGED  Reported to admin',
+  //             style: TextStyle(
+  //               color: Colors.white,
+  //               fontSize: 13,
+  //               fontWeight: FontWeight.w700,
+  //             ),
+  //           ),
+  //         ),
+  //       ],
+  //     ),
+  //   );
+  // }
 
   Widget _esp32StatusBanner() {
     final bool isRecording = _ffmpegRecorderService.isRecording;
