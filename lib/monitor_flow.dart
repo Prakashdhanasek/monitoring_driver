@@ -186,7 +186,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   static const int _kSeatbeltVoiceRepeatMs =
       60000; // 30s re-announce // ADD THIS
 
-      static const double _kSpeedLimitKmh = 80.0;
+      static const double _kSpeedLimitKmh = 30.0;
 
   // Seatbelt cyclic alert state
   DateTime? _seatbeltAlertStart; // when unbuckled state first detected
