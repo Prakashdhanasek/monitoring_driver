@@ -11,7 +11,6 @@ import 'package:audioplayers/audioplayers.dart';
 import 'package:image/image.dart' as img;
 import 'package:battery_plus/battery_plus.dart';
 import 'package:monitoring_driver/kiosk.dart';
-import 'package:monitoring_driver/services/geofence_service.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:multicast_dns/multicast_dns.dart';
 import 'package:http/http.dart' as http;
@@ -33,7 +32,6 @@ import 'services/tts_service.dart';
 import 'services/esp32_wifi_service.dart';
 import 'services/ffmpeg_recorder_service.dart';
 import 'services/sftp_upload_service.dart';
-import 'services/http_video_upload_service.dart';
 
 import 'services/reversing_detector_service.dart';
 import 'views/reversing_camera_overlay.dart';
@@ -76,7 +74,6 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   final IncidentsService _incidentsService = IncidentsService();
   final TelemetryService _telemetryService = TelemetryService();
   final TripService _tripService = TripService();
-  final GeofenceService _geofenceService = GeofenceService();
 
   // ── Voice alerts (TTS -> Bluetooth speaker if connected) ──
   final TtsService _tts = TtsService();
@@ -89,11 +86,9 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     username: 'upload_user',
     password: 'secret_password',
   );
-  final HttpVideoUploadService _httpVideoUploadService = HttpVideoUploadService();
 
   // ── Connectivity tracking ──
   bool _isOnline = true;
-  bool _isUploadingVideos = false;
   Timer? _connectivityTimer;
   Timer? _telemetryTimer;
   Timer? _sensorUiTimer;
@@ -232,13 +227,6 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   bool _flashScreenshot = false;
   DateTime? _lastFlashAt;
 
-  // ── Geofence / boundary violation ──
-  double? _boundaryLat;         // geofence center latitude
-  double? _boundaryLng;         // geofence center longitude
-  double? _boundaryRadiusM;     // radius in meters
-  String? _geofenceId;          // needed for the violation payload
-  bool _boundaryViolationReported = false; // fire once per exit
-
   @override
   void initState() {
     super.initState();
@@ -248,13 +236,9 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     WakelockPlus.enable();
     _init();
 
-    Future.delayed(const Duration(seconds: 4), () {
-      _triggerHttpUpload();
-    });
-
     _syncTimer = Timer.periodic(const Duration(seconds: 30), (_) {
       _syncIncidentsTask();
-      _triggerHttpUpload();
+      // _maybeReReportCable();
     });
 
     // Check connectivity every 5 seconds
@@ -313,7 +297,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
         // Auto-sync immediately when we come back online
         if (_isOnline) {
           _syncIncidentsTask();
-          _triggerHttpUpload();
+          _triggerSftpUpload();
         }
       }
     } catch (_) {
@@ -867,46 +851,9 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     }
   }
 
-  Future<void> _triggerHttpUpload() async {
-    debugPrint('[Flow] _triggerHttpUpload called. isOnline: $_isOnline, isUploading: $_isUploadingVideos');
-    if (!_isOnline) {
-      debugPrint('[Flow] Skipping video upload — device is OFFLINE.');
-      return;
-    }
-    if (_isUploadingVideos) {
-      debugPrint('[Flow] HTTP video upload already in progress. Skipping trigger.');
-      return;
-    }
-    _isUploadingVideos = true;
-    try {
-      debugPrint('[Flow] Starting HTTP background upload...');
-      
-      String fallbackVehicleId = '';
-      try {
-        final cachedDrivers = _driversService.getCachedDrivers();
-        if (cachedDrivers.isNotEmpty) {
-          fallbackVehicleId = cachedDrivers.first['assignedVehicleId'] as String? ?? '';
-        }
-      } catch (e) {
-        debugPrint('[Flow] Error resolving fallback vehicleId from cache: $e');
-      }
-
-      final activeVehicleId = (_vehicleId != null && _vehicleId!.isNotEmpty)
-          ? _vehicleId!
-          : fallbackVehicleId;
-
-      final activeCamType = _camMode.toString().split('.').last;
-      await _httpVideoUploadService.uploadPendingFiles(
-        uploadUrl: 'https://proximity-driver-api.prod-app.in/api/video-recordings/upload',
-        vehicleId: activeVehicleId,
-        driverId: (_driverId == '—' || _driverId.isEmpty) ? null : _driverId,
-        tripId: _tripNumber > 0 ? _tripNumber.toString() : null,
-        cameraType: activeCamType,
-        fileParamName: 'file',
-      );
-    } finally {
-      _isUploadingVideos = false;
-    }
+  Future<void> _triggerSftpUpload() async {
+    debugPrint('[Flow] Online. Starting SFTP background upload...');
+    await _sftpUploadService.uploadPendingFiles('/var/www/uploads/videos');
   }
 
   Future<void> _init() async {
@@ -1422,73 +1369,18 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     }
   }
 
-  // Future<void> _sendTripStart() async {
-  //   try {
-  //     final deviceId = _settings.getDeviceId();
-  //     if (deviceId == null || deviceId.isEmpty) return;
-  //
-  //     await _tripService.startTrip(
-  //       deviceTabletId: deviceId,
-  //       driverId: _driverId == '—' ? null : _driverId,
-  //       gpsLatitude: _state.gpsLat,
-  //       gpsLongitude: _state.gpsLng,
-  //       startedAt: DateTime.now().toUtc(),
-  //     );
-  //   } catch (e) {
-  //     debugPrint('[Flow] Failed to send trip start: $e');
-  //   }
-  // }
-
   Future<void> _sendTripStart() async {
     try {
       final deviceId = _settings.getDeviceId();
       if (deviceId == null || deviceId.isEmpty) return;
 
-      final trip = await _tripService.startTrip(
+      await _tripService.startTrip(
         deviceTabletId: deviceId,
         driverId: _driverId == '—' ? null : _driverId,
         gpsLatitude: _state.gpsLat,
         gpsLongitude: _state.gpsLng,
         startedAt: DateTime.now().toUtc(),
       );
-
-      // if (trip != null &&
-      //     trip.geofenceCenterLatitude != null &&
-      //     trip.geofenceCenterLongitude != null &&
-      //     trip.geofenceRadiusMeters != null) {
-      //   _boundaryLat = trip.geofenceCenterLatitude;
-      //   _boundaryLng = trip.geofenceCenterLongitude;
-      //   _boundaryRadiusM = trip.geofenceRadiusMeters!.toDouble();
-      //   _boundaryViolationReported = false; // re-arm for this trip
-      //   debugPrint('[Boundary] Geofence set: '
-      //       '($_boundaryLat, $_boundaryLng) r=${_boundaryRadiusM}m '
-      //       '"${trip.geofenceName}"');
-      // } else {
-      //   // No geofence returned — disable the check for this trip.
-      //   _boundaryLat = null;
-      //   _boundaryLng = null;
-      //   _boundaryRadiusM = null;
-      //   debugPrint('[Boundary] No geofence in trip-start response.');
-      // }
-      if (trip != null &&
-          trip.geofenceCenterLatitude != null &&
-          trip.geofenceCenterLongitude != null &&
-          trip.geofenceRadiusMeters != null) {
-        _boundaryLat = trip.geofenceCenterLatitude;
-        _boundaryLng = trip.geofenceCenterLongitude;
-        _boundaryRadiusM = trip.geofenceRadiusMeters!.toDouble();
-        _geofenceId = trip.geofenceId;
-        _vehicleId ??= trip.vehicleId;
-        _boundaryViolationReported = false;
-        debugPrint('[Boundary] Geofence set: ($_boundaryLat, $_boundaryLng) '
-            'r=${_boundaryRadiusM}m id=$_geofenceId');
-      } else {
-        _boundaryLat = null;
-        _boundaryLng = null;
-        _boundaryRadiusM = null;
-        _geofenceId = null;
-        debugPrint('[Boundary] No geofence in trip-start response.');
-      }
     } catch (e) {
       debugPrint('[Flow] Failed to send trip start: $e');
     }
@@ -1593,10 +1485,6 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
 
   Future<void> _sendTripEnd() async {
     try {
-      if (_ffmpegRecorderService.isRecording) {
-        await _ffmpegRecorderService.stopRecording();
-      }
-
       final deviceId = _settings.getDeviceId();
       if (deviceId == null || deviceId.isEmpty) return;
 
@@ -1607,10 +1495,6 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
         distanceKm: 0,
         endedAt: DateTime.now().toUtc(),
       );
-
-      if (_isOnline) {
-        _triggerHttpUpload();
-      }
     } catch (e) {
       debugPrint('[Flow] Failed to send trip end: $e');
     }
@@ -1722,8 +1606,6 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
 
   Future<void> _sendTelemetryTask() async {
     if (!mounted) return;
-    // Boundary check runs every tick, even offline — it detects the crossing.
-    _checkBoundary();
     final deviceId = _settings.getDeviceId();
     if (deviceId == null || deviceId.isEmpty) {
       return;
@@ -2269,40 +2151,6 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     );
   }
 
-  void _checkBoundary() {
-    if (_boundaryLat == null ||
-        _boundaryLng == null ||
-        _boundaryRadiusM == null) {
-      return; // no geofence for this trip
-    }
-
-    final distance = Geolocator.distanceBetween(
-      _boundaryLat!,
-      _boundaryLng!,
-      _state.gpsLat,
-      _state.gpsLng,
-    );
-
-    final outside = distance > _boundaryRadiusM!;
-    //final outside = distance > 5;
-
-    // Log every check, regardless of in/out state.
-    debugPrint('[Boundary] distance=${distance.toStringAsFixed(1)} m | '
-        'limit=${_boundaryRadiusM!.toStringAsFixed(0)} m | '
-        '${outside ? "OUTSIDE" : "inside"}');
-
-    if (outside && !_boundaryViolationReported) {
-      _boundaryViolationReported = true;
-      final beyond = distance - _boundaryRadiusM!; // meters past the boundary
-      debugPrint('[Boundary] VIOLATION — ${distance.toStringAsFixed(1)} m '
-          'from center, ${beyond.toStringAsFixed(1)} m beyond limit.');
-      _reportBoundaryViolation(beyond);
-    } else if (!outside && _boundaryViolationReported) {
-      _boundaryViolationReported = false; // re-arm for next exit
-      debugPrint('[Boundary] Back inside boundary.');
-    }
-  }
-
   // ─────────────────────────────────────────────────────────
   // UI
   // ─────────────────────────────────────────────────────────
@@ -2670,9 +2518,6 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
         mode == CamMode.right;
     if (needsLiveStream && _ffmpegRecorderService.isRecording) {
       await _ffmpegRecorderService.stopRecording();
-      if (_isOnline) {
-        _triggerHttpUpload();
-      }
       debugPrint(
         '[CamMode] Recorder STOPPED — releasing ESP32 stream for $mode',
       );
@@ -4602,27 +4447,6 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
           ),
         ],
       ),
-    );
-  }
-
-  Future<void> _reportBoundaryViolation(double distanceFromBoundaryMeters) async {
-    if (!_isOnline) {
-      debugPrint('[Boundary] Offline — violation not sent.');
-      return;
-    }
-    final deviceId = _settings.getDeviceId();
-    if (deviceId == null || deviceId.isEmpty) return;
-
-    await _geofenceService.reportViolation(
-      vehicleId: _vehicleId,
-      driverId: _driverId == '—' ? null : _driverId,
-      geofenceId: _geofenceId,
-      latitude: _state.gpsLat,
-      longitude: _state.gpsLng,
-      vehicleSpeed: _state.vehicleSpeed,
-      distanceFromBoundaryMeters: distanceFromBoundaryMeters,
-      deviceTabletId: deviceId,
-      occurredAt: DateTime.now().toUtc(),
     );
   }
 }

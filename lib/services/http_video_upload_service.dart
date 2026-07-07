@@ -77,25 +77,11 @@ class HttpVideoUploadService {
           ),
         );
 
-        debugPrint('--- HTTP MULTIPART REQUEST DETAILS ---');
-        debugPrint('URL: $uploadUrl');
-        debugPrint('Headers: ${request.headers}');
-        debugPrint('Fields: ${request.fields}');
-        debugPrint('File Parameter Name: $fileParamName');
-        debugPrint('File Path: ${file.path}');
-        debugPrint('File Size: ${await file.length()} bytes');
-        debugPrint('--------------------------------------');
-
         final responseStream = await request.send().timeout(
           const Duration(minutes: 5), // Videos can be large, give it time
         );
 
         final response = await http.Response.fromStream(responseStream);
-
-        debugPrint('--- HTTP MULTIPART RESPONSE DETAILS ---');
-        debugPrint('Status Code: ${response.statusCode}');
-        debugPrint('Response Body: ${response.body}');
-        debugPrint('---------------------------------------');
 
         if (response.statusCode == 200 || response.statusCode == 201) {
           debugPrint('[HTTP Upload SUCCESS] ✓ Uploaded: $fileName (Status: ${response.statusCode})');
@@ -105,6 +91,7 @@ class HttpVideoUploadService {
           debugPrint('[HTTP Upload] Deleted local chunk: $fileName');
         } else {
           debugPrint('[HTTP Upload ERROR] ✗ Failed uploading $fileName — Status: ${response.statusCode}');
+          debugPrint('Response Body: ${response.body}');
         }
       } catch (e) {
         debugPrint('[HTTP Upload ERROR] Exception uploading $fileName: $e');
