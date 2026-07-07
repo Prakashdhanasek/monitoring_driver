@@ -1,10 +1,12 @@
 package com.example.monitoring_driver
 
+import android.app.PendingIntent
 import android.app.admin.DevicePolicyManager
 import android.app.admin.WifiSsidPolicy
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageInstaller
 import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
@@ -12,6 +14,7 @@ import android.net.NetworkRequest
 import android.net.wifi.WifiManager
 import android.os.Build
 import android.telephony.TelephonyManager
+import android.util.Log
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
@@ -41,6 +44,18 @@ class MainActivity : FlutterActivity() {
                             moveTaskToBack(true)
                         } catch (_: Exception) {}
                         result.success(true)
+                    }
+                    "installApk" -> {
+                        val path = call.argument<String>("path")
+                        if (path != null) {
+                            installApkSilently(path, result)
+                        } else {
+                            result.error("INVALID_ARGUMENT", "APK path is required", null)
+                        }
+                    }
+                    "isDeviceOwner" -> {
+                        val dpm = getSystemService(Context.DEVICE_POLICY_SERVICE) as DevicePolicyManager
+                        result.success(dpm.isDeviceOwnerApp(packageName))
                     }
                     "connectWifi" -> {
                         connectToWifi()
@@ -128,6 +143,79 @@ class MainActivity : FlutterActivity() {
                     else -> result.notImplemented()
                 }
             }
+    }
+
+    // ───────────────────────────────────────────────────────────────────────
+    // Silent APK install via PackageInstaller.Session.
+    // When the app is Device Owner this completes with NO user prompt.
+    // When NOT Device Owner the system may show its own installer UI.
+    // ───────────────────────────────────────────────────────────────────────
+    private fun installApkSilently(apkPath: String, result: MethodChannel.Result) {
+        try {
+            val file = java.io.File(apkPath)
+            if (!file.exists()) {
+                result.error("FILE_NOT_FOUND", "APK not found: $apkPath", null)
+                return
+            }
+
+            Log.i("AppInstall", "Starting silent install: $apkPath (${file.length()} bytes)")
+
+            val installer = packageManager.packageInstaller
+            val params = PackageInstaller.SessionParams(
+                PackageInstaller.SessionParams.MODE_FULL_INSTALL
+            )
+            params.setAppPackageName(packageName)
+
+            val sessionId = installer.createSession(params)
+            val session   = installer.openSession(sessionId)
+
+            file.inputStream().use { input ->
+                session.openWrite("base.apk", 0, file.length()).use { output ->
+                    input.copyTo(output)
+                    session.fsync(output)
+                }
+            }
+
+            // Use a manifest-declared receiver so Android can deliver the result
+            // even after the current process is killed during APK replacement.
+            val action = "com.example.monitoring_driver.INSTALL_RESULT"
+            // Set ourselves as the preferred HOME activity so Android relaunches us
+            // automatically after killing the process for APK replacement.
+            // InstallResultReceiver clears this after success to prevent auto-boot.
+            val dpmInst = getSystemService(Context.DEVICE_POLICY_SERVICE) as DevicePolicyManager
+            val adminInst = ComponentName(this, KioskAdminReceiver::class.java)
+            if (dpmInst.isDeviceOwnerApp(packageName)) {
+                try {
+                    val homeFilter = android.content.IntentFilter(Intent.ACTION_MAIN).apply {
+                        addCategory(Intent.CATEGORY_HOME)
+                        addCategory(Intent.CATEGORY_DEFAULT)
+                    }
+                    val mainComp = ComponentName(packageName, "${packageName}.MainActivity")
+                    dpmInst.addPersistentPreferredActivity(adminInst, homeFilter, mainComp)
+                    Log.i("AppInstall", "Set as preferred HOME for post-install relaunch")
+                } catch (e: Exception) {
+                    Log.e("AppInstall", "addPersistentPreferredActivity failed: ${e.message}")
+                }
+            }
+
+            val callbackIntent = Intent(action).setPackage(packageName)
+            val pendingIntent = PendingIntent.getBroadcast(
+                applicationContext,
+                sessionId,
+                callbackIntent,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
+
+            session.commit(pendingIntent.intentSender)
+            session.close()
+
+            Log.i("AppInstall", "Session $sessionId committed — waiting for result")
+            result.success(true)
+        } catch (e: Exception) {
+            Log.e("AppInstall", "installApkSilently exception: ${e.message}")
+            try { startKiosk() } catch (_: Exception) {}
+            result.error("INSTALL_FAILED", e.message, null)
+        }
     }
 
     @Suppress("HardwareIds")
@@ -321,6 +409,10 @@ class MainActivity : FlutterActivity() {
     override fun onResume() {
         super.onResume()
         window.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        // Re-enter lock task mode on every resume so that after an OTA install
+        // (when the activity is cold-started by OtaRestartService) the screen
+        // is pinned again. startLockTask() is a no-op when already locked.
+        try { startKiosk() } catch (_: Exception) {}
     }
 
     override fun onDestroy() {
@@ -331,5 +423,42 @@ class MainActivity : FlutterActivity() {
 
         wifiCallback = null
         super.onDestroy()
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        val status = intent.getIntExtra(PackageInstaller.EXTRA_STATUS, -999)
+        val msg    = intent.getStringExtra(PackageInstaller.EXTRA_STATUS_MESSAGE) ?: "no message"
+        android.util.Log.e("AppInstall", "=== PackageInstaller callback ===")
+        android.util.Log.e("AppInstall", "  EXTRA_STATUS         : $status")
+        android.util.Log.e("AppInstall", "  EXTRA_STATUS_MESSAGE : $msg")
+        when (status) {
+            PackageInstaller.STATUS_SUCCESS ->
+                android.util.Log.e("AppInstall", "  → SUCCESS — app should restart")
+            PackageInstaller.STATUS_FAILURE ->
+                android.util.Log.e("AppInstall", "  → FAILURE (generic)")
+            PackageInstaller.STATUS_FAILURE_ABORTED ->
+                android.util.Log.e("AppInstall", "  → FAILURE_ABORTED")
+            PackageInstaller.STATUS_FAILURE_BLOCKED ->
+                android.util.Log.e("AppInstall", "  → FAILURE_BLOCKED")
+            PackageInstaller.STATUS_FAILURE_CONFLICT ->
+                android.util.Log.e("AppInstall", "  → FAILURE_CONFLICT (signature mismatch?)")
+            PackageInstaller.STATUS_FAILURE_INCOMPATIBLE ->
+                android.util.Log.e("AppInstall", "  → FAILURE_INCOMPATIBLE")
+            PackageInstaller.STATUS_FAILURE_INVALID ->
+                android.util.Log.e("AppInstall", "  → FAILURE_INVALID (bad APK?)")
+            PackageInstaller.STATUS_FAILURE_STORAGE ->
+                android.util.Log.e("AppInstall", "  → FAILURE_STORAGE (no space?)")
+            PackageInstaller.STATUS_PENDING_USER_ACTION -> {
+                android.util.Log.e("AppInstall", "  → PENDING_USER_ACTION (not Device Owner?)")
+                // Launch the confirmation UI if we somehow lost DO status
+                val confirmIntent = intent.getParcelableExtra<Intent>(Intent.EXTRA_INTENT)
+                if (confirmIntent != null) {
+                    try { startActivity(confirmIntent) } catch (_: Exception) {}
+                }
+            }
+            else -> android.util.Log.e("AppInstall", "  → UNKNOWN status: $status")
+        }
+        android.util.Log.e("AppInstall", "=================================")
     }
 }
