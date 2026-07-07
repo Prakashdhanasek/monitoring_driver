@@ -579,8 +579,9 @@ class IncidentsService {
       if (vehicleId != null) 'vehicleId': vehicleId,
       if (vehicleRegistrationNumber != null)
         'vehicleRegistrationNumber': vehicleRegistrationNumber,
-      if (driverId != null) 'driverId': driverId,
-      if (driverName != null) 'driverName': driverName,
+      if (driverId != null && driverId != '—') 'driverId': driverId,
+      if (driverName != null && driverName != 'Driver' && driverName != '—')
+        'driverName': driverName,
     };
 
     final key = DateTime.now().microsecondsSinceEpoch.toString();

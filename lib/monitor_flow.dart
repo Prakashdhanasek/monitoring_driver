@@ -32,6 +32,7 @@ import 'services/tts_service.dart';
 import 'services/esp32_wifi_service.dart';
 import 'services/ffmpeg_recorder_service.dart';
 import 'services/sftp_upload_service.dart';
+import 'services/http_video_upload_service.dart';
 
 import 'services/reversing_detector_service.dart';
 import 'views/reversing_camera_overlay.dart';
@@ -86,9 +87,11 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     username: 'upload_user',
     password: 'secret_password',
   );
+  final HttpVideoUploadService _httpVideoUploadService = HttpVideoUploadService();
 
   // ── Connectivity tracking ──
   bool _isOnline = true;
+  bool _isUploadingVideos = false;
   Timer? _connectivityTimer;
   Timer? _telemetryTimer;
   Timer? _sensorUiTimer;
@@ -236,9 +239,13 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     WakelockPlus.enable();
     _init();
 
+    Future.delayed(const Duration(seconds: 4), () {
+      _triggerHttpUpload();
+    });
+
     _syncTimer = Timer.periodic(const Duration(seconds: 30), (_) {
       _syncIncidentsTask();
-      // _maybeReReportCable();
+      _triggerHttpUpload();
     });
 
     // Check connectivity every 5 seconds
@@ -297,7 +304,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
         // Auto-sync immediately when we come back online
         if (_isOnline) {
           _syncIncidentsTask();
-          _triggerSftpUpload();
+          _triggerHttpUpload();
         }
       }
     } catch (_) {
@@ -851,9 +858,46 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     }
   }
 
-  Future<void> _triggerSftpUpload() async {
-    debugPrint('[Flow] Online. Starting SFTP background upload...');
-    await _sftpUploadService.uploadPendingFiles('/var/www/uploads/videos');
+  Future<void> _triggerHttpUpload() async {
+    debugPrint('[Flow] _triggerHttpUpload called. isOnline: $_isOnline, isUploading: $_isUploadingVideos');
+    if (!_isOnline) {
+      debugPrint('[Flow] Skipping video upload — device is OFFLINE.');
+      return;
+    }
+    if (_isUploadingVideos) {
+      debugPrint('[Flow] HTTP video upload already in progress. Skipping trigger.');
+      return;
+    }
+    _isUploadingVideos = true;
+    try {
+      debugPrint('[Flow] Starting HTTP background upload...');
+      
+      String fallbackVehicleId = '';
+      try {
+        final cachedDrivers = _driversService.getCachedDrivers();
+        if (cachedDrivers.isNotEmpty) {
+          fallbackVehicleId = cachedDrivers.first['assignedVehicleId'] as String? ?? '';
+        }
+      } catch (e) {
+        debugPrint('[Flow] Error resolving fallback vehicleId from cache: $e');
+      }
+
+      final activeVehicleId = (_vehicleId != null && _vehicleId!.isNotEmpty)
+          ? _vehicleId!
+          : fallbackVehicleId;
+
+      final activeCamType = _camMode.toString().split('.').last;
+      await _httpVideoUploadService.uploadPendingFiles(
+        uploadUrl: 'https://proximity-driver-api.prod-app.in/api/video-recordings/upload',
+        vehicleId: activeVehicleId,
+        driverId: (_driverId == '—' || _driverId.isEmpty) ? null : _driverId,
+        tripId: _tripNumber > 0 ? _tripNumber.toString() : null,
+        cameraType: activeCamType,
+        fileParamName: 'file',
+      );
+    } finally {
+      _isUploadingVideos = false;
+    }
   }
 
   Future<void> _init() async {
@@ -1485,6 +1529,10 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
 
   Future<void> _sendTripEnd() async {
     try {
+      if (_ffmpegRecorderService.isRecording) {
+        await _ffmpegRecorderService.stopRecording();
+      }
+
       final deviceId = _settings.getDeviceId();
       if (deviceId == null || deviceId.isEmpty) return;
 
@@ -1495,6 +1543,10 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
         distanceKm: 0,
         endedAt: DateTime.now().toUtc(),
       );
+
+      if (_isOnline) {
+        _triggerHttpUpload();
+      }
     } catch (e) {
       debugPrint('[Flow] Failed to send trip end: $e');
     }
@@ -2518,6 +2570,9 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
         mode == CamMode.right;
     if (needsLiveStream && _ffmpegRecorderService.isRecording) {
       await _ffmpegRecorderService.stopRecording();
+      if (_isOnline) {
+        _triggerHttpUpload();
+      }
       debugPrint(
         '[CamMode] Recorder STOPPED — releasing ESP32 stream for $mode',
       );
