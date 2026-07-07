@@ -177,6 +177,16 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   String? _activeBannerKey;
   DateTime? _activeBannerAt;
   static const Duration _kBannerVisibleDuration = Duration(seconds: 3);
+  static const int _kVoiceRepeatMs = 10000;
+
+  String? _lastSpokenVoice;
+  DateTime? _seatbeltVoiceAt;
+  bool _verifyVoiceSpoken = false;
+
+  static const int _kSeatbeltVoiceRepeatMs =
+      60000; // 30s re-announce // ADD THIS
+
+      static const double _kSpeedLimitKmh = 30.0;
 
   // Seatbelt cyclic alert state
   DateTime? _seatbeltAlertStart; // when unbuckled state first detected
@@ -380,15 +390,14 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
         ? null
         : Uri.parse(_esp32StreamUrl).host;
 
-
-        // Ping SENSOR ports (not video). ESP32-CAM allows only ONE client on the
+    // Ping SENSOR ports (not video). ESP32-CAM allows only ONE client on the
     // video port — pinging video steals the slot the overlay/recorder needs,
     // causing the drops. Sensor server is separate, safe to poll.
     final results = await Future.wait([
-      _ping(_leftCamIp, 87, 'LEFT'),   // left  sensor
+      _ping(_leftCamIp, 87, 'LEFT'), // left  sensor
       _ping(_rightCamIp, 81, 'RIGHT'), // right sensor
       _ping(_frontCamIp, 85, 'FRONT'), // front sensor
-      _ping(rearHost, 83, 'REAR'),     // rear  sensor
+      _ping(rearHost, 83, 'REAR'), // rear  sensor
     ]);
 
     // final results = await Future.wait([
@@ -1081,6 +1090,12 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
           }
           _faceWasPresentLastFrame = faces.isNotEmpty;
 
+          // Verify phase — face vannappol oru pravashyam voice.
+          if (faces.isNotEmpty && !_verifyVoiceSpoken) {
+            _verifyVoiceSpoken = true;
+            _tts.speak('Please verify your face before starting.');
+          }
+
           if (faces.length == 1) {
             final now = DateTime.now();
             if (_lastAuthAttemptAt == null ||
@@ -1254,6 +1269,8 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
 
   void _onVerified() {
     if (_phase != Phase.verifying) return;
+    _verifyVoiceSpoken = false;
+
     _unauthorizedStart = null;
     _unauthorizedTripStop = false;
     _tripCompletedAt = null;
@@ -1318,6 +1335,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   /// Trip ended and a driver re-appeared — go back to the verify screen so the
   /// new driver is authenticated before the next trip's monitoring begins.
   Future<void> _startReverification() async {
+    _verifyVoiceSpoken = false;
     _tripCompleted = false;
     _unauthorizedStart = null;
     _unauthorizedTripStop = false;
@@ -1437,7 +1455,8 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       // FIX: Never create an incident before face verification is complete.
       // This prevents blank images and stale/random driver names from being sent.
       // Exception: Allow if the driver is explicitly unauthorized.
-      if (_phase != Phase.monitoring || (_driverId == '—' && _state.authStatus != AuthStatus.unauthorized)) {
+      if (_phase != Phase.monitoring ||
+          (_driverId == '—' && _state.authStatus != AuthStatus.unauthorized)) {
         debugPrint(
           '[Flow] Skipping incident "$eventType" — driver not verified (phase=$_phase, id=$_driverId).',
         );
@@ -1452,8 +1471,12 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
         return;
       }
 
-      final effectiveDriverId = (_state.authStatus == AuthStatus.unauthorized) ? 'unknown' : _driverId;
-      final effectiveDriverName = (_state.authStatus == AuthStatus.unauthorized) ? 'Unknown Person' : _driverName;
+      final effectiveDriverId = (_state.authStatus == AuthStatus.unauthorized)
+          ? 'unknown'
+          : _driverId;
+      final effectiveDriverName = (_state.authStatus == AuthStatus.unauthorized)
+          ? 'Unknown Person'
+          : _driverName;
 
       _incidentsService.queueIncident(
         deviceTabletId: deviceId,
@@ -1507,9 +1530,6 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     final facePhotos = driver['facePhotos'] as List<dynamic>?;
     return facePhotos != null && facePhotos.isNotEmpty;
   }
-
-
-  
 
   Future<String?> _generateIncidentVideo(
     List<Uint8List> frames,
@@ -1645,109 +1665,98 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
 
     bool loud = false;
     bool soft = false;
+    // _state.vehicleSpeed = 95.0;
 
-    // ── SEATBELT CYCLIC ALERT ──────────────────────────────────────
+    // ── SEATBELT — banner active aayirikkunnidatholam beep + voice ──
+    // (Cyclic 30s beep / 60s silence logic REMOVED.)
+    // if (!_state.seatbeltBuckled &&
+    //     _phase == Phase.monitoring &&
+    //     !_tripCompleted) {
+    //   soft = true;
+    //   if (_checkCooldown('seatbelt')) {
+    //     _reportIncident('Seatbelt Not Worn', 'High', 1.0);
+    //   }
+    // }
+
     if (!_state.seatbeltBuckled &&
         _phase == Phase.monitoring &&
         !_tripCompleted) {
-      // Start cycle if not already started
-      if (_seatbeltAlertStart == null) {
-        _seatbeltAlertStart = now;
-        _seatbeltPhaseStart = now;
-        _seatbeltInBeepPhase = true;
-      }
-
-      // Determine current phase
-      final phaseElapsed = now.difference(_seatbeltPhaseStart!).inSeconds;
-      if (_seatbeltInBeepPhase && phaseElapsed >= _kSeatbeltBeepDuration) {
-        // Switch to silence phase
-        _seatbeltInBeepPhase = false;
-        _seatbeltPhaseStart = now;
-      } else if (!_seatbeltInBeepPhase &&
-          phaseElapsed >= _kSeatbeltSilenceDuration) {
-        // Switch back to beep phase
-        _seatbeltInBeepPhase = true;
-        _seatbeltPhaseStart = now;
-      }
-
-      // Play beep during beep phase (uses global 3s cooldown below)
-      if (_seatbeltInBeepPhase) {
-        soft = true;
-      }
-
-      // Report incident once per 5 min
+      // soft = true;
       if (_checkCooldown('seatbelt')) {
         _reportIncident('Seatbelt Not Worn', 'High', 1.0);
-        _tts.speak('Please fasten your seatbelt.');
       }
     } else {
-      // Seatbelt is buckled — reset cycle
-      _seatbeltAlertStart = null;
-      _seatbeltPhaseStart = null;
-      _seatbeltInBeepPhase = true;
+      // Buckled aayi — reset, next time off aayaal veendum parayum.
+      _seatbeltVoiceAt = null;
     }
-
-    // ── GENERAL ALERTS (sound + report on 5-min cooldown) ────────────────
+    // ── UNAUTHORIZED DRIVER (10s hold -> report + stop trip) ─────────────
+    // Verified driver-ne ('_driverId' set) unauthorized aakkaruthu.
     if (_state.authStatus == AuthStatus.unauthorized &&
         _phase == Phase.monitoring &&
-        !_tripCompleted) {
+        !_tripCompleted &&
+        _driverId == '—') {
       if (_unauthorizedStart == null) {
         _unauthorizedStart = now;
       } else if (now.difference(_unauthorizedStart!).inSeconds >= 30) {
         final hasPhoto = _driverHasReferencePhoto();
         if (hasPhoto) {
-          // Capture current frame immediately to ensure fresh snapshot
           if (currentImage != null) {
             final jpeg = _captureFaceJpeg(currentImage, targetWidth: 240);
             if (jpeg != null) {
               _latestFrameJpeg = jpeg;
             }
           }
-          // Report the incident immediately without cooldown checks
           loud = true;
           _reportIncident('Unauthorized Driver', 'High', 1.0);
-          _tts.speak('Someone not authorized found.');
         } else {
           loud = true;
-          _tts.speak('Someone not authorized found.');
         }
 
-        // In both cases, terminate the trip immediately
         _tripCompleted = true;
         _tripCompletedAt = now;
         _unauthorizedTripStop = true;
         _sendTripEnd();
 
-        _unauthorizedStart = null; // Reset after checking
+        _unauthorizedStart = null;
       }
     } else {
       _unauthorizedStart = null;
     }
-    if (_state.drowsinessLevel == DrowsinessLevel.asleep) {
-              loud = true;
 
+    // ── GENERAL ALERTS — flags always set; API report on 5-min cooldown ──
+    if (_state.authStatus == AuthStatus.unauthorized && _driverId == '—') {
+      loud = true;
+    }
+    if (_state.drowsinessLevel == DrowsinessLevel.asleep) {
+      loud = true;
       if (_checkCooldown('Asleep')) {
         _reportIncident('Drowsiness', 'High', 1.0);
-        // _tts.speak('Warning! Wake up. You are falling asleep.');
       }
     }
     if (_state.drowsinessLevel == DrowsinessLevel.drowsy) {
-              soft = true;
-
+      soft = true;
       if (_checkCooldown('Drowsiness')) {
         _reportIncident('Drowsiness', 'Medium', 0.8);
-        // _tts.speak('You look drowsy. Stay alert.');
       }
     }
     if (_state.distractionStatus == DistractionStatus.distracted) {
-              soft = true;
+      soft = true;
       if (_checkCooldown('Distraction')) {
         _reportIncident('Distraction', 'Medium', 0.8);
-        // _tts.speak('Keep your eyes on the road.');
       }
     }
 
-    // 2. Object detections (phone, cigarette, eating, drinking)
+    // ── OVERSPEED — GPS speed 80 km/h-inu mukalil ──
+    if (_state.vehicleSpeed > _kSpeedLimitKmh &&
+        _phase == Phase.monitoring &&
+        !_tripCompleted) {
+      loud = true;
+      if (_checkCooldown('Overspeed')) {
+        _reportIncident('Overspeeding', 'High', 1.0);
+      }
+    }
+
+    // Object detections (phone, cigarette, eating, drinking)
     const reportThresholds = {
       'phone': 0.5,
       'cigarette': 0.5,
@@ -1760,30 +1769,15 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       final threshold = reportThresholds[label];
       if (threshold == null || obj.confidence <= threshold) continue;
       if (label == 'seatbelt') continue;
-               loud = true;
+      loud = true;
 
       if (_checkCooldown(label)) {
         String eventType = label;
-        String voice = '';
-        if (label == 'phone') {
-          eventType = 'Phone Usage';
-          voice = 'Please put your phone down.';
-        }
-        if (label == 'cigarette') {
-          eventType = 'Smoking';
-          voice = 'No smoking while driving.';
-        }
-        if (label == 'eating') {
-          eventType = 'Eating';
-          voice = 'Please do not eat while driving.';
-        }
-        if (label == 'drinking') {
-          eventType = 'Drinking';
-          voice = 'Please do not drink while driving.';
-        }
-
+        if (label == 'phone') eventType = 'Phone Usage';
+        if (label == 'cigarette') eventType = 'Smoking';
+        if (label == 'eating') eventType = 'Eating';
+        if (label == 'drinking') eventType = 'Drinking';
         _reportIncident(eventType, 'High', obj.confidence);
-        if (voice.isNotEmpty) _tts.speak(voice);
       }
     }
 
@@ -1798,21 +1792,276 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       _activeBannerAt = null;
     }
 
-    // Remember current states for next-frame transition checks.
     _prevDrowsy = _state.drowsinessLevel;
     _prevDistract = _state.distractionStatus;
     _prevAuthSound = _state.authStatus;
 
-    if (!loud && !soft) return;
-
-    // Global cooldown so sounds don't overlap / spam.
-    if (_lastSoundAt != null &&
-        now.difference(_lastSoundAt!).inMilliseconds < 3000) {
+    if (!loud && !soft) {
+      _lastSpokenVoice = null;
       return;
     }
-    _lastSoundAt = now;
-    _playAlert(loud ? 'audio/alert_loud.mp3' : 'audio/alert_soft.mp3');
+
+    final canPlaySound =
+        _lastSoundAt == null ||
+        now.difference(_lastSoundAt!).inMilliseconds >= _kVoiceRepeatMs;
+
+    final voice = _activeVoiceMessage();
+        debugPrint('[VOICE] drowsy=${_state.drowsinessLevel} voice=$voice soft=$soft loud=$loud last=$_lastSpokenVoice speak-check');
+
+
+    final bool isSeatbeltVoice = voice != null && voice.startsWith('Seat belt');
+
+    bool speak = false;
+    if (voice != null) {
+      if (isSeatbeltVoice) {
+        // Seatbelt: oru thavana + 30s kazhinjittum off aanenkil veendum.
+        if (_seatbeltVoiceAt == null ||
+            now.difference(_seatbeltVoiceAt!).inMilliseconds >=
+                _kSeatbeltVoiceRepeatMs) {
+          speak = true;
+          _seatbeltVoiceAt = now;
+        }
+      } else if (voice != _lastSpokenVoice) {
+        // Vere alerts: oru thavana maatram.
+        speak = true;
+      }
+    }
+
+    if (speak) {
+      _tts.speak(voice!);
+      _lastSpokenVoice = voice;
+    }
+
+    if (canPlaySound) {
+      _lastSoundAt = now;
+      _playAlert(loud ? 'audio/alert_loud.mp3' : 'audio/alert_soft.mp3');
+    }
   }
+
+  //   if (!loud && !soft) return;
+
+  //   // Sound + voice cadence — 10s-il oru pravashyam (spam ozhivaakkan).
+  //   if (_lastSoundAt != null &&
+  //       now.difference(_lastSoundAt!).inMilliseconds < _kVoiceRepeatMs) {
+  //     return;
+  //   }
+  //   _lastSoundAt = now;
+  //   _playAlert(loud ? 'audio/alert_loud.mp3' : 'audio/alert_soft.mp3');
+
+  //   final voice = _activeVoiceMessage();
+  //   if (voice != null) _tts.speak(voice);
+  // }
+
+  /// Highest-priority active alert-inte voice message. Cooldown-inte purath.
+  String? _activeVoiceMessage() {
+    for (final obj in _state.detectedObjects) {
+      if (obj.confidence <= 0.5) continue;
+      switch (obj.label) {
+        case 'phone':
+          return 'Please avoid phone while driving.';
+        case 'cigarette':
+          return 'No smoking while driving.';
+        case 'eating':
+          return 'Please do not eat while driving.';
+        case 'drinking':
+          return 'Please do not drink while driving.';
+      }
+    }
+    if (_state.authStatus == AuthStatus.unauthorized && _driverId == '—') {
+      return 'Please stop safely and re-verify driver identity.';
+    }
+    if (_state.drowsinessLevel == DrowsinessLevel.asleep) {
+      return 'You appear tired. Please stay alert.';
+    }
+    if (_state.drowsinessLevel == DrowsinessLevel.drowsy) {
+      return 'You appear tired. Please stay alert.';
+    }
+    if (_state.distractionStatus == DistractionStatus.distracted) {
+      return 'Please keep your eyes on the road.';
+    }
+    if (_state.vehicleSpeed > _kSpeedLimitKmh) {
+      return 'Overspeeding detected. Reduce speed.';
+    }
+    if (!_state.seatbeltBuckled) {
+      return 'Seat belt not detected. Please wear your seat belt.';
+    }
+    return null;
+  }
+  // void _handleAlertSounds(CameraImage? currentImage) {
+  //   final now = DateTime.now();
+  //   final phone = _state.hasPhone;
+  //   final smoke = _state.hasCigarette;
+
+  //   bool loud = false;
+  //   bool soft = false;
+
+  //   // ── SEATBELT CYCLIC ALERT ──────────────────────────────────────
+  //   if (!_state.seatbeltBuckled &&
+  //       _phase == Phase.monitoring &&
+  //       !_tripCompleted) {
+  //     // Start cycle if not already started
+  //     if (_seatbeltAlertStart == null) {
+  //       _seatbeltAlertStart = now;
+  //       _seatbeltPhaseStart = now;
+  //       _seatbeltInBeepPhase = true;
+  //     }
+
+  //     // Determine current phase
+  //     final phaseElapsed = now.difference(_seatbeltPhaseStart!).inSeconds;
+  //     if (_seatbeltInBeepPhase && phaseElapsed >= _kSeatbeltBeepDuration) {
+  //       // Switch to silence phase
+  //       _seatbeltInBeepPhase = false;
+  //       _seatbeltPhaseStart = now;
+  //     } else if (!_seatbeltInBeepPhase &&
+  //         phaseElapsed >= _kSeatbeltSilenceDuration) {
+  //       // Switch back to beep phase
+  //       _seatbeltInBeepPhase = true;
+  //       _seatbeltPhaseStart = now;
+  //     }
+
+  //     // Play beep during beep phase (uses global 3s cooldown below)
+  //     if (_seatbeltInBeepPhase) {
+  //       soft = true;
+  //     }
+
+  //     // Report incident once per 5 min
+  //     if (_checkCooldown('seatbelt')) {
+  //       _reportIncident('Seatbelt Not Worn', 'High', 1.0);
+  //       _tts.speak('Please fasten your seatbelt.');
+  //     }
+  //   } else {
+  //     // Seatbelt is buckled — reset cycle
+  //     _seatbeltAlertStart = null;
+  //     _seatbeltPhaseStart = null;
+  //     _seatbeltInBeepPhase = true;
+  //   }
+
+  //   // ── GENERAL ALERTS (sound + report on 5-min cooldown) ────────────────
+  //   if (_state.authStatus == AuthStatus.unauthorized &&
+  //       _phase == Phase.monitoring &&
+  //       !_tripCompleted) {
+  //     if (_unauthorizedStart == null) {
+  //       _unauthorizedStart = now;
+  //     } else if (now.difference(_unauthorizedStart!).inSeconds >= 10) {
+  //       final hasPhoto = _driverHasReferencePhoto();
+  //       if (hasPhoto) {
+  //         // Capture current frame immediately to ensure fresh snapshot
+  //         if (currentImage != null) {
+  //           final jpeg = _captureFaceJpeg(currentImage, targetWidth: 240);
+  //           if (jpeg != null) {
+  //             _latestFrameJpeg = jpeg;
+  //           }
+  //         }
+  //         // Report the incident immediately without cooldown checks
+  //         loud = true;
+  //         _reportIncident('Unauthorized Driver', 'High', 1.0);
+  //         _tts.speak('Someone not authorized found.');
+  //       } else {
+  //         loud = true;
+  //         _tts.speak('Someone not authorized found.');
+  //       }
+
+  //       // In both cases, terminate the trip immediately
+  //       _tripCompleted = true;
+  //       _tripCompletedAt = now;
+  //       _unauthorizedTripStop = true;
+  //       _sendTripEnd();
+
+  //       _unauthorizedStart = null; // Reset after checking
+  //     }
+  //   } else {
+  //     _unauthorizedStart = null;
+  //   }
+  //   if (_state.drowsinessLevel == DrowsinessLevel.asleep) {
+  //             loud = true;
+
+  //     if (_checkCooldown('Asleep')) {
+  //       _reportIncident('Drowsiness', 'High', 1.0);
+  //       // _tts.speak('Warning! Wake up. You are falling asleep.');
+  //     }
+  //   }
+  //   if (_state.drowsinessLevel == DrowsinessLevel.drowsy) {
+  //             soft = true;
+
+  //     if (_checkCooldown('Drowsiness')) {
+  //       _reportIncident('Drowsiness', 'Medium', 0.8);
+  //       // _tts.speak('You look drowsy. Stay alert.');
+  //     }
+  //   }
+  //   if (_state.distractionStatus == DistractionStatus.distracted) {
+  //             soft = true;
+  //     if (_checkCooldown('Distraction')) {
+  //       _reportIncident('Distraction', 'Medium', 0.8);
+  //       // _tts.speak('Keep your eyes on the road.');
+  //     }
+  //   }
+
+  //   // 2. Object detections (phone, cigarette, eating, drinking)
+  //   const reportThresholds = {
+  //     'phone': 0.5,
+  //     'cigarette': 0.5,
+  //     'eating': 0.5,
+  //     'drinking': 0.5,
+  //   };
+
+  //   for (final obj in _state.detectedObjects) {
+  //     final label = obj.label;
+  //     final threshold = reportThresholds[label];
+  //     if (threshold == null || obj.confidence <= threshold) continue;
+  //     if (label == 'seatbelt') continue;
+  //              loud = true;
+
+  //     if (_checkCooldown(label)) {
+  //       String eventType = label;
+  //       String voice = '';
+  //       if (label == 'phone') {
+  //         eventType = 'Phone Usage';
+  //         voice = 'Please put your phone down.';
+  //       }
+  //       if (label == 'cigarette') {
+  //         eventType = 'Smoking';
+  //         voice = 'No smoking while driving.';
+  //       }
+  //       if (label == 'eating') {
+  //         eventType = 'Eating';
+  //         voice = 'Please do not eat while driving.';
+  //       }
+  //       if (label == 'drinking') {
+  //         eventType = 'Drinking';
+  //         voice = 'Please do not drink while driving.';
+  //       }
+
+  //       _reportIncident(eventType, 'High', obj.confidence);
+  //       if (voice.isNotEmpty) _tts.speak(voice);
+  //     }
+  //   }
+
+  //   final currentBannerKey = _getMonitorBannerKey(phone, smoke);
+  //   if (currentBannerKey != null) {
+  //     if (currentBannerKey != _activeBannerKey || _activeBannerAt == null) {
+  //       _activeBannerKey = currentBannerKey;
+  //       _activeBannerAt = now;
+  //     }
+  //   } else {
+  //     _activeBannerKey = null;
+  //     _activeBannerAt = null;
+  //   }
+
+  //   // Remember current states for next-frame transition checks.
+  //   _prevDrowsy = _state.drowsinessLevel;
+  //   _prevDistract = _state.distractionStatus;
+  //   _prevAuthSound = _state.authStatus;
+
+  //   if (!loud && !soft) return;
+
+  //   // Global cooldown so sounds don't overlap / spam.
+  //   if (_lastSoundAt != null &&
+  //       now.difference(_lastSoundAt!).inMilliseconds < 3000) {
+  //     return;
+  //   }
+  //   _lastSoundAt = now;
+  //   _playAlert(loud ? 'audio/alert_loud.mp3' : 'audio/alert_soft.mp3');
+  // }
 
   Future<void> _playAlert(String assetPath) async {
     try {
@@ -2426,45 +2675,45 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
           // 👇 CABLE UNPLUGGED banner — shows for 5 seconds only.
           // if (_showCableBanner)
           //   Positioned(
-            //   top: 0,
-            //   left: 0,
-            //   right: 0,
-            //   child: SafeArea(
-            //     child: Padding(
-            //       padding: const EdgeInsets.all(12),
-            //       child: Container(
-            //         padding: const EdgeInsets.symmetric(
-            //           horizontal: 14,
-            //           vertical: 12,
-            //         ),
-            //         decoration: BoxDecoration(
-            //           color: const Color(0xFFB91C1C),
-            //           borderRadius: BorderRadius.circular(12),
-            //         ),
-            //         child: Row(
-            //           children: const [
-            //             Icon(
-            //               Icons.power_off_rounded,
-            //               color: Colors.white,
-            //               size: 22,
-            //             ),
-            //             SizedBox(width: 10),
-            //             Expanded(
-            //               child: Text(
-            //                 '🔌 CHARGING CABLE UNPLUGGED  Reported to admin',
-            //                 style: TextStyle(
-            //                   color: Colors.white,
-            //                   fontSize: 14,
-            //                   fontWeight: FontWeight.w700,
-            //                 ),
-            //               ),
-            //             ),
-            //           ],
-            //         ),
-            //       ),
-            //     ),
-            //   ),
-            // ),
+          //   top: 0,
+          //   left: 0,
+          //   right: 0,
+          //   child: SafeArea(
+          //     child: Padding(
+          //       padding: const EdgeInsets.all(12),
+          //       child: Container(
+          //         padding: const EdgeInsets.symmetric(
+          //           horizontal: 14,
+          //           vertical: 12,
+          //         ),
+          //         decoration: BoxDecoration(
+          //           color: const Color(0xFFB91C1C),
+          //           borderRadius: BorderRadius.circular(12),
+          //         ),
+          //         child: Row(
+          //           children: const [
+          //             Icon(
+          //               Icons.power_off_rounded,
+          //               color: Colors.white,
+          //               size: 22,
+          //             ),
+          //             SizedBox(width: 10),
+          //             Expanded(
+          //               child: Text(
+          //                 '🔌 CHARGING CABLE UNPLUGGED  Reported to admin',
+          //                 style: TextStyle(
+          //                   color: Colors.white,
+          //                   fontSize: 14,
+          //                   fontWeight: FontWeight.w700,
+          //                 ),
+          //               ),
+          //             ),
+          //           ],
+          //         ),
+          //       ),
+          //     ),
+          //   ),
+          // ),
 
           // Screenshot effect — alert varumbol screen quick shrink + border + dim
           if (_flashScreenshot)
@@ -3943,10 +4192,11 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
                         height: 76,
                         decoration: BoxDecoration(
                           shape: BoxShape.circle,
-                          color: (_unauthorizedTripStop
-                                  ? const Color(0xFFEF4444)
-                                  : const Color(0xFF10B981))
-                              .withValues(alpha: 0.15),
+                          color:
+                              (_unauthorizedTripStop
+                                      ? const Color(0xFFEF4444)
+                                      : const Color(0xFF10B981))
+                                  .withValues(alpha: 0.15),
                           border: Border.all(
                             color: _unauthorizedTripStop
                                 ? const Color(0xFFEF4444)
@@ -3955,10 +4205,11 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
                           ),
                           boxShadow: [
                             BoxShadow(
-                              color: (_unauthorizedTripStop
-                                      ? const Color(0xFFEF4444)
-                                      : const Color(0xFF10B981))
-                                  .withValues(alpha: 0.3),
+                              color:
+                                  (_unauthorizedTripStop
+                                          ? const Color(0xFFEF4444)
+                                          : const Color(0xFF10B981))
+                                      .withValues(alpha: 0.3),
                               blurRadius: 16,
                               spreadRadius: 2,
                             ),
@@ -4128,6 +4379,11 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       bg = const Color(0xFFEA580C);
       final percent = (_state.drinkingConfidence * 100).toStringAsFixed(0);
       text = '🥤  DRINKING DETECTED ($percent%)';
+      } else if (_state.vehicleSpeed > _kSpeedLimitKmh) {
+      bg = const Color(0xFFDC2626);
+      final speed = _state.vehicleSpeed.toStringAsFixed(0);
+      text = '🚗  OVERSPEEDING (${speed} km/h)';
+      
     } else if (_state.drowsinessLevel == DrowsinessLevel.drowsy) {
       bg = const Color(0xFFD97706);
       text = '⚠  DROWSINESS DETECTED';
@@ -4167,6 +4423,8 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     if (smoke) return 'smoke';
     if (_state.hasEating || _state.isChewing) return 'eating';
     if (_state.hasDrinking) return 'drinking';
+        if (_state.vehicleSpeed > _kSpeedLimitKmh) return 'overspeed';
+
     if (_state.drowsinessLevel == DrowsinessLevel.drowsy) return 'drowsy';
     if (_state.distractionStatus == DistractionStatus.distracted)
       return 'distracted';
@@ -4194,7 +4452,6 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       child: Row(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
-
           const SizedBox(width: 10),
           Text(
             text,
