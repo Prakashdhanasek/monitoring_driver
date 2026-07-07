@@ -34,8 +34,10 @@ import 'services/ffmpeg_recorder_service.dart';
 import 'services/sftp_upload_service.dart';
 
 import 'services/reversing_detector_service.dart';
+import 'services/app_update_service.dart';
 import 'views/reversing_camera_overlay.dart';
 import 'views/cam_detection_panel.dart';
+import 'views/app_update_screen.dart';
 
 /// The 3 phases of the driver-facing flow.
 enum Phase { verifying, details, monitoring }
@@ -148,6 +150,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   bool _camReady = false;
   bool _busy = false;
   bool _streaming = false;
+  bool _updatingApp = false; // true while OTA dialog is open → blocks frame processing
   int _frame = 0;
   bool _isRefreshingDrivers = false;
   DateTime? _lastAuthAttemptAt;
@@ -540,6 +543,64 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   //     _reportIncident('Cable Unplugged', 'High', 1.0);
   //   }
   // }
+
+  /// Polls the server for a newer APK version.
+  /// Navigates to [AppUpdateScreen] if an update is available.
+  /// Cancels the timer once an update is found to avoid repeated prompts.
+  Future<void> _checkForUpdateInBackground() async {
+    if (!mounted) return;
+    final updateInfo = await AppUpdateService().checkForUpdate();
+    if (!mounted) return;
+    if (updateInfo != null) {
+      // Pause camera ML and ALL background tasks to give download full resources.
+      _updatingApp = true;
+      final wasStreaming = _streaming;
+      if (_streaming) {
+        _camera?.stopImageStream().catchError((_) {});
+        _streaming = false;
+      }
+      _syncTimer?.cancel();
+      _connectivityTimer?.cancel();
+      _telemetryTimer?.cancel();
+      _sensorUiTimer?.cancel();
+      _blindSpotTimer?.cancel();
+
+      await showDialog<void>(
+        context: context,
+        barrierDismissible: !updateInfo.forceUpdate,
+        barrierColor: Colors.black54,
+        builder: (_) => AppUpdateScreen(updateInfo: updateInfo),
+      );
+
+      // Dialog dismissed without a successful install — restore everything.
+      if (!mounted) return;
+      _updatingApp = false;
+      if (wasStreaming && _camReady && _camMode == CamMode.driverMonitoring) {
+        _camera?.startImageStream(_processImage).catchError((_) {});
+        _streaming = true;
+      }
+      _syncTimer = Timer.periodic(const Duration(seconds: 30), (_) {
+        _syncIncidentsTask();
+      });
+      _connectivityTimer = Timer.periodic(const Duration(seconds: 5), (_) {
+        _checkConnectivity();
+        _checkCamConnections();
+        if (_leftCamIp == null || _rightCamIp == null || _frontCamIp == null || _esp32StreamUrl.isEmpty) {
+          _resolveSideCamIps();
+          if (_esp32StreamUrl.isEmpty) _autoDiscoverRearCam();
+        }
+      });
+      _telemetryTimer = Timer.periodic(const Duration(seconds: 3), (_) {
+        _sendTelemetryTask();
+      });
+      _sensorUiTimer = Timer.periodic(const Duration(milliseconds: 200), (_) {
+        if (mounted && _phase == Phase.monitoring) setState(() {});
+      });
+      _blindSpotTimer = Timer.periodic(const Duration(seconds: 2), (_) {
+        _pollBlindSpotSensors();
+      });
+    }
+  }
 
   @override
   void dispose() {
@@ -1052,6 +1113,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   // FRAME PIPELINE
   // ─────────────────────────────────────────────────────────
   Future<void> _processImage(CameraImage image) async {
+    if (_updatingApp) return;
     if (_camMode != CamMode.driverMonitoring) return;
     if (_busy || !_camReady || _detector == null) return;
     _busy = true;
@@ -1170,6 +1232,8 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
               _tripCompleted = true;
               _tripCompletedAt = DateTime.now();
               _sendTripEnd();
+              // Trip ended — safe point to check for updates.
+              _checkForUpdateInBackground();
               // _showVerifyToast();
             }
           }
@@ -3906,6 +3970,8 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
                           height: 1.5,
                         ),
                       ),
+
+                      
                       if (remaining > 0) ...[
                         const SizedBox(height: 16),
                         Text(
@@ -3966,6 +4032,30 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
                     color: Color(0xFF94A3B8), // Soft slate
                     fontSize: 13,
                     fontWeight: FontWeight.w500,
+                  ),
+                ),
+
+                // ── DEBUG: manual update check trigger ──
+                const SizedBox(height: 24),
+                GestureDetector(
+                  onTap: _checkForUpdateInBackground,
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                    decoration: BoxDecoration(
+                      color: Colors.white.withValues(alpha: 0.07),
+                      borderRadius: BorderRadius.circular(20),
+                      border: Border.all(
+                        color: Colors.white.withValues(alpha: 0.15),
+                      ),
+                    ),
+                    child: const Text(
+                      'Check for Updates Test 18',
+                      style: TextStyle(
+                        color: Color(0xFF64748B),
+                        fontSize: 11,
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
                   ),
                 ),
               ],
