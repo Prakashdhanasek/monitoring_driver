@@ -1220,7 +1220,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
             }
 
             // Play an alert sound on new warnings.
-            await _handleAlertSounds(image);
+            _handleAlertSounds(image);
           } else {
             // No driver in view — start / continue the "gone" timer.
             _multiFace = 0;
@@ -1698,7 +1698,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     return false;
   }
 
-  Future<void> _handleAlertSounds(CameraImage? currentImage) async {
+  void _handleAlertSounds(CameraImage? currentImage) {
     final now = DateTime.now();
     final phone = _state.hasPhone;
     final smoke = _state.hasCigarette;
@@ -1748,12 +1748,40 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     }
 
     // ── GENERAL ALERTS (sound + report on 5-min cooldown) ────────────────
-    if (_state.authStatus == AuthStatus.unauthorized) {
-      if (_checkCooldown('UnauthorizedDriver')) {
-        loud = true;
-        _reportIncident('Unauthorized Driver', 'High', 1.0);
-        _tts.speak('Unauthorized driver detected.');
+    if (_state.authStatus == AuthStatus.unauthorized &&
+        _phase == Phase.monitoring &&
+        !_tripCompleted) {
+      if (_unauthorizedStart == null) {
+        _unauthorizedStart = now;
+      } else if (now.difference(_unauthorizedStart!).inSeconds >= 10) {
+        final hasPhoto = _driverHasReferencePhoto();
+        if (hasPhoto) {
+          // Capture current frame immediately to ensure fresh snapshot
+          if (currentImage != null) {
+            final jpeg = _captureFaceJpeg(currentImage, targetWidth: 240);
+            if (jpeg != null) {
+              _latestFrameJpeg = jpeg;
+            }
+          }
+          // Report the incident immediately without cooldown checks
+          loud = true;
+          _reportIncident('Unauthorized Driver', 'High', 1.0);
+          _tts.speak('Someone not authorized found.');
+        } else {
+          loud = true;
+          _tts.speak('Someone not authorized found.');
+        }
+
+        // In both cases, terminate the trip immediately
+        _tripCompleted = true;
+        _tripCompletedAt = now;
+        _unauthorizedTripStop = true;
+        _sendTripEnd();
+
+        _unauthorizedStart = null; // Reset after checking
       }
+    } else {
+      _unauthorizedStart = null;
     }
     if (_state.drowsinessLevel == DrowsinessLevel.asleep) {
               loud = true;
