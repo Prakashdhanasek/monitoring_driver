@@ -1138,6 +1138,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
                   _state,
                   image,
                   _getCameraRotation(),
+                  activeDriverId: _driverId,
                 );
               }
               _monitoringEngine.processFrame(face);
@@ -1162,6 +1163,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
           } else {
             // No driver in view — start / continue the "gone" timer.
             _multiFace = 0;
+            _unauthorizedStart = null; // Reset unauthorized timer since face is gone
             _monitoringEngine.processFrame(null);
             _noFaceSince ??= DateTime.now();
             if (!_tripCompleted &&
@@ -1304,6 +1306,8 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
         t.cancel();
         // Start fresh calibration for the monitoring session.
         _state.resetCalibration();
+        _state.authenticatedTrackingId = null;
+        _authEngine.resetLiveAuthState();
         _phase = Phase.monitoring;
         _sendTripStart();
       }
@@ -1689,7 +1693,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
         !_tripCompleted) {
       if (_unauthorizedStart == null) {
         _unauthorizedStart = now;
-      } else if (now.difference(_unauthorizedStart!).inSeconds >= 10) {
+      } else if (now.difference(_unauthorizedStart!).inSeconds >= 30) {
         final hasPhoto = _driverHasReferencePhoto();
         if (hasPhoto) {
           // Capture current frame immediately to ensure fresh snapshot
@@ -3376,6 +3380,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
           _camConnectionStatusBar(),
           // _deviceMotionCard(),
           if (_noFaceSince != null && !_tripCompleted) _noDriverCountdown(),
+          if (_unauthorizedStart != null && !_tripCompleted) _unauthorizedDriverCountdown(),
           const Spacer(),
           _seatbeltIndicator(),
           _monitorBanner(),
@@ -3762,6 +3767,66 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
                   'Ending Trip $_tripNumber in ${remaining}s',
                   style: const TextStyle(
                     color: Color(0xFFFCD34D),
+                    fontSize: 13,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// Shown while an unauthorized driver is in view — counts down the seconds
+  /// until the current trip auto-completes/stops (30 seconds).
+  Widget _unauthorizedDriverCountdown() {
+    if (_unauthorizedStart == null) return const SizedBox.shrink();
+    final elapsed = DateTime.now().difference(_unauthorizedStart!).inSeconds;
+    final remaining = (30 - elapsed).clamp(0, 30);
+    return Container(
+      margin: const EdgeInsets.fromLTRB(12, 0, 12, 0),
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+      decoration: BoxDecoration(
+        color: const Color(0xFF991B1B).withValues(alpha: 0.9), // Warning dark red
+        borderRadius: BorderRadius.circular(14),
+      ),
+      child: Row(
+        children: [
+          Container(
+            width: 46,
+            height: 46,
+            alignment: Alignment.center,
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              border: Border.all(color: Colors.white, width: 3),
+            ),
+            child: Text(
+              '$remaining',
+              style: const TextStyle(
+                color: Colors.white,
+                fontSize: 18,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  'Unauthorized driver detected',
+                  style: TextStyle(
+                    color: Colors.white,
+                    fontSize: 15,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+                Text(
+                  'Ending Trip $_tripNumber in ${remaining}s',
+                  style: const TextStyle(
+                    color: Color(0xFFFECACA),
                     fontSize: 13,
                   ),
                 ),
