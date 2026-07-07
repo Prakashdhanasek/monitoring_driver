@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'package:android_intent_plus/android_intent.dart';
 import 'package:camera/camera.dart';
 import 'package:device_info_plus/device_info_plus.dart';
 import 'package:flutter/material.dart';
@@ -11,6 +12,7 @@ import 'package:audioplayers/audioplayers.dart';
 import 'package:image/image.dart' as img;
 import 'package:battery_plus/battery_plus.dart';
 import 'package:monitoring_driver/kiosk.dart';
+import 'package:monitoring_driver/views/alert_messages.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:multicast_dns/multicast_dns.dart';
 import 'package:http/http.dart' as http;
@@ -1093,7 +1095,16 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
           // Verify phase — face vannappol oru pravashyam voice.
           if (faces.isNotEmpty && !_verifyVoiceSpoken) {
             _verifyVoiceSpoken = true;
-            _tts.speak('Please verify your face before starting.');
+            // _tts.speak('Please verify your face before starting.');
+
+            // _tts.speak(AlertMessages.verifyFace(_tts.currentLang,
+            _tts.speak(AlertMessages.verifyFace(_tts.currentLang));
+
+    // en: 'Please verify your face before starting.',
+    // hi: 'शुरू करने से पहले कृपया अपना चेहरा सत्यापित करें।',
+    // ml: 'ആരംഭിക്കുന്നതിന് മുമ്പ് ദയവായി നിങ്ങളുടെ മുഖം പരിശോധിക്കുക.',
+    // ta: 'தொடங்குவதற்கு முன் உங்கள் முகத்தைச் சரிபார்க்கவும்.'));
+            
           }
 
           if (faces.length == 1) {
@@ -1300,6 +1311,16 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
         }
         _vehicleId = driver['assignedVehicleId'] as String?;
         _vehicleRegNo = driver['vehicleRegistrationNumber'] as String?;
+        final pref = (driver['preferredLanguage'] as String?)?.toLowerCase().trim();
+        AlertLang lang;
+        switch (pref) {
+          case 'hi': lang = AlertLang.hindi; break;
+          case 'ml': lang = AlertLang.malayalam; break;
+          case 'ta': lang = AlertLang.tamil; break;
+          default: lang = AlertLang.english;
+        }
+        _tts.setLanguage(lang);
+        debugPrint('[Flow] Driver "$driverName" preferred language: "$pref" -> $lang');
       }
     } catch (e) {
       debugPrint('[Flow] Error resolving driver vehicle details: $e');
@@ -1312,7 +1333,16 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     if (mounted) setState(() {});
 
     // Face verification voice alert.
-    _tts.speak('Welcome $_driverName. Identity verified.');
+    // _tts.speak('Welcome $_driverName. Identity verified.');
+    final lang = _tts.currentLang;
+    // _tts.speak(_msg(lang,
+
+    _tts.speak(AlertMessages.welcome(lang, _driverName));
+
+        // en: 'Welcome $_driverName. Identity verified.',
+        // hi: '$_driverName का स्वागत है। पहचान सत्यापित हो गई।',
+        // ml: '$_driverName-നു സ്വാഗതം. തിരിച്ചറിയൽ പൂർത്തിയായി.',
+        // ta: '$_driverName வரவேற்கிறோம். அடையாளம் சரிபார்க்கப்பட்டது.'));
 
     _countdownTimer?.cancel();
     _countdownTimer = Timer.periodic(const Duration(seconds: 1), (t) {
@@ -1677,16 +1707,14 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     if (!_state.seatbeltBuckled &&
         _phase == Phase.monitoring &&
         !_tripCompleted) {
-      // soft = true;
+      soft = true;
       if (_checkCooldown('seatbelt')) {
         _reportIncident('Seatbelt Not Worn', 'High', 1.0);
       }
     } else {
-      // Buckled aayi — reset, next time off aayaal veendum parayum.
       _seatbeltVoiceAt = null;
     }
-    // ── UNAUTHORIZED DRIVER (10s hold -> report + stop trip) ─────────────
-    // Verified driver-ne ('_driverId' set) unauthorized aakkaruthu.
+   
     if (_state.authStatus == AuthStatus.unauthorized &&
         _phase == Phase.monitoring &&
         !_tripCompleted &&
@@ -1742,7 +1770,6 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       }
     }
 
-    // ── OVERSPEED — GPS speed 80 km/h-inu mukalil ──
     if (_state.vehicleSpeed > _kSpeedLimitKmh &&
         _phase == Phase.monitoring &&
         !_tripCompleted) {
@@ -1805,12 +1832,12 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
         debugPrint('[VOICE] drowsy=${_state.drowsinessLevel} voice=$voice soft=$soft loud=$loud last=$_lastSpokenVoice speak-check');
 
 
-    final bool isSeatbeltVoice = voice != null && voice.startsWith('Seat belt');
+    // final bool isSeatbeltVoice = voice != null && voice.startsWith('Seat belt');
+    final bool isSeatbeltVoice = voice != null && _isSeatbeltActive();
 
     bool speak = false;
     if (voice != null) {
       if (isSeatbeltVoice) {
-        // Seatbelt: oru thavana + 30s kazhinjittum off aanenkil veendum.
         if (_seatbeltVoiceAt == null ||
             now.difference(_seatbeltVoiceAt!).inMilliseconds >=
                 _kSeatbeltVoiceRepeatMs) {
@@ -1818,7 +1845,6 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
           _seatbeltVoiceAt = now;
         }
       } else if (voice != _lastSpokenVoice) {
-        // Vere alerts: oru thavana maatram.
         speak = true;
       }
     }
@@ -1848,216 +1874,134 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   //   if (voice != null) _tts.speak(voice);
   // }
 
-  /// Highest-priority active alert-inte voice message. Cooldown-inte purath.
-  String? _activeVoiceMessage() {
-    for (final obj in _state.detectedObjects) {
-      if (obj.confidence <= 0.5) continue;
-      switch (obj.label) {
-        case 'phone':
-          return 'Please avoid phone while driving.';
-        case 'cigarette':
-          return 'No smoking while driving.';
-        case 'eating':
-          return 'Please do not eat while driving.';
-        case 'drinking':
-          return 'Please do not drink while driving.';
-      }
+
+// String? _activeVoiceMessage() {
+//     final lang = _tts.currentLang;
+//     for (final obj in _state.detectedObjects) {
+//       if (obj.confidence <= 0.5) continue;
+//       switch (obj.label) {
+//         case 'phone':
+//           return _msg(lang,
+//               en: 'Please avoid phone while driving.',
+//               hi: 'कृपया गाड़ी चलाते समय फोन का उपयोग न करें।',
+//               ml: 'വാഹനം ഓടിക്കുമ്പോൾ ഫോൺ ഉപയോഗിക്കരുത്.',
+//               ta: 'ஓட்டும்போது ஃபோனைப் பயன்படுத்த வேண்டாம்.');
+//         case 'cigarette':
+//           return _msg(lang,
+//               en: 'No smoking while driving.',
+//               hi: 'गाड़ी चलाते समय धूम्रपान न करें।',
+//               ml: 'വാഹനം ഓടിക്കുമ്പോൾ പുകവലിക്കരുത്.',
+//               ta: 'ஓட்டும்போது புகைபிடிக்க வேண்டாம்.');
+//         case 'eating':
+//           return _msg(lang,
+//               en: 'Please do not eat while driving.',
+//               hi: 'कृपया गाड़ी चलाते समय भोजन न करें।',
+//               ml: 'വാഹനം ഓടിക്കുമ്പോൾ ഭക്ഷണം കഴിക്കരുത്.',
+//               ta: 'ஓட்டும்போது சாப்பிட வேண்டாம்.');
+//         case 'drinking':
+//           return _msg(lang,
+//               en: 'Please do not drink while driving.',
+//               hi: 'कृपया गाड़ी चलाते समय कुछ न पिएं।',
+//               ml: 'വാഹനം ഓടിക്കുമ്പോൾ കുടിക്കരുത്.',
+//               ta: 'ஓட்டும்போது குடிக்க வேண்டாம்.');
+//       }
+//     }
+//     if (_state.authStatus == AuthStatus.unauthorized && _driverId == '—') {
+//       return _msg(lang,
+//           en: 'Please stop safely and re-verify driver identity.',
+//           hi: 'कृपया सुरक्षित रूप से रुकें और चालक की पहचान दोबारा सत्यापित करें।',
+//           ml: 'സുരക്ഷിതമായി നിർത്തി ഡ്രൈവർ വെരിഫിക്കേഷൻ വീണ്ടും ചെയ്യുക.',
+//           ta: 'பாதுகாப்பாக நிறுத்தி ஓட்டுநர் அடையாளத்தை மீண்டும் சரிபார்க்கவும்.');
+//     }
+//     if (_state.drowsinessLevel == DrowsinessLevel.asleep ||
+//         _state.drowsinessLevel == DrowsinessLevel.drowsy) {
+//       return _msg(lang,
+//           en: 'You appear tired. Please stay alert.',
+//           hi: 'आप थके हुए लग रहे हैं। कृपया सतर्क रहें।',
+//           ml: 'നിങ്ങൾ ക്ഷീണിതനായി കാണപ്പെടുന്നു. ജാഗ്രത പാലിക്കുക.',
+//           ta: 'நீங்கள் சோர்வாக இருக்கிறீர்கள். எச்சரிக்கையாக இருங்கள்.');
+//     }
+//     if (_state.distractionStatus == DistractionStatus.distracted) {
+//       return _msg(lang,
+//           en: 'Please keep your eyes on the road.',
+//           hi: 'कृपया अपनी नज़र सड़क पर रखें।',
+//           ml: 'ദയവായി റോഡിൽ ശ്രദ്ധിക്കുക.',
+//           ta: 'சாலையில் கவனம் செலுத்துங்கள்.');
+//     }
+//     if (_state.vehicleSpeed > _kSpeedLimitKmh) {
+//       return _msg(lang,
+//           en: 'Overspeeding detected. Reduce speed.',
+//           hi: 'तेज़ गति का पता चला। गति कम करें।',
+//           ml: 'അമിതവേഗത കണ്ടെത്തി. വേഗത കുറയ്ക്കുക.',
+//           ta: 'அதிவேகம் கண்டறியப்பட்டது. வேகத்தைக் குறைக்கவும்.');
+//     }
+//     if (!_state.seatbeltBuckled) {
+//       return _msg(lang,
+//           en: 'Seat belt not detected. Please wear your seat belt.',
+//           hi: 'सीट बेल्ट नहीं लगी है। कृपया सीट बेल्ट लगाएं।',
+//           ml: 'സീറ്റ് ബെൽറ്റ് ധരിച്ചിട്ടില്ല. ദയവായി സീറ്റ് ബെൽറ്റ് ധരിക്കുക.',
+//           ta: 'சீட் பெல்ட் அணியவில்லை. சீட் பெல்ட்டை அணியுங்கள்.');
+//     }
+//     return null;
+//   }
+
+String? _activeVoiceMessage() {
+  final lang = _tts.currentLang;
+  for (final obj in _state.detectedObjects) {
+    if (obj.confidence <= 0.5) continue;
+    switch (obj.label) {
+      case 'phone': return AlertMessages.phone(lang);
+      case 'cigarette': return AlertMessages.cigarette(lang);
+      case 'eating': return AlertMessages.eating(lang);
+      case 'drinking': return AlertMessages.drinking(lang);
     }
-    if (_state.authStatus == AuthStatus.unauthorized && _driverId == '—') {
-      return 'Please stop safely and re-verify driver identity.';
-    }
-    if (_state.drowsinessLevel == DrowsinessLevel.asleep) {
-      return 'You appear tired. Please stay alert.';
-    }
-    if (_state.drowsinessLevel == DrowsinessLevel.drowsy) {
-      return 'You appear tired. Please stay alert.';
-    }
-    if (_state.distractionStatus == DistractionStatus.distracted) {
-      return 'Please keep your eyes on the road.';
-    }
-    if (_state.vehicleSpeed > _kSpeedLimitKmh) {
-      return 'Overspeeding detected. Reduce speed.';
-    }
-    if (!_state.seatbeltBuckled) {
-      return 'Seat belt not detected. Please wear your seat belt.';
-    }
-    return null;
   }
-  // void _handleAlertSounds(CameraImage? currentImage) {
-  //   final now = DateTime.now();
-  //   final phone = _state.hasPhone;
-  //   final smoke = _state.hasCigarette;
+  if (_state.authStatus == AuthStatus.unauthorized && _driverId == '—') {
+    return AlertMessages.unauthorized(lang);
+  }
+  if (_state.drowsinessLevel == DrowsinessLevel.asleep ||
+      _state.drowsinessLevel == DrowsinessLevel.drowsy) {
+    return AlertMessages.drowsy(lang);
+  }
+  if (_state.distractionStatus == DistractionStatus.distracted) {
+    return AlertMessages.distraction(lang);
+  }
+  if (_state.vehicleSpeed > _kSpeedLimitKmh) {
+    return AlertMessages.overspeed(lang);
+  }
+  if (!_state.seatbeltBuckled) {
+    return AlertMessages.seatbelt(lang);
+  }
+  return null;
+}
+  
 
-  //   bool loud = false;
-  //   bool soft = false;
-
-  //   // ── SEATBELT CYCLIC ALERT ──────────────────────────────────────
-  //   if (!_state.seatbeltBuckled &&
-  //       _phase == Phase.monitoring &&
-  //       !_tripCompleted) {
-  //     // Start cycle if not already started
-  //     if (_seatbeltAlertStart == null) {
-  //       _seatbeltAlertStart = now;
-  //       _seatbeltPhaseStart = now;
-  //       _seatbeltInBeepPhase = true;
-  //     }
-
-  //     // Determine current phase
-  //     final phaseElapsed = now.difference(_seatbeltPhaseStart!).inSeconds;
-  //     if (_seatbeltInBeepPhase && phaseElapsed >= _kSeatbeltBeepDuration) {
-  //       // Switch to silence phase
-  //       _seatbeltInBeepPhase = false;
-  //       _seatbeltPhaseStart = now;
-  //     } else if (!_seatbeltInBeepPhase &&
-  //         phaseElapsed >= _kSeatbeltSilenceDuration) {
-  //       // Switch back to beep phase
-  //       _seatbeltInBeepPhase = true;
-  //       _seatbeltPhaseStart = now;
-  //     }
-
-  //     // Play beep during beep phase (uses global 3s cooldown below)
-  //     if (_seatbeltInBeepPhase) {
-  //       soft = true;
-  //     }
-
-  //     // Report incident once per 5 min
-  //     if (_checkCooldown('seatbelt')) {
-  //       _reportIncident('Seatbelt Not Worn', 'High', 1.0);
-  //       _tts.speak('Please fasten your seatbelt.');
-  //     }
-  //   } else {
-  //     // Seatbelt is buckled — reset cycle
-  //     _seatbeltAlertStart = null;
-  //     _seatbeltPhaseStart = null;
-  //     _seatbeltInBeepPhase = true;
+  // String _msg(AlertLang lang,
+  //     {required String en,
+  //     required String hi,
+  //     required String ml,
+  //     required String ta}) {
+  //   switch (lang) {
+  //     case AlertLang.hindi: return hi;
+  //     case AlertLang.malayalam: return ml;
+  //     case AlertLang.tamil: return ta;
+  //     case AlertLang.english: return en;
   //   }
-
-  //   // ── GENERAL ALERTS (sound + report on 5-min cooldown) ────────────────
-  //   if (_state.authStatus == AuthStatus.unauthorized &&
-  //       _phase == Phase.monitoring &&
-  //       !_tripCompleted) {
-  //     if (_unauthorizedStart == null) {
-  //       _unauthorizedStart = now;
-  //     } else if (now.difference(_unauthorizedStart!).inSeconds >= 10) {
-  //       final hasPhoto = _driverHasReferencePhoto();
-  //       if (hasPhoto) {
-  //         // Capture current frame immediately to ensure fresh snapshot
-  //         if (currentImage != null) {
-  //           final jpeg = _captureFaceJpeg(currentImage, targetWidth: 240);
-  //           if (jpeg != null) {
-  //             _latestFrameJpeg = jpeg;
-  //           }
-  //         }
-  //         // Report the incident immediately without cooldown checks
-  //         loud = true;
-  //         _reportIncident('Unauthorized Driver', 'High', 1.0);
-  //         _tts.speak('Someone not authorized found.');
-  //       } else {
-  //         loud = true;
-  //         _tts.speak('Someone not authorized found.');
-  //       }
-
-  //       // In both cases, terminate the trip immediately
-  //       _tripCompleted = true;
-  //       _tripCompletedAt = now;
-  //       _unauthorizedTripStop = true;
-  //       _sendTripEnd();
-
-  //       _unauthorizedStart = null; // Reset after checking
-  //     }
-  //   } else {
-  //     _unauthorizedStart = null;
-  //   }
-  //   if (_state.drowsinessLevel == DrowsinessLevel.asleep) {
-  //             loud = true;
-
-  //     if (_checkCooldown('Asleep')) {
-  //       _reportIncident('Drowsiness', 'High', 1.0);
-  //       // _tts.speak('Warning! Wake up. You are falling asleep.');
-  //     }
-  //   }
-  //   if (_state.drowsinessLevel == DrowsinessLevel.drowsy) {
-  //             soft = true;
-
-  //     if (_checkCooldown('Drowsiness')) {
-  //       _reportIncident('Drowsiness', 'Medium', 0.8);
-  //       // _tts.speak('You look drowsy. Stay alert.');
-  //     }
-  //   }
-  //   if (_state.distractionStatus == DistractionStatus.distracted) {
-  //             soft = true;
-  //     if (_checkCooldown('Distraction')) {
-  //       _reportIncident('Distraction', 'Medium', 0.8);
-  //       // _tts.speak('Keep your eyes on the road.');
-  //     }
-  //   }
-
-  //   // 2. Object detections (phone, cigarette, eating, drinking)
-  //   const reportThresholds = {
-  //     'phone': 0.5,
-  //     'cigarette': 0.5,
-  //     'eating': 0.5,
-  //     'drinking': 0.5,
-  //   };
-
-  //   for (final obj in _state.detectedObjects) {
-  //     final label = obj.label;
-  //     final threshold = reportThresholds[label];
-  //     if (threshold == null || obj.confidence <= threshold) continue;
-  //     if (label == 'seatbelt') continue;
-  //              loud = true;
-
-  //     if (_checkCooldown(label)) {
-  //       String eventType = label;
-  //       String voice = '';
-  //       if (label == 'phone') {
-  //         eventType = 'Phone Usage';
-  //         voice = 'Please put your phone down.';
-  //       }
-  //       if (label == 'cigarette') {
-  //         eventType = 'Smoking';
-  //         voice = 'No smoking while driving.';
-  //       }
-  //       if (label == 'eating') {
-  //         eventType = 'Eating';
-  //         voice = 'Please do not eat while driving.';
-  //       }
-  //       if (label == 'drinking') {
-  //         eventType = 'Drinking';
-  //         voice = 'Please do not drink while driving.';
-  //       }
-
-  //       _reportIncident(eventType, 'High', obj.confidence);
-  //       if (voice.isNotEmpty) _tts.speak(voice);
-  //     }
-  //   }
-
-  //   final currentBannerKey = _getMonitorBannerKey(phone, smoke);
-  //   if (currentBannerKey != null) {
-  //     if (currentBannerKey != _activeBannerKey || _activeBannerAt == null) {
-  //       _activeBannerKey = currentBannerKey;
-  //       _activeBannerAt = now;
-  //     }
-  //   } else {
-  //     _activeBannerKey = null;
-  //     _activeBannerAt = null;
-  //   }
-
-  //   // Remember current states for next-frame transition checks.
-  //   _prevDrowsy = _state.drowsinessLevel;
-  //   _prevDistract = _state.distractionStatus;
-  //   _prevAuthSound = _state.authStatus;
-
-  //   if (!loud && !soft) return;
-
-  //   // Global cooldown so sounds don't overlap / spam.
-  //   if (_lastSoundAt != null &&
-  //       now.difference(_lastSoundAt!).inMilliseconds < 3000) {
-  //     return;
-  //   }
-  //   _lastSoundAt = now;
-  //   _playAlert(loud ? 'audio/alert_loud.mp3' : 'audio/alert_soft.mp3');
   // }
+
+  bool _isSeatbeltActive() {
+    if (_state.hasPhone || _state.hasCigarette) return false;
+    if (_state.drowsinessLevel != DrowsinessLevel.alert) return false;
+    if (_state.distractionStatus == DistractionStatus.distracted) return false;
+    if (_state.authStatus == AuthStatus.unauthorized && _driverId == '—') return false;
+    if (_state.vehicleSpeed > _kSpeedLimitKmh) return false;
+    for (final obj in _state.detectedObjects) {
+      if (obj.confidence > 0.5 &&
+          (obj.label == 'phone' || obj.label == 'cigarette' ||
+           obj.label == 'eating' || obj.label == 'drinking')) return false;
+    }
+    return !_state.seatbeltBuckled;
+  }
 
   Future<void> _playAlert(String assetPath) async {
     try {
@@ -2068,8 +2012,6 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     }
   }
 
-  /// Called by front/rear cam overlay when YOLO detects objects.
-  /// Shows an on-screen alert banner + plays sound. Does NOT report to API.
   void _onCamObjectDetected(List<dynamic> detections) {
     if (detections.isEmpty) return;
     final now = DateTime.now();
@@ -2090,15 +2032,42 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       _playAlert('audio/alert_loud.mp3');
 
       // TTS for person specifically
-      if (labels.contains('person')) {
-        _tts.speak('Warning. Person detected.');
-      } else if (labels.contains('car') ||
-          labels.contains('truck') ||
-          labels.contains('bus')) {
-        _tts.speak('Warning. Vehicle detected.');
-      }
-    }
-  }
+      // if (labels.contains('person')) {
+      //   _tts.speak('Warning. Person detected.');
+      // } else if (labels.contains('car') ||
+      //     labels.contains('truck') ||
+      //     labels.contains('bus')) {
+      //   _tts.speak('Warning. Vehicle detected.');
+      // }
+
+  //     final lang = _tts.currentLang;
+  //     if (labels.contains('person')) {
+  //       _tts.speak(_msg(lang,
+  //           en: 'Warning. Person detected.',
+  //           hi: 'चेतावनी। व्यक्ति का पता चला।',
+  //           ml: 'മുന്നറിയിപ്പ്. വ്യക്തിയെ കണ്ടെത്തി.',
+  //           ta: 'எச்சரிக்கை. நபர் கண்டறியப்பட்டார்.'));
+  //     } else if (labels.contains('car') ||
+  //         labels.contains('truck') ||
+  //         labels.contains('bus')) {
+  //       _tts.speak(_msg(lang,
+  //           en: 'Warning. Vehicle detected.',
+  //           hi: 'चेतावनी। वाहन का पता चला।',
+  //           ml: 'മുന്നറിയിപ്പ്. വാഹനത്തെ കണ്ടെത്തി.',
+  //           ta: 'எச்சரிக்கை. வாகனம் கண்டறியப்பட்டது.'));
+  //     }
+  //   }
+  // }
+
+
+  final lang = _tts.currentLang;
+if (labels.contains('person')) {
+  _tts.speak(AlertMessages.personDetected(lang));
+} else if (labels.contains('car') ||
+    labels.contains('truck') ||
+    labels.contains('bus')) {
+  _tts.speak(AlertMessages.vehicleDetected(lang));
+}}}
 
   /// Converts the current YUV camera frame to an upright (mirrored for the
   /// front camera) JPEG — used as the captured still on the verified screen.
@@ -2358,6 +2327,8 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
                 Kiosk.stop();
               } else if (pin == '0000') {
                 _openEspScannerScreen();
+              } else if (pin == '1111') {
+                _openTtsInstall();
               }
             },
             child: const Text('Exit'),
@@ -3916,6 +3887,18 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     }
   }
 
+
+  Future<void> _openTtsInstall() async {
+    try {
+      const intent = AndroidIntent(
+        action: 'android.speech.tts.engine.INSTALL_TTS_DATA',
+      );
+      await intent.launch();
+    } catch (e) {
+      debugPrint('[TTS] Install intent failed: $e');
+    }
+  }
+
   Widget _connectivityBanner() {
     final pending = _incidentsService.pendingCount;
     if (_isOnline && pending == 0) return const SizedBox.shrink();
@@ -4401,62 +4384,6 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     );
   }
 
-  // Small live diagnostics strip (EAR / HEAD / STATUS) like driving_hud_view.
-  // Widget _monitorDiag() {
-  //   return Container(
-  //     margin: const EdgeInsets.all(12),
-  //     padding: const EdgeInsets.fromLTRB(12, 10, 12, 12),
-  //     decoration: BoxDecoration(
-  //       color: Colors.black.withValues(alpha: 0.75),
-  //       borderRadius: BorderRadius.circular(14),
-  //     ),
-  //     child: Column(
-  //       crossAxisAlignment: CrossAxisAlignment.start,
-  //       mainAxisSize: MainAxisSize.min,
-  //       children: [
-  //         _diagRow(
-  //           'EAR',
-  //           'L:${_state.leftEar.toStringAsFixed(3)}  R:${_state.rightEar.toStringAsFixed(3)}  Thr:${_state.earThreshold.toStringAsFixed(3)}',
-  //         ),
-  //         _diagRow(
-  //           'HEAD',
-  //           'Yaw:${_state.yaw.toStringAsFixed(1)}°  Pitch:${_state.pitch.toStringAsFixed(1)}°',
-  //         ),
-  //         _diagRow(
-  //           'STATUS',
-  //           '${_state.drowsinessLevel.name.toUpperCase()} | ${_state.distractionStatus.name.toUpperCase()}',
-  //         ),
-  //       ],
-  //     ),
-  //   );
-  // }
-
-  // Widget _diagRow(String label, String value) {
-  //   return Padding(
-  //     padding: const EdgeInsets.symmetric(vertical: 2),
-  //     child: Row(
-  //       children: [
-  //         SizedBox(
-  //           width: 56,
-  //           child: Text(
-  //             label,
-  //             style: const TextStyle(
-  //               color: Colors.cyanAccent,
-  //               fontSize: 11,
-  //               fontWeight: FontWeight.w700,
-  //             ),
-  //           ),
-  //         ),
-  //         Expanded(
-  //           child: Text(
-  //             value,
-  //             style: const TextStyle(color: Colors.white70, fontSize: 11),
-  //           ),
-  //         ),
-  //       ],
-  //     ),
-  //   );
-  // }
 
   Widget _deviceMotionCard() {
     final detector = _reversingDetector;
