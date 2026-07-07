@@ -10,7 +10,9 @@ import 'package:device_info_plus/device_info_plus.dart';
 import 'package:permission_handler/permission_handler.dart';
 
 import '../services/settings_service.dart';
+import '../services/app_update_service.dart';
 import '../monitor_flow.dart';
+import 'app_update_screen.dart';
 
 class DeviceEnrollmentScreen extends StatefulWidget {
   const DeviceEnrollmentScreen({super.key});
@@ -30,6 +32,26 @@ class _DeviceEnrollmentScreenState extends State<DeviceEnrollmentScreen> {
   @override
   void initState() {
     super.initState();
+    _checkUpdateThenRegister();
+  }
+
+  Future<void> _checkUpdateThenRegister() async {
+    setState(() => _statusMessage = 'Checking for updates...');
+
+    final updateInfo = await AppUpdateService().checkForUpdate();
+
+    if (!mounted) return;
+
+    if (updateInfo != null) {
+      await showDialog<void>(
+        context: context,
+        barrierDismissible: !updateInfo.forceUpdate,
+        barrierColor: Colors.black54,
+        builder: (_) => AppUpdateScreen(updateInfo: updateInfo),
+      );
+      if (!mounted) return;
+    }
+
     _autoRegisterDevice();
   }
 

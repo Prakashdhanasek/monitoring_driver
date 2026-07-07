@@ -37,10 +37,17 @@ class BootReceiver : BroadcastReceiver() {
                 }
             } catch (_: Throwable) {}
 
-            val launch = context.packageManager
-                .getLaunchIntentForPackage(context.packageName)
-            launch?.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            context.startActivity(launch)
+            // Clear any preferred HOME activity that was set by InstallResultReceiver
+            // after an OTA update. This prevents the app from auto-launching on
+            // subsequent reboots — the OPPO launcher remains the default home.
+            try {
+                val dpm = context.getSystemService(Context.DEVICE_POLICY_SERVICE)
+                        as DevicePolicyManager
+                val admin = ComponentName(context, KioskAdminReceiver::class.java)
+                if (dpm.isDeviceOwnerApp(context.packageName)) {
+                    dpm.clearPackagePersistentPreferredActivities(admin, context.packageName)
+                }
+            } catch (_: Throwable) {}
         }
     }
 }
