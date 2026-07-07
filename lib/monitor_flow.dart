@@ -32,6 +32,7 @@ import 'services/tts_service.dart';
 import 'services/esp32_wifi_service.dart';
 import 'services/ffmpeg_recorder_service.dart';
 import 'services/sftp_upload_service.dart';
+import 'services/http_video_upload_service.dart';
 
 import 'services/reversing_detector_service.dart';
 import 'views/reversing_camera_overlay.dart';
@@ -86,6 +87,8 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     username: 'upload_user',
     password: 'secret_password',
   );
+  final HttpVideoUploadService _httpVideoUploadService =
+      HttpVideoUploadService();
 
   // ── Connectivity tracking ──
   bool _isOnline = true;
@@ -1374,13 +1377,33 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       final deviceId = _settings.getDeviceId();
       if (deviceId == null || deviceId.isEmpty) return;
 
-      await _tripService.startTrip(
+      final response = await _tripService.startTrip(
         deviceTabletId: deviceId,
         driverId: _driverId == '—' ? null : _driverId,
         gpsLatitude: _state.gpsLat,
         gpsLongitude: _state.gpsLng,
         startedAt: DateTime.now().toUtc(),
       );
+
+      if (response != null) {
+        final vehicleId = response.vehicleId;
+        final driverId = response.driverId;
+        final tripId = response.id;
+
+        if (vehicleId != null && vehicleId.isNotEmpty) {
+          debugPrint('[Flow] Trip started successfully (vehicleId: $vehicleId, driverId: $driverId, tripId: $tripId). Triggering video upload...');
+          
+          // Trigger file upload in the background
+          _httpVideoUploadService.uploadPendingFiles(
+            uploadUrl: 'https://proximity-driver-api.prod-app.in/api/video-recordings/upload',
+            vehicleId: vehicleId,
+            deviceTabletId: deviceId,
+            driverId: driverId,
+            tripId: tripId,
+            cameraType: 'FrontCam',
+          );
+        }
+      }
     } catch (e) {
       debugPrint('[Flow] Failed to send trip start: $e');
     }

@@ -13,38 +13,49 @@ class HttpVideoUploadService {
   Future<void> uploadPendingFiles({
     required String uploadUrl,
     required String vehicleId,
+    required String deviceTabletId,
     String? driverId,
     String? tripId,
-    String? cameraType = 'front',
+    String? cameraType = 'FrontCam',
     String? bearerToken,
     String fileParamName = 'File',
   }) async {
     final docDir = await _getVisibleDirectory();
     final queueDir = Directory(p.join(docDir.path, 'esp32_upload_queue'));
+    final videosDir = Directory(p.join(docDir.path, 'esp32_videos'));
 
-    if (!await queueDir.exists()) {
-      debugPrint('[HTTP Upload] Queue directory does not exist. Nothing to upload.');
-      return;
+    final List<File> files = [];
+
+    if (await queueDir.exists()) {
+      final queueFiles = queueDir
+          .listSync()
+          .whereType<File>()
+          .where((f) => f.path.endsWith('.mp4'))
+          .toList();
+      files.addAll(queueFiles);
     }
 
-    final files = queueDir
-        .listSync()
-        .whereType<File>()
-        .where((f) => f.path.endsWith('.mp4'))
-        .toList();
+    if (await videosDir.exists()) {
+      final videoFiles = videosDir
+          .listSync()
+          .whereType<File>()
+          .where((f) => f.path.endsWith('.mp4'))
+          .toList();
+      files.addAll(videoFiles);
+    }
 
     if (files.isEmpty) {
-      debugPrint('[HTTP Upload] No pending files found in upload queue.');
+      debugPrint('[HTTP Upload] No pending or saved videos found in local storage.');
       return;
     }
 
     debugPrint('==================================================');
-    debugPrint('[HTTP Upload START] Uploading ${files.length} video chunks to $uploadUrl...');
+    debugPrint('[HTTP Upload START] Uploading ${files.length} video files to $uploadUrl...');
     debugPrint('==================================================');
 
     for (final file in files) {
       final fileName = p.basename(file.path);
-      debugPrint('[HTTP Uploading] Sending: $fileName...');
+      debugPrint('[HTTP Uploading] Processing file: $fileName...');
 
       try {
         final request = http.MultipartRequest('POST', Uri.parse(uploadUrl));
@@ -53,9 +64,11 @@ class HttpVideoUploadService {
         if (bearerToken != null) {
           request.headers['Authorization'] = 'Bearer $bearerToken';
         }
+        request.headers['accept'] = '*/*';
         
         // Add required/optional fields matching backend specification
         request.fields['VehicleId'] = vehicleId;
+        request.fields['DeviceTabletId'] = deviceTabletId;
         if (driverId != null && driverId.isNotEmpty) {
           request.fields['DriverId'] = driverId;
         }
@@ -67,13 +80,33 @@ class HttpVideoUploadService {
         }
         
         final lastModified = await file.lastModified();
-        request.fields['OccurredDateTime'] = lastModified.toUtc().toIso8601String();
+        request.fields['OccurredDateTime'] = "";
+
+        // Print request details for debugging
+        debugPrint('==================================================');
+        debugPrint('[HTTP Upload Request] POST -> $uploadUrl');
+        debugPrint('[HTTP Upload Request] Headers: ${request.headers}');
+        debugPrint('[HTTP Upload Request] Fields: ${request.fields}');
+        debugPrint('[HTTP Upload Request] File Parameter: $fileParamName');
+        debugPrint('[HTTP Upload Request] File Name: $fileName');
+        debugPrint('[HTTP Upload Request] Source Path: ${file.path}');
+        debugPrint('==================================================');
+
+        // Copy permanent video to a temporary directory if it's in the permanent esp32_videos folder
+        final isPermanentVideo = file.path.contains('esp32_videos');
+        File uploadTargetFile = file;
+        if (isPermanentVideo) {
+          final tempDir = await getTemporaryDirectory();
+          final tempPath = p.join(tempDir.path, 'temp_upload_$fileName');
+          uploadTargetFile = await file.copy(tempPath);
+          debugPrint('[HTTP Upload] Copied permanent video to temp path: $tempPath');
+        }
 
         // Attach video file
         request.files.add(
           await http.MultipartFile.fromPath(
             fileParamName,
-            file.path,
+            uploadTargetFile.path,
           ),
         );
 
@@ -83,15 +116,23 @@ class HttpVideoUploadService {
 
         final response = await http.Response.fromStream(responseStream);
 
-        if (response.statusCode == 200 || response.statusCode == 201) {
-          debugPrint('[HTTP Upload SUCCESS] ✓ Uploaded: $fileName (Status: ${response.statusCode})');
-          
-          // Delete local file to free space
+        debugPrint('==================================================');
+        debugPrint('[HTTP Upload Response] STATUS: ${response.statusCode}');
+        debugPrint('[HTTP Upload Response] BODY: ${response.body}');
+        debugPrint('==================================================');
+
+        // Clean up temporary files
+        if (isPermanentVideo) {
+          try {
+            await uploadTargetFile.delete();
+            debugPrint('[HTTP Upload] Cleaned up temp upload copy.');
+          } catch (e) {
+            debugPrint('[HTTP Upload] Failed to delete temp copy: $e');
+          }
+        } else if (response.statusCode == 200 || response.statusCode == 201) {
+          // Delete from upload queue folder on success
           await file.delete();
           debugPrint('[HTTP Upload] Deleted local chunk: $fileName');
-        } else {
-          debugPrint('[HTTP Upload ERROR] ✗ Failed uploading $fileName — Status: ${response.statusCode}');
-          debugPrint('Response Body: ${response.body}');
         }
       } catch (e) {
         debugPrint('[HTTP Upload ERROR] Exception uploading $fileName: $e');
