@@ -229,16 +229,16 @@ class _PanelDetectionPainter extends CustomPainter {
   _PanelDetectionPainter(this.result, this.fit);
 
   static const Map<String, Color> _colors = {
-    'person': Color(0xFFFF3B30), // red
-    'car': Color(0xFFFF9500), // orange
-    'truck': Color(0xFFFF9500),
-    'bus': Color(0xFFFF9500),
-    'motorcycle': Color(0xFFFFCC00), // yellow
-    'bicycle': Color(0xFFFFCC00),
-    'dog': Color(0xFF34C759), // green
-    'cat': Color(0xFF34C759),
-    'traffic light': Color(0xFF5AC8FA), // light blue
-    'stop sign': Color(0xFFFF2D55), // bright red
+    'person': Color(0xFFFF0000), // red
+    'car': Color(0xFFFFFF00), // yellow
+    'truck': Color(0xFFFFFF00), // yellow
+    'bus': Color(0xFFFF9500), // orange
+    'motorcycle': Color(0xFFFFFF00), // yellow
+    'bicycle': Color(0xFFFF0000), // red
+    'dog': Color(0xFFFFFF00), // yellow
+    'cat': Color(0xFFFFFF00), // yellow
+    'traffic light': Color(0xFF00FF00), // green
+    'stop sign': Color(0xFFFF0000), // red
   };
 
   @override
@@ -258,11 +258,11 @@ class _PanelDetectionPainter extends CustomPainter {
     final vY = (size.height - vH) / 2;
 
     for (final det in result.detections) {
-      final color = _colors[det.label] ?? const Color(0xFF00E5FF);
+      final color = _colors[det.label] ?? const Color(0xFFFFFF00);
       final boxPaint = Paint()
         ..color = color
         ..style = PaintingStyle.stroke
-        ..strokeWidth = 2.0;
+        ..strokeWidth = 3.5;
 
       final left = vX + det.x * vW;
       final top = vY + det.y * vH;
@@ -280,45 +280,34 @@ class _PanelDetectionPainter extends CustomPainter {
 
       canvas.drawRect(rect, boxPaint);
 
-      // Corner accent marks
-      const cs = 10.0;
-      for (final pts in [
-        [Offset(left, top), Offset(left + cs, top), Offset(left, top + cs)],
-        [Offset(right, top), Offset(right - cs, top), Offset(right, top + cs)],
-        [
-          Offset(left, bottom),
-          Offset(left + cs, bottom),
-          Offset(left, bottom - cs),
-        ],
-        [
-          Offset(right, bottom),
-          Offset(right - cs, bottom),
-          Offset(right, bottom - cs),
-        ],
-      ]) {
-        canvas.drawLine(pts[0], pts[1], boxPaint);
-        canvas.drawLine(pts[0], pts[2], boxPaint);
-      }
-
-      // ── Label: class name + confidence (small, inside top-left of box) ──────
-      final labelText =
-          ' ${det.label.toUpperCase()} ${(det.confidence * 100).toStringAsFixed(0)}% ';
+      // ── Label: solid colored background with class name ──────────────────
+      final label = det.label;
       final tp = TextPainter(
         text: TextSpan(
-          text: labelText,
-          style: TextStyle(
-            color: Colors.white,
-            fontSize: 10,
-            fontWeight: FontWeight.w700,
-            letterSpacing: 0.2,
-            background: Paint()..color = color.withValues(alpha: 0.85),
+          text: label,
+          style: const TextStyle(
+            color: Colors.black,
+            fontSize: 13,
+            fontWeight: FontWeight.w800,
           ),
         ),
         textDirection: TextDirection.ltr,
       )..layout(maxWidth: rect.width.clamp(40.0, size.width));
 
-      // Always draw inside the box at the top-left corner.
-      tp.paint(canvas, Offset(rect.left, rect.top));
+      final labelW = tp.width + 8;
+      final labelH = tp.height + 4;
+      final labelX = rect.left.clamp(
+        0.0,
+        (size.width - labelW).clamp(0.0, size.width),
+      );
+      final labelY = (rect.top - labelH).clamp(0.0, size.height - labelH);
+
+      // Solid colored label background
+      canvas.drawRect(
+        Rect.fromLTWH(labelX, labelY, labelW, labelH),
+        Paint()..color = color,
+      );
+      tp.paint(canvas, Offset(labelX + 4, labelY + 2));
     }
   }
 

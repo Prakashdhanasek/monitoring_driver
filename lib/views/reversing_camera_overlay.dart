@@ -75,14 +75,20 @@ class _ReversingCameraOverlayState extends State<ReversingCameraOverlay>
 
     // Start YOLO11n detection on rear-cam frames if enabled
     if (widget.enableYolo) {
-      debugPrint('[ReversingOverlay (${widget.symbol})] Initializing detector service...');
+      debugPrint(
+        '[ReversingOverlay (${widget.symbol})] Initializing detector service...',
+      );
       _rearDetector.onResult = (result) {
         if (mounted) {
-          debugPrint('[ReversingOverlay (${widget.symbol})] Detections callback fired. Count: ${result.detections.length}');
+          debugPrint(
+            '[ReversingOverlay (${widget.symbol})] Detections callback fired. Count: ${result.detections.length}',
+          );
           setState(() => _latestDetections = result);
           // Notify parent about detections for alert/sound
           if (result.detections.isNotEmpty && widget.onDetection != null) {
-            debugPrint('[ReversingOverlay (${widget.symbol})] Notifying parent of active detections...');
+            debugPrint(
+              '[ReversingOverlay (${widget.symbol})] Notifying parent of active detections...',
+            );
             widget.onDetection!(result.detections);
           }
         }
@@ -96,7 +102,9 @@ class _ReversingCameraOverlayState extends State<ReversingCameraOverlay>
     _clockTimer?.cancel();
     _blinkController.dispose();
     if (widget.enableYolo) {
-      debugPrint('[ReversingOverlay (${widget.symbol})] Disposing detector service...');
+      debugPrint(
+        '[ReversingOverlay (${widget.symbol})] Disposing detector service...',
+      );
       _rearDetector.dispose();
     }
     _isLive = false;
@@ -109,7 +117,6 @@ class _ReversingCameraOverlayState extends State<ReversingCameraOverlay>
     _frameCount++;
     if (_frameCount % 3 != 0) return;
     if (_rearDetector.isReady && !_rearDetector.isBusy) {
-      debugPrint('[ReversingOverlay (${widget.symbol})] Feeding frame $_frameCount to detector service (${jpegBytes.length} bytes)...');
       _rearDetector.processFrame(jpegBytes);
     }
   }
@@ -520,16 +527,16 @@ class _RearDetectionPainter extends CustomPainter {
   _RearDetectionPainter(this.result);
 
   static const Map<String, Color> _boxColors = {
-    'person': Color(0xFFFF3B30), // red   — highest danger
-    'car': Color(0xFFFF9500), // orange
-    'truck': Color(0xFFFF9500),
-    'bus': Color(0xFFFF9500),
-    'motorcycle': Color(0xFFFFCC00), // yellow
-    'bicycle': Color(0xFFFFCC00),
-    'dog': Color(0xFF34C759), // green
-    'cat': Color(0xFF34C759),
-    'traffic light': Color(0xFF5AC8FA), // light blue
-    'stop sign': Color(0xFFFF2D55), // bright red
+    'person': Color(0xFFFF0000), // red
+    'car': Color(0xFFFFFF00), // yellow
+    'truck': Color(0xFFFFFF00), // yellow
+    'bus': Color(0xFFFF9500), // orange
+    'motorcycle': Color(0xFFFFFF00), // yellow
+    'bicycle': Color(0xFFFF0000), // red
+    'dog': Color(0xFFFFFF00), // yellow
+    'cat': Color(0xFFFFFF00), // yellow
+    'traffic light': Color(0xFF00FF00), // green
+    'stop sign': Color(0xFFFF0000), // red
   };
 
   @override
@@ -547,11 +554,11 @@ class _RearDetectionPainter extends CustomPainter {
     final vY = (size.height - vH) / 2;
 
     for (final det in result.detections) {
-      final color = _boxColors[det.label] ?? const Color(0xFF00E5FF);
+      final color = _boxColors[det.label] ?? const Color(0xFFFFFF00);
       final boxPaint = Paint()
         ..color = color
         ..style = PaintingStyle.stroke
-        ..strokeWidth = 2.5;
+        ..strokeWidth = 3.5;
 
       final left = vX + det.x * vW;
       final top = vY + det.y * vH;
@@ -560,51 +567,34 @@ class _RearDetectionPainter extends CustomPainter {
 
       canvas.drawRect(Rect.fromLTRB(left, top, right, bottom), boxPaint);
 
-      // Corner accent marks
-      const cs = 12.0;
-      for (final pts in [
-        [Offset(left, top), Offset(left + cs, top), Offset(left, top + cs)],
-        [Offset(right, top), Offset(right - cs, top), Offset(right, top + cs)],
-        [
-          Offset(left, bottom),
-          Offset(left + cs, bottom),
-          Offset(left, bottom - cs),
-        ],
-        [
-          Offset(right, bottom),
-          Offset(right - cs, bottom),
-          Offset(right, bottom - cs),
-        ],
-      ]) {
-        canvas.drawLine(pts[0], pts[1], boxPaint);
-        canvas.drawLine(pts[0], pts[2], boxPaint);
-      }
-
-      // ── Label: class name + confidence (small, inside top-left of box) ──────
-      final label =
-          ' ${det.label.toUpperCase()} ${(det.confidence * 100).toStringAsFixed(0)}% ';
+      // ── Label: solid colored background with class name ──────────────────
+      final label = det.label;
       final tp = TextPainter(
         text: TextSpan(
           text: label,
-          style: TextStyle(
-            color: Colors.white,
-            fontSize: 10,
-            fontWeight: FontWeight.w700,
-            letterSpacing: 0.2,
-            background: Paint()..color = color.withValues(alpha: 0.85),
+          style: const TextStyle(
+            color: Colors.black,
+            fontSize: 14,
+            fontWeight: FontWeight.w800,
           ),
         ),
         textDirection: TextDirection.ltr,
       )..layout();
 
-      // Always draw inside the box at the top-left corner.
-      tp.paint(
-        canvas,
-        Offset(
-          left.clamp(0.0, (size.width - tp.width).clamp(0.0, size.width)),
-          top.clamp(0.0, (size.height - tp.height).clamp(0.0, size.height)),
-        ),
+      final labelW = tp.width + 8;
+      final labelH = tp.height + 4;
+      final labelX = left.clamp(
+        0.0,
+        (size.width - labelW).clamp(0.0, size.width),
       );
+      final labelY = (top - labelH).clamp(0.0, size.height - labelH);
+
+      // Solid colored label background
+      canvas.drawRect(
+        Rect.fromLTWH(labelX, labelY, labelW, labelH),
+        Paint()..color = color,
+      );
+      tp.paint(canvas, Offset(labelX + 4, labelY + 2));
     }
   }
 

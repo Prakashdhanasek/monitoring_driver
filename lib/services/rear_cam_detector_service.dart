@@ -67,11 +67,15 @@ class RearCamDetectorService {
 
   Future<void> initialize() async {
     try {
-      print('[RearDetector] Initializing service, loading yolo11n_full_int8.tflite asset...');
+      print(
+        '[RearDetector] Initializing service, loading yolo11n_full_int8.tflite asset...',
+      );
       final bytes = await rootBundle.load(
         'assets/models/yolo11n_full_int8.tflite',
       );
-      print('[RearDetector] Asset loaded. Size: ${bytes.lengthInBytes} bytes. Spawning isolate...');
+      print(
+        '[RearDetector] Asset loaded. Size: ${bytes.lengthInBytes} bytes. Spawning isolate...',
+      );
       _isolate = await Isolate.spawn(
         _isolateWorker,
         _InitMsg(_receivePort.sendPort, bytes.buffer.asUint8List()),
@@ -83,7 +87,9 @@ class RearCamDetectorService {
           print('[RearDetector] Isolate ready and SendPort received.');
         } else if (msg is RearDetectionResult) {
           _busy = false;
-          print('[RearDetector] Received results from isolate. Detections count: ${msg.detections.length}');
+          print(
+            '[RearDetector] Received results from isolate. Detections count: ${msg.detections.length}',
+          );
           onResult?.call(msg);
         } else if (msg is String) {
           print('[RearDetector] Isolate Message: $msg');
@@ -110,7 +116,6 @@ class RearCamDetectorService {
       return;
     }
     _busy = true;
-    print('[RearDetector] Sending JPEG frame to isolate for inference (${jpegBytes.length} bytes)...');
     _sendPort!.send(_FrameMsg(jpegBytes));
   }
 
@@ -221,8 +226,8 @@ const Set<String> _kRelevant = {
   'stop sign',
 };
 
-const double _kConf = 0.50;
-const double _kIou = 0.45;
+const double _kConf = 0.35;
+const double _kIou = 0.50;
 
 // ── Isolate worker ────────────────────────────────────────────────────────────
 
@@ -335,18 +340,15 @@ void _isolateWorker(_InitMsg init) {
         for (int y = 0; y < H; y++) {
           for (int x = 0; x < W; x++) {
             final p = resized.getPixel(x, y);
-            buf[idx++] = ((p.r / scaleFactor) / inScale + inZeroPoint).round().clamp(
-              -128,
-              127,
-            );
-            buf[idx++] = ((p.g / scaleFactor) / inScale + inZeroPoint).round().clamp(
-              -128,
-              127,
-            );
-            buf[idx++] = ((p.b / scaleFactor) / inScale + inZeroPoint).round().clamp(
-              -128,
-              127,
-            );
+            buf[idx++] = ((p.r / scaleFactor) / inScale + inZeroPoint)
+                .round()
+                .clamp(-128, 127);
+            buf[idx++] = ((p.g / scaleFactor) / inScale + inZeroPoint)
+                .round()
+                .clamp(-128, 127);
+            buf[idx++] = ((p.b / scaleFactor) / inScale + inZeroPoint)
+                .round()
+                .clamp(-128, 127);
           }
         }
         inTensor.setTo(buf);
@@ -360,18 +362,15 @@ void _isolateWorker(_InitMsg init) {
         for (int y = 0; y < H; y++) {
           for (int x = 0; x < W; x++) {
             final p = resized.getPixel(x, y);
-            buf[idx++] = ((p.r / scaleFactor) / inScale + inZeroPoint).round().clamp(
-              0,
-              255,
-            );
-            buf[idx++] = ((p.g / scaleFactor) / inScale + inZeroPoint).round().clamp(
-              0,
-              255,
-            );
-            buf[idx++] = ((p.b / scaleFactor) / inScale + inZeroPoint).round().clamp(
-              0,
-              255,
-            );
+            buf[idx++] = ((p.r / scaleFactor) / inScale + inZeroPoint)
+                .round()
+                .clamp(0, 255);
+            buf[idx++] = ((p.g / scaleFactor) / inScale + inZeroPoint)
+                .round()
+                .clamp(0, 255);
+            buf[idx++] = ((p.b / scaleFactor) / inScale + inZeroPoint)
+                .round()
+                .clamp(0, 255);
           }
         }
         inTensor.setTo(buf);
@@ -418,17 +417,6 @@ void _isolateWorker(_InitMsg init) {
       double _get(int row, int box) => isTransposed
           ? outputBuf[box * numRows + row]
           : outputBuf[row * numBoxes + box];
-
-      double minVal = 9999.0;
-      double maxVal = -9999.0;
-      for (int i = 0; i < outputBuf.length; i++) {
-        final v = outputBuf[i];
-        if (v < minVal) minVal = v;
-        if (v > maxVal) maxVal = v;
-      }
-      init.replyTo.send('DEBUG: outputBuf min=${minVal.toStringAsFixed(4)} max=${maxVal.toStringAsFixed(4)} length=${outputBuf.length}');
-      final temp = [for (int r = 0; r < min(15, numRows); r++) _get(r, 0).toStringAsFixed(4)];
-      init.replyTo.send('DEBUG: Box 0 rows 0..15: $temp');
 
       final dets = <RearDetection>[];
       int rawAboveConf = 0;
@@ -477,7 +465,7 @@ void _isolateWorker(_InitMsg init) {
       init.replyTo.send(
         'Inference done in ${elapsed}ms. '
         'Raw detections above conf($_kConf): $rawAboveConf. '
-        'Relevant detections after NMS: ${nmsResult.map((d) => "${d.label}(${(d.confidence*100).toStringAsFixed(0)}%)").toList()}'
+        'Relevant detections after NMS: ${nmsResult.map((d) => "${d.label}(${(d.confidence * 100).toStringAsFixed(0)}%)").toList()}',
       );
 
       init.replyTo.send(RearDetectionResult(nmsResult, origW, origH));
