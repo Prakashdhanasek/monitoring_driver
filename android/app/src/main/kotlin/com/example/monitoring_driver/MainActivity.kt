@@ -199,11 +199,16 @@ class MainActivity : FlutterActivity() {
             }
 
             val callbackIntent = Intent(action).setPackage(packageName)
+            val flags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_MUTABLE
+            } else {
+                PendingIntent.FLAG_UPDATE_CURRENT
+            }
             val pendingIntent = PendingIntent.getBroadcast(
                 applicationContext,
                 sessionId,
                 callbackIntent,
-                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+                flags
             )
 
             session.commit(pendingIntent.intentSender)
@@ -312,6 +317,17 @@ class MainActivity : FlutterActivity() {
                         dpm.setWifiSsidPolicy(null)
                     } catch (_: Throwable) {}
                 }
+
+                // Always register as preferred HOME so Android re-launches
+                // the app after reboot without relying solely on BootReceiver.
+                try {
+                    val homeFilter = android.content.IntentFilter(Intent.ACTION_MAIN).apply {
+                        addCategory(Intent.CATEGORY_HOME)
+                        addCategory(Intent.CATEGORY_DEFAULT)
+                    }
+                    val mainComp = ComponentName(packageName, "${packageName}.MainActivity")
+                    dpm.addPersistentPreferredActivity(admin, homeFilter, mainComp)
+                } catch (_: Throwable) {}
             }
 
             startLockTask()
