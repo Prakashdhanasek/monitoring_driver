@@ -36,8 +36,11 @@ import 'services/sftp_upload_service.dart';
 import 'services/http_video_upload_service.dart';
 
 import 'services/reversing_detector_service.dart';
+import 'services/app_update_service.dart';
 import 'views/reversing_camera_overlay.dart';
 import 'views/cam_detection_panel.dart';
+import 'views/alert_messages.dart';
+import 'views/app_update_screen.dart';
 import 'views/alert_messages.dart';
 
 /// The 3 phases of the driver-facing flow.
@@ -154,6 +157,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   bool _camReady = false;
   bool _busy = false;
   bool _streaming = false;
+  bool _updatingApp = false; // true while OTA dialog is open → blocks frame processing
   int _frame = 0;
   bool _isRefreshingDrivers = false;
   DateTime? _lastAuthAttemptAt;
@@ -184,6 +188,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   String? _activeBannerKey;
   DateTime? _activeBannerAt;
   static const Duration _kBannerVisibleDuration = Duration(seconds: 3);
+  static const double _kSpeedLimitKmh = 30.0;
 
   // Seatbelt cyclic alert state
   DateTime? _seatbeltAlertStart; // when unbuckled state first detected
@@ -233,6 +238,22 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   // ── Screenshot flash (alert varumbol screenshot effect) ──
   bool _flashScreenshot = false;
   DateTime? _lastFlashAt;
+
+  // ── Break alert (periodic driver fatigue reminder) ──
+  bool _showBreakAlert = false;
+  int _breakAlertIndex = 0;
+  Map<String, String>? _currentBreakMsg;
+  Timer? _breakAlertTimer;
+  Timer? _breakAlertDismissTimer;
+  static const Duration _kBreakAlertInterval = Duration(seconds: 30);
+  static const Duration _kBreakAlertDisplayDuration = Duration(seconds: 12);
+  static const List<Map<String, String>> _kBreakMessages = [
+    {'emoji': '☕', 'title': 'Time for a Break!', 'sub': 'Pull over safely and rest for a few minutes.'},
+    {'emoji': '💧', 'title': 'Stay Hydrated!', 'sub': 'Drink some water to stay alert and focused.'},
+    {'emoji': '👀', 'title': 'Rest Your Eyes', 'sub': 'Blink often and glance at distant objects.'},
+    {'emoji': '🧘', 'title': 'Stretch a Little', 'sub': 'A short walk can refresh your body and mind.'},
+    {'emoji': '🌬️', 'title': 'Take a Deep Breath', 'sub': 'Breathe deeply to reduce stress and stay calm.'},
+  ];
 
   // ── Geofence / boundary violation ──
   double? _boundaryLat;         // geofence center latitude
@@ -294,6 +315,11 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     // Blind spot sensor polling every 500 ms
     _blindSpotTimer = Timer.periodic(const Duration(seconds: 2), (_) {
       _pollBlindSpotSensors();
+    });
+
+    // Break alert: remind driver every 30 seconds (testing) / 2 hours (prod)
+    _breakAlertTimer = Timer.periodic(_kBreakAlertInterval, (_) {
+      _triggerBreakAlert();
     });
   }
 
@@ -526,6 +552,64 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   //   }
   // }
 
+  /// Polls the server for a newer APK version.
+  /// Navigates to [AppUpdateScreen] if an update is available.
+  /// Cancels the timer once an update is found to avoid repeated prompts.
+  Future<void> _checkForUpdateInBackground() async {
+    if (!mounted) return;
+    final updateInfo = await AppUpdateService().checkForUpdate();
+    if (!mounted) return;
+    if (updateInfo != null) {
+      // Pause camera ML and ALL background tasks to give download full resources.
+      _updatingApp = true;
+      final wasStreaming = _streaming;
+      if (_streaming) {
+        _camera?.stopImageStream().catchError((_) {});
+        _streaming = false;
+      }
+      _syncTimer?.cancel();
+      _connectivityTimer?.cancel();
+      _telemetryTimer?.cancel();
+      _sensorUiTimer?.cancel();
+      _blindSpotTimer?.cancel();
+
+      await showDialog<void>(
+        context: context,
+        barrierDismissible: !updateInfo.forceUpdate,
+        barrierColor: Colors.black54,
+        builder: (_) => AppUpdateScreen(updateInfo: updateInfo),
+      );
+
+      // Dialog dismissed without a successful install — restore everything.
+      if (!mounted) return;
+      _updatingApp = false;
+      if (wasStreaming && _camReady && _camMode == CamMode.driverMonitoring) {
+        _camera?.startImageStream(_processImage).catchError((_) {});
+        _streaming = true;
+      }
+      _syncTimer = Timer.periodic(const Duration(seconds: 30), (_) {
+        _syncIncidentsTask();
+      });
+      _connectivityTimer = Timer.periodic(const Duration(seconds: 5), (_) {
+        _checkConnectivity();
+        _checkCamConnections();
+        if (_leftCamIp == null || _rightCamIp == null || _frontCamIp == null || _esp32StreamUrl.isEmpty) {
+          _resolveSideCamIps();
+          if (_esp32StreamUrl.isEmpty) _autoDiscoverRearCam();
+        }
+      });
+      _telemetryTimer = Timer.periodic(const Duration(seconds: 3), (_) {
+        _sendTelemetryTask();
+      });
+      _sensorUiTimer = Timer.periodic(const Duration(milliseconds: 200), (_) {
+        if (mounted && _phase == Phase.monitoring) setState(() {});
+      });
+      _blindSpotTimer = Timer.periodic(const Duration(seconds: 2), (_) {
+        _pollBlindSpotSensors();
+      });
+    }
+  }
+
   @override
   void dispose() {
     _syncTimer?.cancel();
@@ -546,6 +630,8 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     _espWifiService.disconnectFromEsp32();
     _reversingDetector?.dispose();
     _blindSpotTimer?.cancel();
+    _breakAlertTimer?.cancel();
+    _breakAlertDismissTimer?.cancel();
     super.dispose();
   }
 
@@ -1057,6 +1143,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   // FRAME PIPELINE
   // ─────────────────────────────────────────────────────────
   Future<void> _processImage(CameraImage image) async {
+    if (_updatingApp) return;
     if (_camMode != CamMode.driverMonitoring) return;
     if (_busy || !_camReady || _detector == null) return;
     _busy = true;
@@ -1176,7 +1263,11 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
                     _kTripEndSeconds) {
               _tripCompleted = true;
               _tripCompletedAt = DateTime.now();
+              _breakAlertTimer?.cancel();
+              _dismissBreakAlert();
               _sendTripEnd();
+              // Trip ended — safe point to check for updates.
+              _checkForUpdateInBackground();
               // _showVerifyToast();
             }
           }
@@ -1257,7 +1348,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     );
   }
 
-  void _onVerified() {
+  Future<void> _onVerified() async {
     if (_phase != Phase.verifying) return;
     _unauthorizedStart = null;
     _unauthorizedTripStop = false;
@@ -1284,6 +1375,10 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     try {
       final driver = _driversService.getDriverById(driverId);
       if (driver != null && driver.isNotEmpty) {
+        // ── DEBUG: dump all API fields so we can find the exact language key ──
+        debugPrint('[Flow][DriverFields] ALL KEYS: ${driver.keys.toList()}');
+        debugPrint('[Flow][DriverFields] ALL VALUES: $driver');
+
         final apiName = driver['fullName'] as String?;
         if (apiName != null && apiName.isNotEmpty) {
           driverName = apiName;
@@ -1332,6 +1427,11 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
         _state.resetCalibration();
         _phase = Phase.monitoring;
         _sendTripStart();
+        // Restart break alert timer for the new trip.
+        _breakAlertTimer?.cancel();
+        _breakAlertTimer = Timer.periodic(_kBreakAlertInterval, (_) {
+          _triggerBreakAlert();
+        });
       }
       if (mounted) setState(() {});
     });
@@ -1451,6 +1551,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
         _boundaryLng = trip.geofenceCenterLongitude;
         _boundaryRadiusM = trip.geofenceRadiusMeters!.toDouble();
         _geofenceId = trip.geofenceId;
+        _vehicleId ??= trip.vehicleId;
         _boundaryViolationReported = false;
         debugPrint('[Boundary] Geofence set: ($_boundaryLat, $_boundaryLng) '
             'r=${_boundaryRadiusM}m id=$_geofenceId');
@@ -1675,6 +1776,72 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     Future.delayed(const Duration(milliseconds: 220), () {
       if (mounted) setState(() => _flashScreenshot = false);
     });
+  }
+
+  // ─────────────────────────────────────────────────────────
+  // BREAK ALERT
+  // ─────────────────────────────────────────────────────────
+
+  void _triggerBreakAlert() {
+    if (!mounted) return;
+    if (_phase != Phase.monitoring) { debugPrint('[BreakAlert] SKIP: not monitoring'); return; }
+    if (_tripCompleted) { debugPrint('[BreakAlert] SKIP: trip completed'); return; }
+    if (_getMonitorBannerKey(_state.hasPhone, _state.hasCigarette) != null) { debugPrint('[BreakAlert] SKIP: active banner (${_getMonitorBannerKey(_state.hasPhone, _state.hasCigarette)})'); return; }
+    if (!_state.seatbeltBuckled && _activeBannerKey != null) { debugPrint('[BreakAlert] SKIP: seatbelt banner'); return; }
+    if (_state.drowsinessLevel == DrowsinessLevel.drowsy || _state.drowsinessLevel == DrowsinessLevel.asleep) { debugPrint('[BreakAlert] SKIP: drowsy/asleep'); return; }
+    if (_state.distractionStatus == DistractionStatus.distracted) { debugPrint('[BreakAlert] SKIP: distracted'); return; }
+    if (_state.vehicleSpeed > _kSpeedLimitKmh) { debugPrint('[BreakAlert] SKIP: overspeed'); return; }
+    if (_state.authStatus == AuthStatus.unauthorized) { debugPrint('[BreakAlert] SKIP: unauthorized'); return; }
+    if (_camDetectionAlert != null && _camDetectionAlertAt != null &&
+        DateTime.now().difference(_camDetectionAlertAt!).inSeconds < 3) { debugPrint('[BreakAlert] SKIP: cam detection alert'); return; }
+
+    debugPrint('[BreakAlert] ✓ SHOWING alert index=$_breakAlertIndex');
+
+    setState(() => _showBreakAlert = true);
+    _currentBreakMsg = _kBreakMessages[_breakAlertIndex % _kBreakMessages.length];
+    // Speak in the driver's preferred language.
+    _tts.speak(AlertMessages.breakReminder(_tts.currentLang, _breakAlertIndex));
+    _breakAlertIndex++;
+    _breakAlertDismissTimer?.cancel();
+    _breakAlertDismissTimer = Timer(_kBreakAlertDisplayDuration, () {
+      if (mounted) setState(() => _showBreakAlert = false);
+    });
+  }
+
+  void _dismissBreakAlert() {
+    _breakAlertDismissTimer?.cancel();
+    if (mounted) setState(() => _showBreakAlert = false);
+  }
+
+  /// Bottom-center break alert toast — no container, just emoji + text with glance pulse.
+  Widget _breakAlertOverlay() {
+    // Auto-dismiss if any real alert becomes active while toast is showing.
+    if (_showBreakAlert) {
+      final anyAlertActive =
+          _getMonitorBannerKey(_state.hasPhone, _state.hasCigarette) != null ||
+          (!_state.seatbeltBuckled && _activeBannerKey != null) ||
+          _state.drowsinessLevel == DrowsinessLevel.drowsy ||
+          _state.drowsinessLevel == DrowsinessLevel.asleep ||
+          _state.distractionStatus == DistractionStatus.distracted ||
+          _state.vehicleSpeed > _kSpeedLimitKmh ||
+          _state.authStatus == AuthStatus.unauthorized;
+      if (anyAlertActive) {
+        WidgetsBinding.instance.addPostFrameCallback((_) => _dismissBreakAlert());
+        return const SizedBox.shrink();
+      }
+    }
+    if (!_showBreakAlert) return const SizedBox.shrink();
+    final msg = _currentBreakMsg ?? _kBreakMessages[0];
+    return Positioned(
+      bottom: 56,
+      left: 0,
+      right: 0,
+      child: GestureDetector(
+        onTap: _dismissBreakAlert,
+        behavior: HitTestBehavior.translucent,
+        child: _BreakToastWidget(msg: msg),
+      ),
+    );
   }
 
   Future<void> _syncIncidentsTask() async {
@@ -2602,6 +2769,8 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
             //     ),
             //   ),
             // ),
+
+          _breakAlertOverlay(),
 
           // Screenshot effect — alert varumbol screen quick shrink + border + dim
           if (_flashScreenshot)
@@ -4148,6 +4317,8 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
                           height: 1.5,
                         ),
                       ),
+
+
                       if (remaining > 0) ...[
                         const SizedBox(height: 16),
                         Text(
@@ -4208,6 +4379,30 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
                     color: Color(0xFF94A3B8), // Soft slate
                     fontSize: 13,
                     fontWeight: FontWeight.w500,
+                  ),
+                ),
+
+                // ── DEBUG: manual update check trigger ──
+                const SizedBox(height: 24),
+                GestureDetector(
+                  onTap: _checkForUpdateInBackground,
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                    decoration: BoxDecoration(
+                      color: Colors.white.withValues(alpha: 0.07),
+                      borderRadius: BorderRadius.circular(20),
+                      border: Border.all(
+                        color: Colors.white.withValues(alpha: 0.15),
+                      ),
+                    ),
+                    child: const Text(
+                      'Check for Updates Test 20',
+                      style: TextStyle(
+                        color: Color(0xFF64748B),
+                        fontSize: 11,
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
                   ),
                 ),
               ],
@@ -4643,6 +4838,93 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       distanceFromBoundaryMeters: distanceFromBoundaryMeters,
       deviceTabletId: deviceId,
       occurredAt: DateTime.now().toUtc(),
+    );
+  }
+}
+
+// ─────────────────────────────────────────────────────────
+// BREAK ALERT TOAST
+// ─────────────────────────────────────────────────────────
+
+class _BreakToastWidget extends StatefulWidget {
+  final Map<String, String> msg;
+  const _BreakToastWidget({required this.msg});
+
+  @override
+  State<_BreakToastWidget> createState() => _BreakToastWidgetState();
+}
+
+class _BreakToastWidgetState extends State<_BreakToastWidget>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _glanceCtrl;
+  late final Animation<double> _glance;
+
+  @override
+  void initState() {
+    super.initState();
+    _glanceCtrl = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 900),
+    )..repeat(reverse: true);
+    _glance = CurvedAnimation(parent: _glanceCtrl, curve: Curves.easeInOut);
+  }
+
+  @override
+  void dispose() {
+    _glanceCtrl.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return TweenAnimationBuilder<double>(
+      tween: Tween(begin: 0.0, end: 1.0),
+      duration: const Duration(milliseconds: 380),
+      curve: Curves.easeOut,
+      builder: (context, t, child) => Transform.translate(
+        offset: Offset(0, 20 * (1 - t)),
+        child: Opacity(opacity: t, child: child),
+      ),
+      child: AnimatedBuilder(
+        animation: _glance,
+        builder: (context, child) => Opacity(
+          opacity: 0.70 + 0.30 * _glance.value,
+          child: child,
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(
+              widget.msg['emoji']!,
+              style: const TextStyle(fontSize: 30),
+            ),
+            const SizedBox(height: 4),
+            Text(
+              widget.msg['title']!,
+              textAlign: TextAlign.center,
+              style: const TextStyle(
+                color: Colors.white,
+                fontSize: 16,
+                fontWeight: FontWeight.w700,
+                shadows: [
+                  Shadow(color: Color(0xFF38BDF8), blurRadius: 10),
+                  Shadow(color: Color(0xFF38BDF8), blurRadius: 22),
+                ],
+              ),
+            ),
+            const SizedBox(height: 3),
+            Text(
+              widget.msg['sub']!,
+              textAlign: TextAlign.center,
+              style: const TextStyle(
+                color: Colors.white70,
+                fontSize: 11,
+                fontWeight: FontWeight.w400,
+              ),
+            ),
+          ],
+        ),
+      ),
     );
   }
 }

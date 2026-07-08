@@ -20,6 +20,7 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
     <application
         android:label="monitoring_driver"
         android:name="${applicationName}"
@@ -79,6 +80,24 @@
                 <action android:name="android.app.action.DEVICE_ADMIN_ENABLED" />
             </intent-filter>
         </receiver>
+
+        <!-- Receives PackageInstaller session result after OTA install.
+             Manifest-declared so Android can fire it even after the old
+             process has been killed during APK replacement. -->
+        <receiver
+            android:name=".InstallResultReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.example.monitoring_driver.INSTALL_RESULT" />
+            </intent-filter>
+        </receiver>
+
+        <!-- Foreground service used to bring MainActivity to screen after OTA.
+             Direct Activity starts from a BroadcastReceiver are blocked on
+             OPPO/ColorOS; starting from a foreground service is allowed. -->
+        <service
+            android:name=".OtaRestartService"
+            android:exported="false" />
 
         <!-- Don't delete the meta-data below.
              This is used by the Flutter tool to generate GeneratedPluginRegistrant.java -->
