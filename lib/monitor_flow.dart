@@ -33,12 +33,14 @@ import 'services/tts_service.dart';
 import 'services/esp32_wifi_service.dart';
 import 'services/ffmpeg_recorder_service.dart';
 import 'services/sftp_upload_service.dart';
+import 'services/http_video_upload_service.dart';
 
 import 'services/reversing_detector_service.dart';
 import 'services/app_update_service.dart';
 import 'views/reversing_camera_overlay.dart';
 import 'views/cam_detection_panel.dart';
 import 'views/app_update_screen.dart';
+import 'views/alert_messages.dart';
 
 /// The 3 phases of the driver-facing flow.
 enum Phase { verifying, details, monitoring }
@@ -90,6 +92,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     username: 'upload_user',
     password: 'secret_password',
   );
+  final HttpVideoUploadService _httpVideoUploadService = HttpVideoUploadService();
 
   // ── Connectivity tracking ──
   bool _isOnline = true;
@@ -115,6 +118,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   // String _esp32StreamUrl = 'http://10.119.135.95:82/';
 
   String _esp32StreamUrl = ''; // Auto-discovered on startup
+  String _frontCamStreamUrl = '';
 
   // ── Side cameras (blind spot)
   // Left cam  — video :86,  sensor :87
@@ -164,6 +168,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   String _driverId = '—';
   String? _vehicleId;
   String? _vehicleRegNo;
+  String? _tripId;
 
   // Countdown
   int _countdown = 3;
@@ -252,6 +257,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
 
     _syncTimer = Timer.periodic(const Duration(seconds: 30), (_) {
       _syncIncidentsTask();
+      _triggerVideoUpload();
       // _maybeReReportCable();
     });
 
@@ -311,7 +317,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
         // Auto-sync immediately when we come back online
         if (_isOnline) {
           _syncIncidentsTask();
-          _triggerSftpUpload();
+          _triggerVideoUpload();
         }
       }
     } catch (_) {
@@ -324,43 +330,11 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       }
     }
 
-    // ESP32-CAM connection check (disconnect check)
-    if (_isConnectedToEsp32) {
-      try {
-        final uri = Uri.parse(_esp32StreamUrl);
-        final host = uri.host;
-        final port = uri.port == 0 ? 82 : uri.port;
-
-        final socket = await Socket.connect(
-          host,
-          port,
-        ).timeout(const Duration(seconds: 2));
-        await socket.close();
-
-        // If reachable and recording stopped, restart it
-        // if (!_ffmpegRecorderService.isRecording) {
-
-        //   await _ffmpegRecorderService.startRecording(_esp32StreamUrl);
-        // }
-
-        // if (!_ffmpegRecorderService.isRecording &&
-        //     _camMode == CamMode.driverMonitoring) {
-        //   await _ffmpegRecorderService.startRecording(_esp32StreamUrl);
-        // }
-
-        if (!_ffmpegRecorderService.isRecording &&
-            _camMode == CamMode.driverMonitoring) {
-          await _ffmpegRecorderService.startRecording(_esp32StreamUrl);
-        }
-      } catch (e) {
-        // Ping failed -> ESP32 got disconnected
-        debugPrint('[ESP32] ✗ Connection lost to ESP32: $e');
-        if (mounted) {
-          setState(() {
-            _isConnectedToEsp32 = false;
-          });
-        }
-        await _ffmpegRecorderService.stopRecording();
+    // Front ESP32-CAM continuous recording check (restart recording if stopped)
+    if (_frontCamConnected && _frontCamStreamUrl.isNotEmpty) {
+      if (!_ffmpegRecorderService.isRecording &&
+          _camMode == CamMode.driverMonitoring) {
+        await _ffmpegRecorderService.startRecording(_frontCamStreamUrl);
       }
     }
   }
@@ -923,9 +897,28 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     }
   }
 
-  Future<void> _triggerSftpUpload() async {
-    debugPrint('[Flow] Online. Starting SFTP background upload...');
-    await _sftpUploadService.uploadPendingFiles('/var/www/uploads/videos');
+  Future<void> _triggerVideoUpload() async {
+    if (!_isOnline) return;
+    final deviceId = _settings.getDeviceId();
+    if (deviceId == null || deviceId.isEmpty) return;
+    if (_vehicleId == null || _vehicleId!.isEmpty) {
+      debugPrint('[Flow] No VehicleId available yet. Skipping video upload.');
+      return;
+    }
+
+    debugPrint('[Flow] Online. Starting HTTP background video upload...');
+    try {
+      await _httpVideoUploadService.uploadPendingFiles(
+        uploadUrl: 'https://proximity-driver-api.prod-app.in/api/video-recordings/upload',
+        vehicleId: _vehicleId!,
+        deviceTabletId: deviceId,
+        driverId: (_driverId == '—' || _driverId.isEmpty) ? null : _driverId,
+        tripId: _tripId,
+        cameraType: 'FrontCam',
+      );
+    } catch (e) {
+      debugPrint('[Flow] Video upload error: $e');
+    }
   }
 
   Future<void> _init() async {
@@ -950,6 +943,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     _driverName = 'Driver';
     _vehicleId = null;
     _vehicleRegNo = null;
+    _tripId = null;
 
     // 0) Request location and storage permissions upfront.
     try {
@@ -1211,6 +1205,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
                   _state,
                   image,
                   _getCameraRotation(),
+                  activeDriverId: _driverId,
                 );
               }
               _monitoringEngine.processFrame(face);
@@ -1234,6 +1229,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
             await _handleAlertSounds(image);
           } else {
             // No driver in view — start / continue the "gone" timer.
+            _unauthorizedStart = null;
             _multiFace = 0;
             _monitoringEngine.processFrame(null);
             _noFaceSince ??= DateTime.now();
@@ -1358,6 +1354,25 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
         }
         _vehicleId = driver['assignedVehicleId'] as String?;
         _vehicleRegNo = driver['vehicleRegistrationNumber'] as String?;
+
+        // Resolve preferred language from API response
+        final String? langStr = (driver['preferredLanguage'] ??
+            driver['alertLanguage'] ??
+            driver['language'] ??
+            driver['lang']) as String?;
+        AlertLang preferred = AlertLang.english;
+        if (langStr != null) {
+          final cleanLang = langStr.toLowerCase().trim();
+          if (cleanLang.contains('malayalam') || cleanLang == 'ml') {
+            preferred = AlertLang.malayalam;
+          } else if (cleanLang.contains('hindi') || cleanLang == 'hi') {
+            preferred = AlertLang.hindi;
+          } else if (cleanLang.contains('tamil') || cleanLang == 'ta') {
+            preferred = AlertLang.tamil;
+          }
+        }
+        debugPrint('[Flow] Setting voice alert language to: $preferred (from API: $langStr)');
+        _tts.setLanguage(preferred);
       }
     } catch (e) {
       debugPrint('[Flow] Error resolving driver vehicle details: $e');
@@ -1370,7 +1385,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     if (mounted) setState(() {});
 
     // Face verification voice alert.
-    _tts.speak('Welcome $_driverName. Identity verified.');
+    _tts.speak(AlertMessages.welcome(_tts.currentLang, _driverName));
 
     _countdownTimer?.cancel();
     _countdownTimer = Timer.periodic(const Duration(seconds: 1), (t) {
@@ -1488,6 +1503,10 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       //   _boundaryRadiusM = null;
       //   debugPrint('[Boundary] No geofence in trip-start response.');
       // }
+      if (trip != null) {
+        _tripId = trip.id;
+        _vehicleId ??= trip.vehicleId;
+      }
       if (trip != null &&
           trip.geofenceCenterLatitude != null &&
           trip.geofenceCenterLongitude != null &&
@@ -1496,7 +1515,6 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
         _boundaryLng = trip.geofenceCenterLongitude;
         _boundaryRadiusM = trip.geofenceRadiusMeters!.toDouble();
         _geofenceId = trip.geofenceId;
-        _vehicleId ??= trip.vehicleId;
         _boundaryViolationReported = false;
         debugPrint('[Boundary] Geofence set: ($_boundaryLat, $_boundaryLng) '
             'r=${_boundaryRadiusM}m id=$_geofenceId');
@@ -1621,6 +1639,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
         distanceKm: 0,
         endedAt: DateTime.now().toUtc(),
       );
+      _tripId = null;
     } catch (e) {
       debugPrint('[Flow] Failed to send trip end: $e');
     }
@@ -1806,7 +1825,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       // Report incident once per 5 min
       if (_checkCooldown('seatbelt')) {
         _reportIncident('Seatbelt Not Worn', 'High', 1.0);
-        _tts.speak('Please fasten your seatbelt.');
+        _tts.speak(AlertMessages.seatbelt(_tts.currentLang));
       }
     } else {
       // Seatbelt is buckled — reset cycle
@@ -1816,12 +1835,35 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     }
 
     // ── GENERAL ALERTS (sound + report on 5-min cooldown) ────────────────
-    if (_state.authStatus == AuthStatus.unauthorized) {
-      if (_checkCooldown('UnauthorizedDriver')) {
-        loud = true;
-        _reportIncident('Unauthorized Driver', 'High', 1.0);
-        _tts.speak('Unauthorized driver detected.');
+    if (_state.authStatus == AuthStatus.unauthorized &&
+        _phase == Phase.monitoring &&
+        !_tripCompleted) {
+      if (_unauthorizedStart == null) {
+        _unauthorizedStart = now;
+      } else if (now.difference(_unauthorizedStart!).inSeconds >= 30) {
+        final hasPhoto = _driverHasReferencePhoto();
+        if (hasPhoto) {
+          if (currentImage != null) {
+            final jpeg = _captureFaceJpeg(currentImage, targetWidth: 240);
+            if (jpeg != null) {
+              _latestFrameJpeg = jpeg;
+            }
+          }
+
+          // Always report unauthorized driver incidents immediately without cooldown
+          loud = true;
+          _reportIncident('Unauthorized Driver', 'High', 1.0);
+          _tts.speak(AlertMessages.unauthorized(_tts.currentLang));
+
+          _tripCompleted = true;
+          _tripCompletedAt = now;
+          _unauthorizedTripStop = true;
+          _sendTripEnd();
+        }
+        _unauthorizedStart = null;
       }
+    } else {
+      _unauthorizedStart = null;
     }
     if (_state.drowsinessLevel == DrowsinessLevel.asleep) {
               loud = true;
@@ -1867,19 +1909,19 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
         String voice = '';
         if (label == 'phone') {
           eventType = 'Phone Usage';
-          voice = 'Please put your phone down.';
+          voice = AlertMessages.phone(_tts.currentLang);
         }
         if (label == 'cigarette') {
           eventType = 'Smoking';
-          voice = 'No smoking while driving.';
+          voice = AlertMessages.cigarette(_tts.currentLang);
         }
         if (label == 'eating') {
           eventType = 'Eating';
-          voice = 'Please do not eat while driving.';
+          voice = AlertMessages.eating(_tts.currentLang);
         }
         if (label == 'drinking') {
           eventType = 'Drinking';
-          voice = 'Please do not drink while driving.';
+          voice = AlertMessages.drinking(_tts.currentLang);
         }
 
         _reportIncident(eventType, 'High', obj.confidence);
@@ -1946,11 +1988,11 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
 
       // TTS for person specifically
       if (labels.contains('person')) {
-        _tts.speak('Warning. Person detected.');
+        _tts.speak(AlertMessages.personDetected(_tts.currentLang));
       } else if (labels.contains('car') ||
           labels.contains('truck') ||
           labels.contains('bus')) {
-        _tts.speak('Warning. Vehicle detected.');
+        _tts.speak(AlertMessages.vehicleDetected(_tts.currentLang));
       }
     }
   }
@@ -2681,10 +2723,11 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
         '[CamMode] Recorder STOPPED — releasing ESP32 stream for $mode',
       );
     } else if (nowMonitoring &&
-        _isConnectedToEsp32 &&
+        _frontCamConnected &&
+        _frontCamStreamUrl.isNotEmpty &&
         !_ffmpegRecorderService.isRecording) {
-      _ffmpegRecorderService.startRecording(_esp32StreamUrl);
-      debugPrint('[CamMode] Recorder RESTARTED — back to monitoring');
+      _ffmpegRecorderService.startRecording(_frontCamStreamUrl);
+      debugPrint('[CamMode] Recorder RESTARTED — back to front cam monitoring');
     }
     final c = _camera;
     if (c != null && c.value.isInitialized) {
@@ -2975,6 +3018,14 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       _frontCamIp = frontResult;
       excludeIps.add(frontResult);
       debugPrint('[SideCam] Front cam IP → $_frontCamIp');
+    }
+    if (_frontCamIp != null) {
+      _frontCamStreamUrl = 'http://$_frontCamIp:84/';
+      if (!_ffmpegRecorderService.isRecording &&
+          _camMode == CamMode.driverMonitoring) {
+        debugPrint('[SideCam] Starting Front camera background recording: $_frontCamStreamUrl');
+        _ffmpegRecorderService.startRecording(_frontCamStreamUrl);
+      }
     }
   }
 
@@ -3539,6 +3590,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
           _camConnectionStatusBar(),
           // _deviceMotionCard(),
           if (_noFaceSince != null && !_tripCompleted) _noDriverCountdown(),
+          if (_unauthorizedStart != null && !_tripCompleted) _unauthorizedDriverCountdown(),
           const Spacer(),
           _boundaryBanner(),
           _seatbeltIndicator(),
@@ -3927,6 +3979,68 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
                   style: const TextStyle(
                     color: Color(0xFFFCD34D),
                     fontSize: 13,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _unauthorizedDriverCountdown() {
+    if (_unauthorizedStart == null) return const SizedBox.shrink();
+    final elapsed = DateTime.now().difference(_unauthorizedStart!).inSeconds;
+    final remaining = (30 - elapsed).clamp(0, 30);
+    return Container(
+      margin: const EdgeInsets.fromLTRB(12, 0, 12, 8),
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+      decoration: BoxDecoration(
+        color: const Color(0xFF7F1D1D).withValues(alpha: 0.95),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: const Color(0xFFEF4444), width: 1.5),
+      ),
+      child: Row(
+        children: [
+          Container(
+            width: 46,
+            height: 46,
+            alignment: Alignment.center,
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              border: Border.all(color: const Color(0xFFEF4444), width: 3),
+            ),
+            child: Text(
+              '$remaining',
+              style: const TextStyle(
+                color: Colors.white,
+                fontSize: 18,
+                fontWeight: FontWeight.w800,
+              ),
+            ),
+          ),
+          const SizedBox(width: 16),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  'UNAUTHORIZED DRIVER DETECTED',
+                  style: TextStyle(
+                    color: Color(0xFFFCA5A5),
+                    fontSize: 12,
+                    fontWeight: FontWeight.w800,
+                    letterSpacing: 0.5,
+                  ),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  'Ending Trip $_tripNumber in ${remaining}s',
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 14,
+                    fontWeight: FontWeight.w700,
                   ),
                 ),
               ],
@@ -5410,3 +5524,4 @@ class _EspScannerScreenState extends State<_EspScannerScreen> {
     );
   }
 }
+

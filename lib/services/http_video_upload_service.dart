@@ -22,7 +22,6 @@ class HttpVideoUploadService {
   }) async {
     final docDir = await _getVisibleDirectory();
     final queueDir = Directory(p.join(docDir.path, 'esp32_upload_queue'));
-    final videosDir = Directory(p.join(docDir.path, 'esp32_videos'));
 
     final List<File> files = [];
 
@@ -35,14 +34,7 @@ class HttpVideoUploadService {
       files.addAll(queueFiles);
     }
 
-    if (await videosDir.exists()) {
-      final videoFiles = videosDir
-          .listSync()
-          .whereType<File>()
-          .where((f) => f.path.endsWith('.mp4'))
-          .toList();
-      files.addAll(videoFiles);
-    }
+
 
     if (files.isEmpty) {
       debugPrint('[HTTP Upload] No pending or saved videos found in local storage.');
@@ -80,11 +72,11 @@ class HttpVideoUploadService {
         }
         
         final lastModified = await file.lastModified();
-        request.fields['OccurredDateTime'] = "";
+        request.fields['OccurredDateTime'] = lastModified.toUtc().toIso8601String();
 
         // Print request details for debugging
         debugPrint('==================================================');
-        debugPrint('[HTTP Upload Request] POST -> $uploadUrl');
+        debugPrint('[HTTP  ] POST -> $uploadUrl');
         debugPrint('[HTTP Upload Request] Headers: ${request.headers}');
         debugPrint('[HTTP Upload Request] Fields: ${request.fields}');
         debugPrint('[HTTP Upload Request] File Parameter: $fileParamName');
