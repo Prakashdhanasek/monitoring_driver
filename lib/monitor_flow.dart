@@ -182,6 +182,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   String? _activeBannerKey;
   DateTime? _activeBannerAt;
   static const Duration _kBannerVisibleDuration = Duration(seconds: 3);
+  static const double _kSpeedLimitKmh = 30.0;
 
   // Seatbelt cyclic alert state
   DateTime? _seatbeltAlertStart; // when unbuckled state first detected
