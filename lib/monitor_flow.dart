@@ -235,6 +235,8 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   double? _boundaryRadiusM;     // radius in meters
   String? _geofenceId;          // needed for the violation payload
   bool _boundaryViolationReported = false; // fire once per exit
+  bool _outsideBoundary = false;   // true while the vehicle is beyond the radius
+  double _boundaryBeyondM = 0;     // how far past the limit, in meters
 
   @override
   void initState() {
@@ -2200,6 +2202,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     );
 
     final outside = distance > _boundaryRadiusM!;
+
     //final outside = distance > 5;
 
     // Log every check, regardless of in/out state.
@@ -2207,16 +2210,51 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
         'limit=${_boundaryRadiusM!.toStringAsFixed(0)} m | '
         '${outside ? "OUTSIDE" : "inside"}');
 
-    if (outside && !_boundaryViolationReported) {
-      _boundaryViolationReported = true;
+    // if (outside && !_boundaryViolationReported) {
+    //   _boundaryViolationReported = true;
+    //   final beyond = distance - _boundaryRadiusM!; // meters past the boundary
+    //   debugPrint('[Boundary] VIOLATION — ${distance.toStringAsFixed(1)} m '
+    //       'from center, ${beyond.toStringAsFixed(1)} m beyond limit.');
+    //   _reportBoundaryViolation(beyond);
+    // } else if (!outside && _boundaryViolationReported) {
+    //   _boundaryViolationReported = false; // re-arm for next exit
+    //   debugPrint('[Boundary] Back inside boundary.');
+    // }
+
+    if (outside) {
       final beyond = distance - _boundaryRadiusM!; // meters past the boundary
-      debugPrint('[Boundary] VIOLATION — ${distance.toStringAsFixed(1)} m '
-          'from center, ${beyond.toStringAsFixed(1)} m beyond limit.');
-      _reportBoundaryViolation(beyond);
-    } else if (!outside && _boundaryViolationReported) {
-      _boundaryViolationReported = false; // re-arm for next exit
-      debugPrint('[Boundary] Back inside boundary.');
+
+      // Update the on-screen banner (only rebuild when something changed).
+      if (!_outsideBoundary || (beyond - _boundaryBeyondM).abs() > 1) {
+        if (mounted) {
+          setState(() {
+            _outsideBoundary = true;
+            _boundaryBeyondM = beyond;
+          });
+        }
+      }
+
+      // Report to server only once per exit.
+      if (!_boundaryViolationReported) {
+        _boundaryViolationReported = true;
+        debugPrint('[Boundary] VIOLATION — ${distance.toStringAsFixed(1)} m '
+            'from center, ${beyond.toStringAsFixed(1)} m beyond limit.');
+        _reportBoundaryViolation(beyond);
+      }
+    } else {
+      // Back inside — clear banner and re-arm.
+      if (_outsideBoundary && mounted) {
+        setState(() {
+          _outsideBoundary = false;
+          _boundaryBeyondM = 0;
+        });
+      }
+      if (_boundaryViolationReported) {
+        _boundaryViolationReported = false; // re-arm for next exit
+        debugPrint('[Boundary] Back inside boundary.');
+      }
     }
+
   }
 
   // ─────────────────────────────────────────────────────────
@@ -3449,6 +3487,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
           // _deviceMotionCard(),
           if (_noFaceSince != null && !_tripCompleted) _noDriverCountdown(),
           const Spacer(),
+          _boundaryBanner(),
           _seatbeltIndicator(),
           _monitorBanner(),
           // _monitorDiag(),
@@ -4212,6 +4251,32 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
             ),
           ),
         ],
+      ),
+    );
+  }
+
+  // Boundary violation banner — shows while the vehicle is outside the radius.
+  Widget _boundaryBanner() {
+    if (!_outsideBoundary) return const SizedBox.shrink();
+
+    final text = '🚧  OUTSIDE BOUNDARY (${_boundaryBeyondM.toStringAsFixed(0)} m)';
+
+    return Container(
+      width: double.infinity,
+      margin: const EdgeInsets.fromLTRB(12, 0, 12, 8),
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: const Color(0xFFDC2626).withValues(alpha: 0.95),
+        borderRadius: BorderRadius.circular(16),
+      ),
+      child: Text(
+        text,
+        textAlign: TextAlign.center,
+        style: const TextStyle(
+          color: Colors.white,
+          fontSize: 18,
+          fontWeight: FontWeight.w800,
+        ),
       ),
     );
   }
