@@ -93,8 +93,9 @@ class FaceAuthEngine {
     Face face,
     MonitorState state,
     CameraImage image,
-    int rotation,
-  ) {
+    int rotation, {
+    String? activeDriverId,
+  }) {
     // Model still loading -> keep scanning.
     if (!_modelLoaded) {
       state.authStatus = AuthStatus.scanning;
@@ -139,6 +140,15 @@ class FaceAuthEngine {
     int bestIdx = -1;
 
     for (int i = 0; i < _referenceEmbeddings.length; i++) {
+      final label = _referenceLabels[i];
+      if (activeDriverId != null && activeDriverId.isNotEmpty && activeDriverId != '—') {
+        final parts = label.split('|');
+        final refId = parts.isNotEmpty ? parts[0] : '';
+        if (refId != activeDriverId) {
+          continue; // Skip templates belonging to other drivers
+        }
+      }
+
       final d = _euclidean(_referenceEmbeddings[i], liveEmbedding);
       if (d < minDist) {
         minDist = d;
@@ -182,9 +192,11 @@ class FaceAuthEngine {
       // Allow 8 frames of mismatch for any authenticated driver to prevent
       // false alarms from head turns and tracking ID resets.
       // Kick out after 3 frames if not yet authenticated.
-      final requiredMisses = (state.authStatus == AuthStatus.authenticated)
-          ? 8
-          : 3;
+      final requiredMisses = isDifferentFace
+          ? 1
+          : (state.authStatus == AuthStatus.authenticated)
+              ? 8
+              : 3;
 
       if (_consecutiveMiss >= requiredMisses) {
         state.authStatus = AuthStatus.unauthorized;
