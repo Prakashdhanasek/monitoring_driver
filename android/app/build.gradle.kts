@@ -39,6 +39,8 @@ android {
             signingConfig = signingConfigs.getByName("debug")
 
             // Temporary fix for R8 missing TensorFlow Lite GPU class issue.
+
+
             // This helps release APK build successfully for kiosk testing.
             isMinifyEnabled = false
             isShrinkResources = false

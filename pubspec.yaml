@@ -19,7 +19,7 @@ publish_to: 'none' # Remove this line if you wish to publish to pub.dev
 version: 1.0.0+6021
 
 environment:
-  sdk: ^3.10.4
+  sdk: ^3.10.8
 
 # Dependencies specify other packages that your package needs in order to work.
 # To automatically upgrade your package dependencies to the latest versions
@@ -61,6 +61,7 @@ dependencies:
   multicast_dns: ^0.3.2+3
   video_player: ^2.11.1
   sensors_plus: ^6.1.1
+  android_intent_plus: ^5.0.0
   package_info_plus: ^9.0.0
   # HTTP MJPEG streaming is handled by custom widget in views/mjpeg_stream_widget.dart
 
