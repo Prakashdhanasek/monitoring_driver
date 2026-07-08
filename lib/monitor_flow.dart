@@ -1,7 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
-import 'package:android_intent_plus/android_intent.dart';
 import 'package:camera/camera.dart';
 import 'package:device_info_plus/device_info_plus.dart';
 import 'package:flutter/material.dart';
@@ -243,6 +242,22 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   bool _flashScreenshot = false;
   DateTime? _lastFlashAt;
 
+  // ── Break alert (periodic driver fatigue reminder) ──
+  bool _showBreakAlert = false;
+  int _breakAlertIndex = 0;
+  Map<String, String>? _currentBreakMsg;
+  Timer? _breakAlertTimer;
+  Timer? _breakAlertDismissTimer;
+  static const Duration _kBreakAlertInterval = Duration(seconds: 30);
+  static const Duration _kBreakAlertDisplayDuration = Duration(seconds: 12);
+  static const List<Map<String, String>> _kBreakMessages = [
+    {'emoji': '☕', 'title': 'Time for a Break!', 'sub': 'Pull over safely and rest for a few minutes.'},
+    {'emoji': '💧', 'title': 'Stay Hydrated!', 'sub': 'Drink some water to stay alert and focused.'},
+    {'emoji': '👀', 'title': 'Rest Your Eyes', 'sub': 'Blink often and glance at distant objects.'},
+    {'emoji': '🧘', 'title': 'Stretch a Little', 'sub': 'A short walk can refresh your body and mind.'},
+    {'emoji': '🌬️', 'title': 'Take a Deep Breath', 'sub': 'Breathe deeply to reduce stress and stay calm.'},
+  ];
+
   @override
   void initState() {
     super.initState();
@@ -293,6 +308,11 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     // Blind spot sensor polling every 500 ms
     _blindSpotTimer = Timer.periodic(const Duration(seconds: 2), (_) {
       _pollBlindSpotSensors();
+    });
+
+    // Break alert: remind driver every 30 seconds (testing) / 2 hours (prod)
+    _breakAlertTimer = Timer.periodic(_kBreakAlertInterval, (_) {
+      _triggerBreakAlert();
     });
   }
 
@@ -634,6 +654,8 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     _espWifiService.disconnectFromEsp32();
     _reversingDetector?.dispose();
     _blindSpotTimer?.cancel();
+    _breakAlertTimer?.cancel();
+    _breakAlertDismissTimer?.cancel();
     super.dispose();
   }
 
@@ -1677,6 +1699,74 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     Future.delayed(const Duration(milliseconds: 220), () {
       if (mounted) setState(() => _flashScreenshot = false);
     });
+  }
+
+  // ─────────────────────────────────────────────────────────
+  // BREAK ALERT
+  // ─────────────────────────────────────────────────────────
+
+  void _triggerBreakAlert() {
+    if (!mounted) return;
+    if (_phase != Phase.monitoring) return;
+    if (_tripCompleted) return;
+
+    // Suppress if ANY active alert/banner is currently showing.
+    if (_getMonitorBannerKey(_state.hasPhone, _state.hasCigarette) != null) return;
+    // Only block on seatbelt if a seatbelt banner is actually visible (i.e. the
+    // sensor is connected and actively reporting unbuckled — not just the default false).
+    if (!_state.seatbeltBuckled && _activeBannerKey != null) return;
+    if (_state.drowsinessLevel == DrowsinessLevel.drowsy ||
+        _state.drowsinessLevel == DrowsinessLevel.asleep) return;
+    if (_state.distractionStatus == DistractionStatus.distracted) return;
+    if (_state.vehicleSpeed > _kSpeedLimitKmh) return;
+    if (_state.authStatus == AuthStatus.unauthorized) return;
+    if (_camDetectionAlert != null &&
+        _camDetectionAlertAt != null &&
+        DateTime.now().difference(_camDetectionAlertAt!).inSeconds < 3) return;
+
+    setState(() => _showBreakAlert = true);
+    _currentBreakMsg = _kBreakMessages[_breakAlertIndex % _kBreakMessages.length];
+    _breakAlertIndex++;
+    _breakAlertDismissTimer?.cancel();
+    _breakAlertDismissTimer = Timer(_kBreakAlertDisplayDuration, () {
+      if (mounted) setState(() => _showBreakAlert = false);
+    });
+  }
+
+  void _dismissBreakAlert() {
+    _breakAlertDismissTimer?.cancel();
+    if (mounted) setState(() => _showBreakAlert = false);
+  }
+
+  /// Bottom-center break alert toast — no container, just emoji + text with glance pulse.
+  Widget _breakAlertOverlay() {
+    // Auto-dismiss if any real alert becomes active while toast is showing.
+    if (_showBreakAlert) {
+      final anyAlertActive =
+          _getMonitorBannerKey(_state.hasPhone, _state.hasCigarette) != null ||
+          (!_state.seatbeltBuckled && _activeBannerKey != null) ||
+          _state.drowsinessLevel == DrowsinessLevel.drowsy ||
+          _state.drowsinessLevel == DrowsinessLevel.asleep ||
+          _state.distractionStatus == DistractionStatus.distracted ||
+          _state.vehicleSpeed > _kSpeedLimitKmh ||
+          _state.authStatus == AuthStatus.unauthorized;
+      if (anyAlertActive) {
+        WidgetsBinding.instance.addPostFrameCallback((_) => _dismissBreakAlert());
+        return const SizedBox.shrink();
+      }
+    }
+    if (!_showBreakAlert) return const SizedBox.shrink();
+    final msg = _currentBreakMsg ?? _kBreakMessages[0];
+    return Positioned(
+      bottom: 56,
+      left: 0,
+      right: 0,
+      child: GestureDetector(
+        onTap: _dismissBreakAlert,
+        behavior: HitTestBehavior.translucent,
+        child: _BreakToastWidget(msg: msg),
+      ),
+    );
   }
 
   Future<void> _syncIncidentsTask() async {
@@ -2777,6 +2867,8 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
           //     ),
           //   ),
           // ),
+
+          _breakAlertOverlay(),
 
           // Screenshot effect — alert varumbol screen quick shrink + border + dim
           if (_flashScreenshot)
@@ -4731,6 +4823,93 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
             ],
           ),
         ],
+      ),
+    );
+  }
+}
+
+// ─────────────────────────────────────────────────────────
+// BREAK ALERT TOAST
+// ─────────────────────────────────────────────────────────
+
+class _BreakToastWidget extends StatefulWidget {
+  final Map<String, String> msg;
+  const _BreakToastWidget({required this.msg});
+
+  @override
+  State<_BreakToastWidget> createState() => _BreakToastWidgetState();
+}
+
+class _BreakToastWidgetState extends State<_BreakToastWidget>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _glanceCtrl;
+  late final Animation<double> _glance;
+
+  @override
+  void initState() {
+    super.initState();
+    _glanceCtrl = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 900),
+    )..repeat(reverse: true);
+    _glance = CurvedAnimation(parent: _glanceCtrl, curve: Curves.easeInOut);
+  }
+
+  @override
+  void dispose() {
+    _glanceCtrl.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return TweenAnimationBuilder<double>(
+      tween: Tween(begin: 0.0, end: 1.0),
+      duration: const Duration(milliseconds: 380),
+      curve: Curves.easeOut,
+      builder: (context, t, child) => Transform.translate(
+        offset: Offset(0, 20 * (1 - t)),
+        child: Opacity(opacity: t, child: child),
+      ),
+      child: AnimatedBuilder(
+        animation: _glance,
+        builder: (context, child) => Opacity(
+          opacity: 0.70 + 0.30 * _glance.value,
+          child: child,
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(
+              widget.msg['emoji']!,
+              style: const TextStyle(fontSize: 40),
+            ),
+            const SizedBox(height: 6),
+            Text(
+              widget.msg['title']!,
+              textAlign: TextAlign.center,
+              style: const TextStyle(
+                color: Colors.white,
+                fontSize: 20,
+                fontWeight: FontWeight.w700,
+                shadows: [
+                  Shadow(color: Color(0xFF38BDF8), blurRadius: 10),
+                  Shadow(color: Color(0xFF38BDF8), blurRadius: 22),
+                ],
+              ),
+            ),
+            const SizedBox(height: 4),
+            Text(
+              widget.msg['sub']!,
+              textAlign: TextAlign.center,
+              style: const TextStyle(
+                color: Colors.white70,
+                fontSize: 13,
+                fontWeight: FontWeight.w400,
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
