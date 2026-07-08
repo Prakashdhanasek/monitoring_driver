@@ -189,7 +189,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   static const int _kSeatbeltVoiceRepeatMs =
       60000; // 30s re-announce // ADD THIS
 
-      static const double _kSpeedLimitKmh = 30.0;
+  static const double _kSpeedLimitKmh = 30.0;
 
   // Seatbelt cyclic alert state
   DateTime? _seatbeltAlertStart; // when unbuckled state first detected
@@ -1096,7 +1096,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
           // Verify phase — face vannappol oru pravashyam voice.
           if (faces.isNotEmpty && !_verifyVoiceSpoken) {
             _verifyVoiceSpoken = true;
-            _tts.speak('Please verify your face before starting.');
+            _tts.speak(AlertMessages.verifyFace(_tts.currentLang));
           }
 
           if (faces.length == 1) {
@@ -1303,6 +1303,14 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
         }
         _vehicleId = driver['assignedVehicleId'] as String?;
         _vehicleRegNo = driver['vehicleRegistrationNumber'] as String?;
+
+        // Set TTS language based on driver's preferred language
+        final driverLang =
+            (driver['preferredLanguage'] ?? driver['language'] ?? '') as String;
+        if (driverLang.isNotEmpty) {
+          final lang = _parseAlertLang(driverLang);
+          _tts.setLanguage(lang);
+        }
       }
     } catch (e) {
       debugPrint('[Flow] Error resolving driver vehicle details: $e');
@@ -1315,7 +1323,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     if (mounted) setState(() {});
 
     // Face verification voice alert.
-    _tts.speak('Welcome $_driverName. Identity verified.');
+    _tts.speak(AlertMessages.welcome(_tts.currentLang, _driverName));
 
     _countdownTimer?.cancel();
     _countdownTimer = Timer.periodic(const Duration(seconds: 1), (t) {
@@ -1805,8 +1813,9 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
         now.difference(_lastSoundAt!).inMilliseconds >= _kVoiceRepeatMs;
 
     final voice = _activeVoiceMessage();
-        debugPrint('[VOICE] drowsy=${_state.drowsinessLevel} voice=$voice soft=$soft loud=$loud last=$_lastSpokenVoice speak-check');
-
+    debugPrint(
+      '[VOICE] drowsy=${_state.drowsinessLevel} voice=$voice soft=$soft loud=$loud last=$_lastSpokenVoice speak-check',
+    );
 
     final bool isSeatbeltVoice = voice != null && voice.startsWith('Seat belt');
 
@@ -1853,36 +1862,37 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
 
   /// Highest-priority active alert-inte voice message. Cooldown-inte purath.
   String? _activeVoiceMessage() {
+    final lang = _tts.currentLang;
     for (final obj in _state.detectedObjects) {
       if (obj.confidence <= 0.5) continue;
       switch (obj.label) {
         case 'phone':
-          return 'Please avoid phone while driving.';
+          return AlertMessages.phone(lang);
         case 'cigarette':
-          return 'No smoking while driving.';
+          return AlertMessages.cigarette(lang);
         case 'eating':
-          return 'Please do not eat while driving.';
+          return AlertMessages.eating(lang);
         case 'drinking':
-          return 'Please do not drink while driving.';
+          return AlertMessages.drinking(lang);
       }
     }
-    if (_state.authStatus == AuthStatus.unauthorized && _driverId == '—') {
-      return 'Please stop safely and re-verify driver identity.';
+    if (_state.authStatus == AuthStatus.unauthorized) {
+      return AlertMessages.unauthorized(lang);
     }
     if (_state.drowsinessLevel == DrowsinessLevel.asleep) {
-      return 'You appear tired. Please stay alert.';
+      return AlertMessages.drowsy(lang);
     }
     if (_state.drowsinessLevel == DrowsinessLevel.drowsy) {
-      return 'You appear tired. Please stay alert.';
+      return AlertMessages.drowsy(lang);
     }
     if (_state.distractionStatus == DistractionStatus.distracted) {
-      return 'Please keep your eyes on the road.';
+      return AlertMessages.distraction(lang);
     }
     if (_state.vehicleSpeed > _kSpeedLimitKmh) {
-      return 'Overspeeding detected. Reduce speed.';
+      return AlertMessages.overspeed(lang);
     }
     if (!_state.seatbeltBuckled) {
-      return 'Seat belt not detected. Please wear your seat belt.';
+      return AlertMessages.seatbelt(lang);
     }
     return null;
   }
@@ -2094,13 +2104,24 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
 
       // TTS for person specifically
       if (labels.contains('person')) {
-        _tts.speak('Warning. Person detected.');
+        _tts.speak(AlertMessages.personDetected(_tts.currentLang));
       } else if (labels.contains('car') ||
           labels.contains('truck') ||
           labels.contains('bus')) {
-        _tts.speak('Warning. Vehicle detected.');
+        _tts.speak(AlertMessages.vehicleDetected(_tts.currentLang));
       }
     }
+  }
+
+  /// Parses a language string from the API into AlertLang enum.
+  /// Supports: 'english'/'en', 'hindi'/'hi', 'malayalam'/'ml', 'tamil'/'ta'
+  AlertLang _parseAlertLang(String langStr) {
+    final l = langStr.toLowerCase().trim();
+    if (l == 'hindi' || l == 'hi' || l == 'hi-in') return AlertLang.hindi;
+    if (l == 'malayalam' || l == 'ml' || l == 'ml-in')
+      return AlertLang.malayalam;
+    if (l == 'tamil' || l == 'ta' || l == 'ta-in') return AlertLang.tamil;
+    return AlertLang.english;
   }
 
   /// Converts the current YUV camera frame to an upright (mirrored for the
@@ -4278,7 +4299,12 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     }
 
     final bannerStart = _activeBannerAt;
-    if (bannerStart != null &&
+    // Unauthorized and multiple_faces banners stay visible indefinitely (no auto-hide).
+    // Other banners auto-hide after _kBannerVisibleDuration.
+    final bool persistentBanner =
+        currentKey == 'unauthorized' || currentKey == 'multiple_faces';
+    if (!persistentBanner &&
+        bannerStart != null &&
         DateTime.now().difference(bannerStart) > _kBannerVisibleDuration) {
       return const SizedBox.shrink();
     }
@@ -4317,11 +4343,10 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       bg = const Color(0xFFEA580C);
       final percent = (_state.drinkingConfidence * 100).toStringAsFixed(0);
       text = '🥤  DRINKING DETECTED ($percent%)';
-      } else if (_state.vehicleSpeed > _kSpeedLimitKmh) {
+    } else if (_state.vehicleSpeed > _kSpeedLimitKmh) {
       bg = const Color(0xFFDC2626);
       final speed = _state.vehicleSpeed.toStringAsFixed(0);
       text = '🚗  OVERSPEEDING (${speed} km/h)';
-      
     } else if (_state.drowsinessLevel == DrowsinessLevel.drowsy) {
       bg = const Color(0xFFD97706);
       text = '⚠  DROWSINESS DETECTED';
@@ -4356,18 +4381,18 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   }
 
   String? _getMonitorBannerKey(bool phone, bool smoke) {
+    // Unauthorized has highest priority — always show it prominently
+    if (_state.authStatus == AuthStatus.unauthorized) return 'unauthorized';
+    if (_state.authStatus == AuthStatus.multipleFaces) return 'multiple_faces';
     if (phone) return 'phone';
     if (_state.drowsinessLevel == DrowsinessLevel.asleep) return 'asleep';
     if (smoke) return 'smoke';
     if (_state.hasEating || _state.isChewing) return 'eating';
     if (_state.hasDrinking) return 'drinking';
-        if (_state.vehicleSpeed > _kSpeedLimitKmh) return 'overspeed';
-
+    if (_state.vehicleSpeed > _kSpeedLimitKmh) return 'overspeed';
     if (_state.drowsinessLevel == DrowsinessLevel.drowsy) return 'drowsy';
     if (_state.distractionStatus == DistractionStatus.distracted)
       return 'distracted';
-    if (_state.authStatus == AuthStatus.unauthorized) return 'unauthorized';
-    if (_state.authStatus == AuthStatus.multipleFaces) return 'multiple_faces';
     return null;
   }
 

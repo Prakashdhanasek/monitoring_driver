@@ -55,10 +55,10 @@ class _CamDetectionPanelState extends State<CamDetectionPanel> {
     super.dispose();
   }
 
-  // Feed every 5th frame to avoid overloading the isolate.
+  // Feed every 8th frame to avoid overloading the isolate.
   void _onFrame(Uint8List jpegBytes) {
     _frameCount++;
-    if (_frameCount % 5 == 0) {
+    if (_frameCount % 8 == 0) {
       _detector.processFrame(jpegBytes);
     }
   }

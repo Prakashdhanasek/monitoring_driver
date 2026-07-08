@@ -60,11 +60,11 @@ class AlertMessages {
       ml: 'വാഹനം ഓടിക്കുമ്പോൾ കുടിക്കരുത്.',
       ta: 'ஓட்டும்போது குடிக்க வேண்டாம்.');
 
-  static String unauthorized(AlertLang lang) => _pick(lang,
-      en: 'Please stop safely and re-verify driver identity.',
-      hi: 'कृपया सुरक्षित रूप से रुकें और चालक की पहचान दोबारा सत्यापित करें।',
-      ml: 'സുരക്ഷിതമായി നിർത്തി ഡ്രൈവർ വെരിഫിക്കേഷൻ വീണ്ടും ചെയ്യുക.',
-      ta: 'பாதுகாப்பாக நிறுத்தி ஓட்டுநர் அடையாளத்தை மீண்டும் சரிபார்க்கவும்.');
+ static String unauthorized(AlertLang lang) => _pick(lang,
+    en: 'Unauthorized driver detected.',
+    hi: 'अनधिकृत चालक का पता चला।',
+    ml: 'അനധികൃത ഡ്രൈവറെ കണ്ടെത്തി.',
+    ta: 'அங்கீகரிக்கப்படாத ஓட்டுநர் கண்டறியப்பட்டார்.');
 
   static String drowsy(AlertLang lang) => _pick(lang,
       en: 'You appear tired. Please stay alert.',
