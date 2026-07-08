@@ -221,7 +221,7 @@ const Set<String> _kRelevant = {
   'stop sign',
 };
 
-const double _kConf = 0.25;
+const double _kConf = 0.50;
 const double _kIou = 0.45;
 
 // ── Isolate worker ────────────────────────────────────────────────────────────
@@ -321,7 +321,7 @@ void _isolateWorker(_InitMsg init) {
         decoded,
         width: W,
         height: H,
-        interpolation: img.Interpolation.nearest,
+        interpolation: img.Interpolation.linear,
       );
 
       // ── Build input buffer ─────────────────────────────────────────────────

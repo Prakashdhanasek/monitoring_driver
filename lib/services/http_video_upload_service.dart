@@ -80,11 +80,11 @@ class HttpVideoUploadService {
         }
         
         final lastModified = await file.lastModified();
-        request.fields['OccurredDateTime'] = "";
+        request.fields['OccurredDateTime'] = lastModified.toUtc().toIso8601String();
 
         // Print request details for debugging
         debugPrint('==================================================');
-        debugPrint('[HTTP Upload Request] POST -> $uploadUrl');
+        debugPrint('[HTTP  ] POST -> $uploadUrl');
         debugPrint('[HTTP Upload Request] Headers: ${request.headers}');
         debugPrint('[HTTP Upload Request] Fields: ${request.fields}');
         debugPrint('[HTTP Upload Request] File Parameter: $fileParamName');

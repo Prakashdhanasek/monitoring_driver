@@ -103,11 +103,12 @@ class _ReversingCameraOverlayState extends State<ReversingCameraOverlay>
     super.dispose();
   }
 
-  // Feed frames immediately to the YOLO detector as soon as it is not busy to minimize latency.
+  // Feed every 3rd frame to the YOLO detector to reduce lag.
   void _onFrame(Uint8List jpegBytes) {
     if (!widget.enableYolo) return;
+    _frameCount++;
+    if (_frameCount % 3 != 0) return;
     if (_rearDetector.isReady && !_rearDetector.isBusy) {
-      _frameCount++;
       debugPrint('[ReversingOverlay (${widget.symbol})] Feeding frame $_frameCount to detector service (${jpegBytes.length} bytes)...');
       _rearDetector.processFrame(jpegBytes);
     }
