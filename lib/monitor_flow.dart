@@ -2210,17 +2210,6 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
         'limit=${_boundaryRadiusM!.toStringAsFixed(0)} m | '
         '${outside ? "OUTSIDE" : "inside"}');
 
-    // if (outside && !_boundaryViolationReported) {
-    //   _boundaryViolationReported = true;
-    //   final beyond = distance - _boundaryRadiusM!; // meters past the boundary
-    //   debugPrint('[Boundary] VIOLATION — ${distance.toStringAsFixed(1)} m '
-    //       'from center, ${beyond.toStringAsFixed(1)} m beyond limit.');
-    //   _reportBoundaryViolation(beyond);
-    // } else if (!outside && _boundaryViolationReported) {
-    //   _boundaryViolationReported = false; // re-arm for next exit
-    //   debugPrint('[Boundary] Back inside boundary.');
-    // }
-
     if (outside) {
       final beyond = distance - _boundaryRadiusM!; // meters past the boundary
 
