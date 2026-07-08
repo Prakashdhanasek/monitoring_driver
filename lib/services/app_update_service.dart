@@ -44,17 +44,15 @@ class AppUpdateService {
   Future<AppUpdateInfo?> checkForUpdate() async {
     try {
       final packageInfo = await PackageInfo.fromPlatform();
-      final rawCode = int.tryParse(packageInfo.buildNumber) ?? 0;
-      // Flutter --split-per-abi on this project encodes ABI into versionCode as:
-      //   arm64-v8a → 2000 + buildNumber  (e.g. pubspec +11 → raw 2011)
-      // Recover the original build number with modulo 1000.
-      // For universal builds (rawCode < 1000) use the value directly.
-      final currentCode = rawCode >= 1000 ? rawCode % 1000 : rawCode;
+      // Use the raw versionCode as-is. Server APKs are built without
+      // --split-per-abi so their versionCode matches pubspec's build number
+      // directly, and we keep it monotonically increasing (10021, 10022, ...).
+      final currentCode = int.tryParse(packageInfo.buildNumber) ?? 0;
 
       debugPrint('==================================================');
       debugPrint('[APP UPDATE] CHECK STARTED');
       debugPrint('[APP UPDATE] Current version : ${packageInfo.version}');
-      debugPrint('[APP UPDATE] Current versionCode (raw/base) : $rawCode / $currentCode');
+      debugPrint('[APP UPDATE] Current versionCode : $currentCode');
       debugPrint('[APP UPDATE] Request URL : $_latestUrl');
       debugPrint('==================================================');
 
@@ -78,11 +76,11 @@ class AppUpdateService {
         debugPrint('[APP UPDATE] downloadUrl        : ${info.downloadUrl}');
 
         if (info.versionCode > currentCode) {
-          debugPrint('[APP UPDATE] ✓ UPDATE AVAILABLE (${currentCode} → ${info.versionCode})');
+          debugPrint('[APP UPDATE] ✓ UPDATE AVAILABLE ($currentCode → ${info.versionCode})');
           debugPrint('==================================================');
           return info;
         }
-        debugPrint('[APP UPDATE] ✓ App is already up to date.');
+        debugPrint('[APP UPDATE] ✓ App is up to date ($currentCode >= ${info.versionCode}).');
         debugPrint('==================================================');
         return null;
       }
