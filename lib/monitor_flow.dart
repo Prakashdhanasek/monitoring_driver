@@ -164,7 +164,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   String _driverId = '—';
   String? _vehicleId;
   String? _vehicleRegNo;
-  String? _activeTripId;
+  String? _tripId;
 
   // Countdown
   int _countdown = 3;
@@ -267,7 +267,6 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
           _frontCamIp == null ||
           _esp32StreamUrl.isEmpty) {
         _resolveSideCamIps();
-        if (_esp32StreamUrl.isEmpty) _autoDiscoverRearCam();
       }
     });
     _checkConnectivity();
@@ -335,7 +334,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
 
         final socket = await Socket.connect(
           host,
-          port,
+          port + 1,
         ).timeout(const Duration(seconds: 2));
         await socket.close();
 
@@ -868,26 +867,27 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   }
 
   Future<void> _triggerVideoUpload() async {
-    if (!_isOnline) {
-      debugPrint('[Flow] Offline. Skipping video HTTP upload.');
-      return;
-    }
+    if (!_isOnline) return;
     final deviceId = _settings.getDeviceId();
-    if (deviceId == null || deviceId.isEmpty) {
-      debugPrint('[Flow] Device ID is empty. Skipping video HTTP upload.');
+    if (deviceId == null || deviceId.isEmpty) return;
+    if (_vehicleId == null || _vehicleId!.isEmpty) {
+      debugPrint('[Flow] No VehicleId available yet. Skipping video upload.');
       return;
     }
-    final String activeVehicleId = _vehicleId ?? '—';
 
     debugPrint('[Flow] Online. Starting HTTP background video upload...');
-    await _httpVideoUploadService.uploadPendingFiles(
-      uploadUrl: 'https://proximity-driver-api.prod-app.in/api/video-recordings/upload',
-      vehicleId: activeVehicleId,
-      deviceTabletId: deviceId,
-      driverId: _driverId == '—' ? null : _driverId,
-      tripId: _activeTripId,
-      cameraType: 'FrontCam',
-    );
+    try {
+      await _httpVideoUploadService.uploadPendingFiles(
+        uploadUrl: 'https://proximity-driver-api.prod-app.in/api/video-recordings/upload',
+        vehicleId: _vehicleId!,
+        deviceTabletId: deviceId,
+        driverId: (_driverId == '—' || _driverId.isEmpty) ? null : _driverId,
+        tripId: _tripId,
+        cameraType: 'FrontCam',
+      );
+    } catch (e) {
+      debugPrint('[Flow] Video upload error: $e');
+    }
   }
 
   Future<void> _init() async {
@@ -912,6 +912,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     _driverName = 'Driver';
     _vehicleId = null;
     _vehicleRegNo = null;
+    _tripId = null;
 
     // 0) Request location and storage permissions upfront.
     try {
@@ -1468,6 +1469,10 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       //   _boundaryRadiusM = null;
       //   debugPrint('[Boundary] No geofence in trip-start response.');
       // }
+      if (trip != null) {
+        _tripId = trip.id;
+        _vehicleId ??= trip.vehicleId;
+      }
       if (trip != null &&
           trip.geofenceCenterLatitude != null &&
           trip.geofenceCenterLongitude != null &&
@@ -1476,7 +1481,6 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
         _boundaryLng = trip.geofenceCenterLongitude;
         _boundaryRadiusM = trip.geofenceRadiusMeters!.toDouble();
         _geofenceId = trip.geofenceId;
-        _vehicleId ??= trip.vehicleId;
         _boundaryViolationReported = false;
         debugPrint('[Boundary] Geofence set: ($_boundaryLat, $_boundaryLng) '
             'r=${_boundaryRadiusM}m id=$_geofenceId');
@@ -1601,6 +1605,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
         distanceKm: 0,
         endedAt: DateTime.now().toUtc(),
       );
+      _tripId = null;
     } catch (e) {
       debugPrint('[Flow] Failed to send trip end: $e');
     }
@@ -2978,6 +2983,16 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       _frontCamIp = frontResult;
       excludeIps.add(frontResult);
       debugPrint('[SideCam] Front cam IP → $_frontCamIp');
+    }
+    if (_frontCamIp != null && _esp32StreamUrl.isEmpty) {
+      _esp32StreamUrl = 'http://$_frontCamIp:84/';
+      _isConnectedToEsp32 = true;
+      debugPrint('[SideCam] Front camera assigned as continuous monitor stream: $_esp32StreamUrl');
+      if (mounted) setState(() {});
+      if (!_ffmpegRecorderService.isRecording &&
+          _camMode == CamMode.driverMonitoring) {
+        _ffmpegRecorderService.startRecording(_esp32StreamUrl);
+      }
     }
   }
 
