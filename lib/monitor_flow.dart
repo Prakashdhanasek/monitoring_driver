@@ -116,6 +116,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   // String _esp32StreamUrl = 'http://10.119.135.95:82/';
 
   String _esp32StreamUrl = ''; // Auto-discovered on startup
+  String _frontCamStreamUrl = '';
 
   // ── Side cameras (blind spot)
   // Left cam  — video :86,  sensor :87
@@ -267,6 +268,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
           _frontCamIp == null ||
           _esp32StreamUrl.isEmpty) {
         _resolveSideCamIps();
+        if (_esp32StreamUrl.isEmpty) _autoDiscoverRearCam();
       }
     });
     _checkConnectivity();
@@ -325,43 +327,11 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       }
     }
 
-    // ESP32-CAM connection check (disconnect check)
-    if (_isConnectedToEsp32) {
-      try {
-        final uri = Uri.parse(_esp32StreamUrl);
-        final host = uri.host;
-        final port = uri.port == 0 ? 82 : uri.port;
-
-        final socket = await Socket.connect(
-          host,
-          port + 1,
-        ).timeout(const Duration(seconds: 2));
-        await socket.close();
-
-        // If reachable and recording stopped, restart it
-        // if (!_ffmpegRecorderService.isRecording) {
-
-        //   await _ffmpegRecorderService.startRecording(_esp32StreamUrl);
-        // }
-
-        // if (!_ffmpegRecorderService.isRecording &&
-        //     _camMode == CamMode.driverMonitoring) {
-        //   await _ffmpegRecorderService.startRecording(_esp32StreamUrl);
-        // }
-
-        if (!_ffmpegRecorderService.isRecording &&
-            _camMode == CamMode.driverMonitoring) {
-          await _ffmpegRecorderService.startRecording(_esp32StreamUrl);
-        }
-      } catch (e) {
-        // Ping failed -> ESP32 got disconnected
-        debugPrint('[ESP32] ✗ Connection lost to ESP32: $e');
-        if (mounted) {
-          setState(() {
-            _isConnectedToEsp32 = false;
-          });
-        }
-        await _ffmpegRecorderService.stopRecording();
+    // Front ESP32-CAM continuous recording check (restart recording if stopped)
+    if (_frontCamConnected && _frontCamStreamUrl.isNotEmpty) {
+      if (!_ffmpegRecorderService.isRecording &&
+          _camMode == CamMode.driverMonitoring) {
+        await _ffmpegRecorderService.startRecording(_frontCamStreamUrl);
       }
     }
   }
@@ -2689,10 +2659,11 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
         '[CamMode] Recorder STOPPED — releasing ESP32 stream for $mode',
       );
     } else if (nowMonitoring &&
-        _isConnectedToEsp32 &&
+        _frontCamConnected &&
+        _frontCamStreamUrl.isNotEmpty &&
         !_ffmpegRecorderService.isRecording) {
-      _ffmpegRecorderService.startRecording(_esp32StreamUrl);
-      debugPrint('[CamMode] Recorder RESTARTED — back to monitoring');
+      _ffmpegRecorderService.startRecording(_frontCamStreamUrl);
+      debugPrint('[CamMode] Recorder RESTARTED — back to front cam monitoring');
     }
     final c = _camera;
     if (c != null && c.value.isInitialized) {
@@ -2984,14 +2955,12 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       excludeIps.add(frontResult);
       debugPrint('[SideCam] Front cam IP → $_frontCamIp');
     }
-    if (_frontCamIp != null && _esp32StreamUrl.isEmpty) {
-      _esp32StreamUrl = 'http://$_frontCamIp:84/';
-      _isConnectedToEsp32 = true;
-      debugPrint('[SideCam] Front camera assigned as continuous monitor stream: $_esp32StreamUrl');
-      if (mounted) setState(() {});
+    if (_frontCamIp != null) {
+      _frontCamStreamUrl = 'http://$_frontCamIp:84/';
       if (!_ffmpegRecorderService.isRecording &&
           _camMode == CamMode.driverMonitoring) {
-        _ffmpegRecorderService.startRecording(_esp32StreamUrl);
+        debugPrint('[SideCam] Starting Front camera background recording: $_frontCamStreamUrl');
+        _ffmpegRecorderService.startRecording(_frontCamStreamUrl);
       }
     }
   }

@@ -22,7 +22,6 @@ class HttpVideoUploadService {
   }) async {
     final docDir = await _getVisibleDirectory();
     final queueDir = Directory(p.join(docDir.path, 'esp32_upload_queue'));
-    final videosDir = Directory(p.join(docDir.path, 'esp32_videos'));
 
     final List<File> files = [];
 
@@ -35,14 +34,7 @@ class HttpVideoUploadService {
       files.addAll(queueFiles);
     }
 
-    if (await videosDir.exists()) {
-      final videoFiles = videosDir
-          .listSync()
-          .whereType<File>()
-          .where((f) => f.path.endsWith('.mp4'))
-          .toList();
-      files.addAll(videoFiles);
-    }
+
 
     if (files.isEmpty) {
       debugPrint('[HTTP Upload] No pending or saved videos found in local storage.');
