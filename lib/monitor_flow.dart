@@ -11,6 +11,7 @@ import 'package:audioplayers/audioplayers.dart';
 import 'package:image/image.dart' as img;
 import 'package:battery_plus/battery_plus.dart';
 import 'package:monitoring_driver/kiosk.dart';
+import 'package:monitoring_driver/services/geofence_service.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:multicast_dns/multicast_dns.dart';
 import 'package:http/http.dart' as http;
@@ -32,7 +33,6 @@ import 'services/tts_service.dart';
 import 'services/esp32_wifi_service.dart';
 import 'services/ffmpeg_recorder_service.dart';
 import 'services/sftp_upload_service.dart';
-import 'services/http_video_upload_service.dart';
 
 import 'services/reversing_detector_service.dart';
 import 'views/reversing_camera_overlay.dart';
@@ -75,6 +75,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   final IncidentsService _incidentsService = IncidentsService();
   final TelemetryService _telemetryService = TelemetryService();
   final TripService _tripService = TripService();
+  final GeofenceService _geofenceService = GeofenceService();
 
   // ── Voice alerts (TTS -> Bluetooth speaker if connected) ──
   final TtsService _tts = TtsService();
@@ -87,8 +88,6 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     username: 'upload_user',
     password: 'secret_password',
   );
-  final HttpVideoUploadService _httpVideoUploadService =
-      HttpVideoUploadService();
 
   // ── Connectivity tracking ──
   bool _isOnline = true;
@@ -229,6 +228,15 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   // ── Screenshot flash (alert varumbol screenshot effect) ──
   bool _flashScreenshot = false;
   DateTime? _lastFlashAt;
+
+  // ── Geofence / boundary violation ──
+  double? _boundaryLat;         // geofence center latitude
+  double? _boundaryLng;         // geofence center longitude
+  double? _boundaryRadiusM;     // radius in meters
+  String? _geofenceId;          // needed for the violation payload
+  bool _boundaryViolationReported = false; // fire once per exit
+  bool _outsideBoundary = false;   // true while the vehicle is beyond the radius
+  double _boundaryBeyondM = 0;     // how far past the limit, in meters
 
   @override
   void initState() {
@@ -1141,7 +1149,6 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
                   _state,
                   image,
                   _getCameraRotation(),
-                  activeDriverId: _driverId,
                 );
               }
               _monitoringEngine.processFrame(face);
@@ -1162,11 +1169,10 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
             }
 
             // Play an alert sound on new warnings.
-            _handleAlertSounds(image);
+            await _handleAlertSounds(image);
           } else {
             // No driver in view — start / continue the "gone" timer.
             _multiFace = 0;
-            _unauthorizedStart = null; // Reset unauthorized timer since face is gone
             _monitoringEngine.processFrame(null);
             _noFaceSince ??= DateTime.now();
             if (!_tripCompleted &&
@@ -1309,8 +1315,6 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
         t.cancel();
         // Start fresh calibration for the monitoring session.
         _state.resetCalibration();
-        _state.authenticatedTrackingId = null;
-        _authEngine.resetLiveAuthState();
         _phase = Phase.monitoring;
         _sendTripStart();
       }
@@ -1372,12 +1376,29 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     }
   }
 
+  // Future<void> _sendTripStart() async {
+  //   try {
+  //     final deviceId = _settings.getDeviceId();
+  //     if (deviceId == null || deviceId.isEmpty) return;
+  //
+  //     await _tripService.startTrip(
+  //       deviceTabletId: deviceId,
+  //       driverId: _driverId == '—' ? null : _driverId,
+  //       gpsLatitude: _state.gpsLat,
+  //       gpsLongitude: _state.gpsLng,
+  //       startedAt: DateTime.now().toUtc(),
+  //     );
+  //   } catch (e) {
+  //     debugPrint('[Flow] Failed to send trip start: $e');
+  //   }
+  // }
+
   Future<void> _sendTripStart() async {
     try {
       final deviceId = _settings.getDeviceId();
       if (deviceId == null || deviceId.isEmpty) return;
 
-      final response = await _tripService.startTrip(
+      final trip = await _tripService.startTrip(
         deviceTabletId: deviceId,
         driverId: _driverId == '—' ? null : _driverId,
         gpsLatitude: _state.gpsLat,
@@ -1385,24 +1406,42 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
         startedAt: DateTime.now().toUtc(),
       );
 
-      if (response != null) {
-        final vehicleId = response.vehicleId;
-        final driverId = response.driverId;
-        final tripId = response.id;
-
-        if (vehicleId != null && vehicleId.isNotEmpty) {
-          debugPrint('[Flow] Trip started successfully (vehicleId: $vehicleId, driverId: $driverId, tripId: $tripId). Triggering video upload...');
-          
-          // Trigger file upload in the background
-          _httpVideoUploadService.uploadPendingFiles(
-            uploadUrl: 'https://proximity-driver-api.prod-app.in/api/video-recordings/upload',
-            vehicleId: vehicleId,
-            deviceTabletId: deviceId,
-            driverId: driverId,
-            tripId: tripId,
-            cameraType: 'FrontCam',
-          );
-        }
+      // if (trip != null &&
+      //     trip.geofenceCenterLatitude != null &&
+      //     trip.geofenceCenterLongitude != null &&
+      //     trip.geofenceRadiusMeters != null) {
+      //   _boundaryLat = trip.geofenceCenterLatitude;
+      //   _boundaryLng = trip.geofenceCenterLongitude;
+      //   _boundaryRadiusM = trip.geofenceRadiusMeters!.toDouble();
+      //   _boundaryViolationReported = false; // re-arm for this trip
+      //   debugPrint('[Boundary] Geofence set: '
+      //       '($_boundaryLat, $_boundaryLng) r=${_boundaryRadiusM}m '
+      //       '"${trip.geofenceName}"');
+      // } else {
+      //   // No geofence returned — disable the check for this trip.
+      //   _boundaryLat = null;
+      //   _boundaryLng = null;
+      //   _boundaryRadiusM = null;
+      //   debugPrint('[Boundary] No geofence in trip-start response.');
+      // }
+      if (trip != null &&
+          trip.geofenceCenterLatitude != null &&
+          trip.geofenceCenterLongitude != null &&
+          trip.geofenceRadiusMeters != null) {
+        _boundaryLat = trip.geofenceCenterLatitude;
+        _boundaryLng = trip.geofenceCenterLongitude;
+        _boundaryRadiusM = trip.geofenceRadiusMeters!.toDouble();
+        _geofenceId = trip.geofenceId;
+        _vehicleId ??= trip.vehicleId;
+        _boundaryViolationReported = false;
+        debugPrint('[Boundary] Geofence set: ($_boundaryLat, $_boundaryLng) '
+            'r=${_boundaryRadiusM}m id=$_geofenceId');
+      } else {
+        _boundaryLat = null;
+        _boundaryLng = null;
+        _boundaryRadiusM = null;
+        _geofenceId = null;
+        debugPrint('[Boundary] No geofence in trip-start response.');
       }
     } catch (e) {
       debugPrint('[Flow] Failed to send trip start: $e');
@@ -1629,6 +1668,8 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
 
   Future<void> _sendTelemetryTask() async {
     if (!mounted) return;
+    // Boundary check runs every tick, even offline — it detects the crossing.
+    _checkBoundary();
     final deviceId = _settings.getDeviceId();
     if (deviceId == null || deviceId.isEmpty) {
       return;
@@ -1661,7 +1702,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     return false;
   }
 
-  void _handleAlertSounds(CameraImage? currentImage) {
+  Future<void> _handleAlertSounds(CameraImage? currentImage) async {
     final now = DateTime.now();
     final phone = _state.hasPhone;
     final smoke = _state.hasCigarette;
@@ -2172,6 +2213,76 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
         ),
       ),
     );
+  }
+
+  void _checkBoundary() {
+    if (_boundaryLat == null ||
+        _boundaryLng == null ||
+        _boundaryRadiusM == null) {
+      return; // no geofence for this trip
+    }
+
+    final distance = Geolocator.distanceBetween(
+      _boundaryLat!,
+      _boundaryLng!,
+      _state.gpsLat,
+      _state.gpsLng,
+    );
+
+    final outside = distance > _boundaryRadiusM!;
+
+    //final outside = distance > 5;
+
+    // Log every check, regardless of in/out state.
+    debugPrint('[Boundary] distance=${distance.toStringAsFixed(1)} m | '
+        'limit=${_boundaryRadiusM!.toStringAsFixed(0)} m | '
+        '${outside ? "OUTSIDE" : "inside"}');
+
+    // if (outside && !_boundaryViolationReported) {
+    //   _boundaryViolationReported = true;
+    //   final beyond = distance - _boundaryRadiusM!; // meters past the boundary
+    //   debugPrint('[Boundary] VIOLATION — ${distance.toStringAsFixed(1)} m '
+    //       'from center, ${beyond.toStringAsFixed(1)} m beyond limit.');
+    //   _reportBoundaryViolation(beyond);
+    // } else if (!outside && _boundaryViolationReported) {
+    //   _boundaryViolationReported = false; // re-arm for next exit
+    //   debugPrint('[Boundary] Back inside boundary.');
+    // }
+
+    if (outside) {
+      final beyond = distance - _boundaryRadiusM!; // meters past the boundary
+
+      // Update the on-screen banner (only rebuild when something changed).
+      if (!_outsideBoundary || (beyond - _boundaryBeyondM).abs() > 1) {
+        if (mounted) {
+          setState(() {
+            _outsideBoundary = true;
+            _boundaryBeyondM = beyond;
+          });
+        }
+      }
+
+      // Report to server only once per exit.
+      if (!_boundaryViolationReported) {
+        _boundaryViolationReported = true;
+        debugPrint('[Boundary] VIOLATION — ${distance.toStringAsFixed(1)} m '
+            'from center, ${beyond.toStringAsFixed(1)} m beyond limit.');
+        _reportBoundaryViolation(beyond);
+      }
+    } else {
+      // Back inside — clear banner and re-arm.
+      if (_outsideBoundary && mounted) {
+        setState(() {
+          _outsideBoundary = false;
+          _boundaryBeyondM = 0;
+        });
+      }
+      if (_boundaryViolationReported) {
+        _boundaryViolationReported = false; // re-arm for next exit
+        debugPrint('[Boundary] Back inside boundary.');
+      }
+    }
+
   }
 
   // ─────────────────────────────────────────────────────────
@@ -3403,7 +3514,6 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
           _camConnectionStatusBar(),
           // _deviceMotionCard(),
           if (_noFaceSince != null && !_tripCompleted) _noDriverCountdown(),
-          if (_unauthorizedStart != null && !_tripCompleted) _unauthorizedDriverCountdown(),
           const Spacer(),
           _seatbeltIndicator(),
           _monitorBanner(),
@@ -3790,66 +3900,6 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
                   'Ending Trip $_tripNumber in ${remaining}s',
                   style: const TextStyle(
                     color: Color(0xFFFCD34D),
-                    fontSize: 13,
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  /// Shown while an unauthorized driver is in view — counts down the seconds
-  /// until the current trip auto-completes/stops (30 seconds).
-  Widget _unauthorizedDriverCountdown() {
-    if (_unauthorizedStart == null) return const SizedBox.shrink();
-    final elapsed = DateTime.now().difference(_unauthorizedStart!).inSeconds;
-    final remaining = (30 - elapsed).clamp(0, 30);
-    return Container(
-      margin: const EdgeInsets.fromLTRB(12, 0, 12, 0),
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-      decoration: BoxDecoration(
-        color: const Color(0xFF991B1B).withValues(alpha: 0.9), // Warning dark red
-        borderRadius: BorderRadius.circular(14),
-      ),
-      child: Row(
-        children: [
-          Container(
-            width: 46,
-            height: 46,
-            alignment: Alignment.center,
-            decoration: BoxDecoration(
-              shape: BoxShape.circle,
-              border: Border.all(color: Colors.white, width: 3),
-            ),
-            child: Text(
-              '$remaining',
-              style: const TextStyle(
-                color: Colors.white,
-                fontSize: 18,
-                fontWeight: FontWeight.w700,
-              ),
-            ),
-          ),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                const Text(
-                  'Unauthorized driver detected',
-                  style: TextStyle(
-                    color: Colors.white,
-                    fontSize: 15,
-                    fontWeight: FontWeight.w700,
-                  ),
-                ),
-                Text(
-                  'Ending Trip $_tripNumber in ${remaining}s',
-                  style: const TextStyle(
-                    color: Color(0xFFFECACA),
                     fontSize: 13,
                   ),
                 ),
@@ -4470,6 +4520,27 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
           ),
         ],
       ),
+    );
+  }
+
+  Future<void> _reportBoundaryViolation(double distanceFromBoundaryMeters) async {
+    if (!_isOnline) {
+      debugPrint('[Boundary] Offline — violation not sent.');
+      return;
+    }
+    final deviceId = _settings.getDeviceId();
+    if (deviceId == null || deviceId.isEmpty) return;
+
+    await _geofenceService.reportViolation(
+      vehicleId: _vehicleId,
+      driverId: _driverId == '—' ? null : _driverId,
+      geofenceId: _geofenceId,
+      latitude: _state.gpsLat,
+      longitude: _state.gpsLng,
+      vehicleSpeed: _state.vehicleSpeed,
+      distanceFromBoundaryMeters: distanceFromBoundaryMeters,
+      deviceTabletId: deviceId,
+      occurredAt: DateTime.now().toUtc(),
     );
   }
 }
