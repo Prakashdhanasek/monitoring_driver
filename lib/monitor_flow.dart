@@ -1265,6 +1265,8 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
                     _kTripEndSeconds) {
               _tripCompleted = true;
               _tripCompletedAt = DateTime.now();
+              _breakAlertTimer?.cancel();
+              _dismissBreakAlert();
               _sendTripEnd();
               // Trip ended — safe point to check for updates.
               _checkForUpdateInBackground();
@@ -1404,6 +1406,11 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
         _state.resetCalibration();
         _phase = Phase.monitoring;
         _sendTripStart();
+        // Restart break alert timer for the new trip.
+        _breakAlertTimer?.cancel();
+        _breakAlertTimer = Timer.periodic(_kBreakAlertInterval, (_) {
+          _triggerBreakAlert();
+        });
       }
       if (mounted) setState(() {});
     });
@@ -1751,26 +1758,24 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
 
   void _triggerBreakAlert() {
     if (!mounted) return;
-    if (_phase != Phase.monitoring) return;
-    if (_tripCompleted) return;
+    if (_phase != Phase.monitoring) { debugPrint('[BreakAlert] SKIP: not monitoring'); return; }
+    if (_tripCompleted) { debugPrint('[BreakAlert] SKIP: trip completed'); return; }
+    if (_getMonitorBannerKey(_state.hasPhone, _state.hasCigarette) != null) { debugPrint('[BreakAlert] SKIP: active banner (${_getMonitorBannerKey(_state.hasPhone, _state.hasCigarette)})'); return; }
+    if (!_state.seatbeltBuckled && _activeBannerKey != null) { debugPrint('[BreakAlert] SKIP: seatbelt banner'); return; }
+    if (_state.drowsinessLevel == DrowsinessLevel.drowsy || _state.drowsinessLevel == DrowsinessLevel.asleep) { debugPrint('[BreakAlert] SKIP: drowsy/asleep'); return; }
+    if (_state.distractionStatus == DistractionStatus.distracted) { debugPrint('[BreakAlert] SKIP: distracted'); return; }
+    if (_state.vehicleSpeed > _kSpeedLimitKmh) { debugPrint('[BreakAlert] SKIP: overspeed'); return; }
+    if (_state.authStatus == AuthStatus.unauthorized) { debugPrint('[BreakAlert] SKIP: unauthorized'); return; }
+    if (_camDetectionAlert != null && _camDetectionAlertAt != null &&
+        DateTime.now().difference(_camDetectionAlertAt!).inSeconds < 3) { debugPrint('[BreakAlert] SKIP: cam detection alert'); return; }
 
-    // Suppress if ANY active alert/banner is currently showing.
-    if (_getMonitorBannerKey(_state.hasPhone, _state.hasCigarette) != null) return;
-    // Only block on seatbelt if a seatbelt banner is actually visible (i.e. the
-    // sensor is connected and actively reporting unbuckled — not just the default false).
-    if (!_state.seatbeltBuckled && _activeBannerKey != null) return;
-    if (_state.drowsinessLevel == DrowsinessLevel.drowsy ||
-        _state.drowsinessLevel == DrowsinessLevel.asleep) return;
-    if (_state.distractionStatus == DistractionStatus.distracted) return;
-    if (_state.vehicleSpeed > _kSpeedLimitKmh) return;
-    if (_state.authStatus == AuthStatus.unauthorized) return;
-    if (_camDetectionAlert != null &&
-        _camDetectionAlertAt != null &&
-        DateTime.now().difference(_camDetectionAlertAt!).inSeconds < 3) return;
+    debugPrint('[BreakAlert] ✓ SHOWING alert index=$_breakAlertIndex');
 
     setState(() => _showBreakAlert = true);
     _currentBreakMsg = _kBreakMessages[_breakAlertIndex % _kBreakMessages.length];
     _breakAlertIndex++;
+    // Speak the break reminder via TTS.
+    _tts.speak(_currentBreakMsg!['title']! + '. ' + _currentBreakMsg!['sub']!);
     _breakAlertDismissTimer?.cancel();
     _breakAlertDismissTimer = Timer(_kBreakAlertDisplayDuration, () {
       if (mounted) setState(() => _showBreakAlert = false);
@@ -4770,15 +4775,15 @@ class _BreakToastWidgetState extends State<_BreakToastWidget>
           children: [
             Text(
               widget.msg['emoji']!,
-              style: const TextStyle(fontSize: 40),
+              style: const TextStyle(fontSize: 30),
             ),
-            const SizedBox(height: 6),
+            const SizedBox(height: 4),
             Text(
               widget.msg['title']!,
               textAlign: TextAlign.center,
               style: const TextStyle(
                 color: Colors.white,
-                fontSize: 20,
+                fontSize: 16,
                 fontWeight: FontWeight.w700,
                 shadows: [
                   Shadow(color: Color(0xFF38BDF8), blurRadius: 10),
@@ -4786,13 +4791,13 @@ class _BreakToastWidgetState extends State<_BreakToastWidget>
                 ],
               ),
             ),
-            const SizedBox(height: 4),
+            const SizedBox(height: 3),
             Text(
               widget.msg['sub']!,
               textAlign: TextAlign.center,
               style: const TextStyle(
                 color: Colors.white70,
-                fontSize: 13,
+                fontSize: 11,
                 fontWeight: FontWeight.w400,
               ),
             ),
