@@ -222,6 +222,19 @@ class FaceAuthEngine {
     _consecutiveMiss = 0;
   }
 
+  /// Synchronously clears all enrolled face data so [processAuth] cannot
+  /// produce a match until [resetAndReenroll] or [_enrollFromReferencePhotos]
+  /// completes. Use this before switching back to a scanning phase when you
+  /// need to prevent an instant re-match on the next camera frame.
+  void clearEnrollment() {
+    isEnrolled = false;
+    _referenceEmbeddings = [];
+    _referenceLabels = [];
+    lastMatchedLabel = null;
+    _consecutiveMatch = 0;
+    _consecutiveMiss = 0;
+  }
+
   Future<void> clearCache() async {
     await _storage.delete(key: _keyEmbedding);
     isEnrolled = false;

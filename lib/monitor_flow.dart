@@ -1383,6 +1383,11 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
 
   Future<void> _onVerified() async {
     if (_phase != Phase.verifying) return;
+    // Block re-entry immediately (synchronous, before any await) so the frame
+    // pipeline's Phase.details case is a no-op and _onVerified cannot be
+    // called concurrently. We do NOT call setState here — the UI continues to
+    // render the verifying/camera screen until we explicitly setState later.
+    _phase = Phase.details;
     _unauthorizedStart = null;
     _unauthorizedTripStop = false;
     _tripCompletedAt = null;
@@ -1406,6 +1411,20 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     }
 
     try {
+      // Always fetch live API data for the license check.
+      // skipPhotos=true: updates Hive JSON only, no photo download or
+      // embedding clear, so it won't interfere with _refreshDriversOnFaceDetection.
+      final deviceId = _settings.getDeviceId();
+      if (deviceId != null && deviceId.isNotEmpty) {
+        try {
+          await _driversService.fetchAndCacheDrivers(
+            deviceId,
+            skipPhotos: true,
+          );
+        } catch (e) {
+          debugPrint('[Flow] Live license fetch failed, using cache: $e');
+        }
+      }
       final driver = _driversService.getDriverById(driverId);
       if (driver != null && driver.isNotEmpty) {
         // ── DEBUG: dump all API fields so we can find the exact language key ──
@@ -1440,7 +1459,69 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
         debugPrint(
           '[Flow] Setting voice alert language to: $preferred (from API: $langStr)',
         );
-        _tts.setLanguage(preferred);
+       await _tts.setLanguage(preferred);
+
+        // ── License expiry check ────────────────────────────────────────
+        final String? licenseNum = driver['licenseNumber'] as String?;
+        final String? licenseExpiryStr = driver['licenseExpiry'] as String?;
+        if (licenseExpiryStr != null) {
+          final expiry = DateTime.tryParse(licenseExpiryStr);
+          if (expiry != null) {
+            final today = DateTime.now();
+            final expiryDate = DateTime(expiry.year, expiry.month, expiry.day);
+            final todayDate = DateTime(today.year, today.month, today.day);
+            final daysLeft = expiryDate.difference(todayDate).inDays;
+
+            if (daysLeft < 0) {
+              // ── EXPIRED: dialog on verifying screen (phase already details,
+              // but no setState yet so camera view is still visible).
+              _tripNumber--; // undo trip increment — no trip started
+              _driverId = driverId;
+              _driverName = driverName;
+              await _showLicenseExpiredDialog(licenseNum ?? '—', expiry);
+              if (!mounted) return;
+              _authEngine.clearEnrollment();
+              _lastDriversRefreshAt = null;
+              setState(() {
+                _phase = Phase.verifying;
+                _state.authStatus = AuthStatus.scanning;
+              });
+              _refreshDriversOnFaceDetection();
+              return;
+            } else if (daysLeft <= 10) {
+              // ── EXPIRING SOON: dialog on verifying screen (no setState yet),
+              // then switch to welcome screen after it auto-dismisses.
+              _driverId = driverId;
+              _driverName = driverName;
+              _countdown = 3;
+              await _showLicenseExpiryWarningDialog(
+                licenseNum ?? '—',
+                expiry,
+                daysLeft,
+              );
+              // Dialog dismissed — now render the welcome/details screen.
+              if (!mounted) return;
+              if (mounted) setState(() {});
+              _tts.speak(AlertMessages.welcome(_tts.currentLang, _driverName));
+              _countdownTimer?.cancel();
+              _countdownTimer = Timer.periodic(const Duration(seconds: 1), (t) {
+                _countdown--;
+                if (_countdown <= 0) {
+                  t.cancel();
+                  _state.resetCalibration();
+                  _phase = Phase.monitoring;
+                  _sendTripStart();
+                  _breakAlertTimer?.cancel();
+                  _breakAlertTimer = Timer.periodic(_kBreakAlertInterval, (_) {
+                    _triggerBreakAlert();
+                  });
+                }
+                if (mounted) setState(() {});
+              });
+              return; // skip the normal flow below
+            }
+          }
+        }
       }
     } catch (e) {
       debugPrint('[Flow] Error resolving driver vehicle details: $e');
@@ -1448,7 +1529,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
 
     _driverId = driverId;
     _driverName = driverName;
-    _phase = Phase.details;
+    // _phase is already Phase.details (set at top of _onVerified); now render it.
     _countdown = 3;
     if (mounted) setState(() {});
 
@@ -2371,6 +2452,305 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       _firstExitTapAt = null;
       _showExitPinDialog();
     }
+  }
+
+  // ─────────────────────────────────────────────────────────
+  // LICENSE EXPIRY DIALOGS
+  // ─────────────────────────────────────────────────────────
+
+  String _formatDate(DateTime date) {
+    const months = [
+      'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+      'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
+    ];
+    return '${date.day} ${months[date.month - 1]} ${date.year}';
+  }
+
+  Future<void> _showLicenseExpiredDialog(
+    String licenseNumber,
+    DateTime expiry,
+  ) async {
+    if (!mounted) return;
+    int secondsLeft = 5;
+    Timer? countdownTimer;
+
+    await showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx2, setDialogState) {
+          countdownTimer ??= Timer.periodic(const Duration(seconds: 1), (t) {
+            secondsLeft--;
+            if (secondsLeft <= 0) {
+              t.cancel();
+              // Use widget-state context (always valid while widget is mounted)
+              // instead of dialog ctx which can become stale on rebuilds.
+              if (mounted) Navigator.of(context, rootNavigator: true).pop();
+            } else {
+              setDialogState(() {});
+            }
+          });
+
+          return Dialog(
+            backgroundColor: const Color(0xFF1C1F2E),
+            surfaceTintColor: Colors.transparent,
+            elevation: 24,
+            shadowColor: Colors.black54,
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+            insetPadding: const EdgeInsets.symmetric(horizontal: 52, vertical: 40),
+            child: Container(
+              decoration: BoxDecoration(
+                color: const Color(0xFF252839),
+                borderRadius: BorderRadius.circular(20),
+              ),
+              padding: const EdgeInsets.fromLTRB(22, 26, 22, 22),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Container(
+                    width: 44,
+                    height: 44,
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      color: const Color(0xFFFF5C5C).withOpacity(0.15),
+                      border: Border.all(
+                        color: const Color(0xFFFF5C5C).withOpacity(0.35),
+                        width: 1.5,
+                      ),
+                    ),
+                    child: const Icon(
+                      Icons.error_outline_rounded,
+                      color: Color(0xFFFF5C5C),
+                      size: 22,
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  const Text(
+                    'License Expired!',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontSize: 17,
+                      fontWeight: FontWeight.w700,
+                      letterSpacing: 0.1,
+                      height: 1.2,
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  const Text(
+                    'This driver\'s license has expired.\nTrip cannot be started.',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(
+                      color: Color(0xFFABB4C8),
+                      fontSize: 12,
+                      fontWeight: FontWeight.w400,
+                      height: 1.6,
+                      letterSpacing: 0.1,
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                    decoration: BoxDecoration(
+                      color: Colors.white.withOpacity(0.05),
+                      borderRadius: BorderRadius.circular(10),
+                      border: Border.all(color: Colors.white12),
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          children: [
+                            const Icon(Icons.badge_outlined, size: 14, color: Color(0xFFFF5C5C)),
+                            const SizedBox(width: 6),
+                            Expanded(
+                              child: Text(
+                                'License No: $licenseNumber',
+                                style: const TextStyle(
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.w600,
+                                  color: Color(0xFFFF5C5C),
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 4),
+                        Row(
+                          children: [
+                            const Icon(Icons.calendar_today_outlined, size: 14, color: Color(0xFFABB4C8)),
+                            const SizedBox(width: 6),
+                            Text(
+                              'Expired: ${_formatDate(expiry)}',
+                              style: const TextStyle(fontSize: 11, color: Color(0xFFABB4C8)),
+                            ),
+                          ],
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 14),
+                  Text(
+                    'Returning to verify in $secondsLeft s...',
+                    style: const TextStyle(
+                      color: Color(0xFFABB4C8),
+                      fontSize: 11,
+                      fontWeight: FontWeight.w400,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          );
+        },
+      ),
+    );
+    countdownTimer?.cancel();
+  }
+
+  Future<void> _showLicenseExpiryWarningDialog(
+    String licenseNumber,
+    DateTime expiry,
+    int daysLeft,
+  ) async {
+    if (!mounted) return;
+    int secondsLeft = 5;
+    Timer? countdownTimer;
+
+    await showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx2, setDialogState) {
+          countdownTimer ??= Timer.periodic(const Duration(seconds: 1), (t) {
+            secondsLeft--;
+            if (secondsLeft <= 0) {
+              t.cancel();
+              if (mounted) Navigator.of(context, rootNavigator: true).pop();
+            } else {
+              setDialogState(() {});
+            }
+          });
+
+          return Dialog(
+            backgroundColor: const Color(0xFF1C1F2E),
+            surfaceTintColor: Colors.transparent,
+            elevation: 24,
+            shadowColor: Colors.black54,
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+            insetPadding: const EdgeInsets.symmetric(horizontal: 52, vertical: 40),
+            child: Container(
+              decoration: BoxDecoration(
+                color: const Color(0xFF252839),
+                borderRadius: BorderRadius.circular(20),
+              ),
+              padding: const EdgeInsets.fromLTRB(22, 26, 22, 22),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Container(
+                    width: 44,
+                    height: 44,
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      color: const Color(0xFFFBBF24).withOpacity(0.15),
+                      border: Border.all(
+                        color: const Color(0xFFFBBF24).withOpacity(0.35),
+                        width: 1.5,
+                      ),
+                    ),
+                    child: const Icon(
+                      Icons.warning_amber_rounded,
+                      color: Color(0xFFFBBF24),
+                      size: 22,
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  const Text(
+                    'License Expiring Soon!',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontSize: 17,
+                      fontWeight: FontWeight.w700,
+                      letterSpacing: 0.1,
+                      height: 1.2,
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    daysLeft == 0
+                        ? 'License expires today! Please renew immediately.'
+                        : 'License expires in $daysLeft day${daysLeft == 1 ? '' : 's'}. Please renew soon.',
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(
+                      color: Color(0xFFABB4C8),
+                      fontSize: 12,
+                      fontWeight: FontWeight.w400,
+                      height: 1.6,
+                      letterSpacing: 0.1,
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                    decoration: BoxDecoration(
+                      color: Colors.white.withOpacity(0.05),
+                      borderRadius: BorderRadius.circular(10),
+                      border: Border.all(color: Colors.white12),
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          children: [
+                            const Icon(Icons.badge_outlined, size: 14, color: Color(0xFFFBBF24)),
+                            const SizedBox(width: 6),
+                            Expanded(
+                              child: Text(
+                                'License No: $licenseNumber',
+                                style: const TextStyle(
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.w600,
+                                  color: Color(0xFFFBBF24),
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 4),
+                        Row(
+                          children: [
+                            const Icon(Icons.calendar_today_outlined, size: 14, color: Color(0xFFABB4C8)),
+                            const SizedBox(width: 6),
+                            Text(
+                              'Expires: ${_formatDate(expiry)}',
+                              style: const TextStyle(fontSize: 11, color: Color(0xFFABB4C8)),
+                            ),
+                          ],
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 14),
+                  Text(
+                    'Continuing in $secondsLeft s...',
+                    style: const TextStyle(
+                      color: Color(0xFFABB4C8),
+                      fontSize: 11,
+                      fontWeight: FontWeight.w400,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          );
+        },
+      ),
+    );
+    countdownTimer?.cancel();
   }
 
   void _showExitPinDialog() {
