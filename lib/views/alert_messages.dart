@@ -32,9 +32,9 @@ class AlertMessages {
 
   static String welcome(AlertLang lang, String name) => _pick(lang,
       en: 'Welcome $name. Identity verified.',
-      hi: '$name का स्वागत है। पहचान सत्यापित हो गई।',
-      ml: '$name-നു സ്വാഗതം. തിരിച്ചറിയൽ പൂർത്തിയായി.',
-      ta: '$name வரவேற்கிறோம். அடையாளம் சரிபார்க்கப்பட்டது.');
+      hi: 'स्वागत है $name। पहचान सत्यापित हो गई।',
+      ml: 'സ്വാഗതം $name. തിരിച്ചറിയൽ പൂർത്തിയായി.',
+      ta: 'வரவேற்கிறோம் $name. அடையாளம் சரிபார்க்கப்பட்டது.');
 
   static String phone(AlertLang lang) => _pick(lang,
       en: 'Please avoid phone while driving.',

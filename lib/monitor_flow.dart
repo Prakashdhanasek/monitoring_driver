@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'package:android_intent_plus/android_intent.dart';
 import 'package:camera/camera.dart';
 import 'package:device_info_plus/device_info_plus.dart';
 import 'package:flutter/material.dart';
@@ -96,7 +97,8 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     username: 'upload_user',
     password: 'secret_password',
   );
-  final HttpVideoUploadService _httpVideoUploadService = HttpVideoUploadService();
+  final HttpVideoUploadService _httpVideoUploadService =
+      HttpVideoUploadService();
 
   // ── Connectivity tracking ──
   bool _isOnline = true;
@@ -259,13 +261,13 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   ];
 
   // ── Geofence / boundary violation ──
-  double? _boundaryLat;         // geofence center latitude
-  double? _boundaryLng;         // geofence center longitude
-  double? _boundaryRadiusM;     // radius in meters
-  String? _geofenceId;          // needed for the violation payload
+  double? _boundaryLat; // geofence center latitude
+  double? _boundaryLng; // geofence center longitude
+  double? _boundaryRadiusM; // radius in meters
+  String? _geofenceId; // needed for the violation payload
   bool _boundaryViolationReported = false; // fire once per exit
-  bool _outsideBoundary = false;   // true while the vehicle is beyond the radius
-  double _boundaryBeyondM = 0;     // how far past the limit, in meters
+  bool _outsideBoundary = false; // true while the vehicle is beyond the radius
+  double _boundaryBeyondM = 0; // how far past the limit, in meters
 
   // ── Harsh driving (accelerometer magnitude + GPS classification) ──
   StreamSubscription<UserAccelerometerEvent>? _accelSub;
@@ -421,15 +423,14 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
         ? null
         : Uri.parse(_esp32StreamUrl).host;
 
-
-        // Ping SENSOR ports (not video). ESP32-CAM allows only ONE client on the
+    // Ping SENSOR ports (not video). ESP32-CAM allows only ONE client on the
     // video port — pinging video steals the slot the overlay/recorder needs,
     // causing the drops. Sensor server is separate, safe to poll.
     final results = await Future.wait([
-      _ping(_leftCamIp, 87, 'LEFT'),   // left  sensor
+      _ping(_leftCamIp, 87, 'LEFT'), // left  sensor
       _ping(_rightCamIp, 81, 'RIGHT'), // right sensor
       _ping(_frontCamIp, 85, 'FRONT'), // front sensor
-      _ping(rearHost, 83, 'REAR'),     // rear  sensor
+      _ping(rearHost, 83, 'REAR'), // rear  sensor
     ]);
 
     // final results = await Future.wait([
@@ -965,7 +966,8 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     debugPrint('[Flow] Online. Starting HTTP background video upload...');
     try {
       await _httpVideoUploadService.uploadPendingFiles(
-        uploadUrl: 'https://proximity-driver-api.prod-app.in/api/video-recordings/upload',
+        uploadUrl:
+            'https://proximity-driver-api.prod-app.in/api/video-recordings/upload',
         vehicleId: _vehicleId!,
         deviceTabletId: deviceId,
         driverId: (_driverId == '—' || _driverId.isEmpty) ? null : _driverId,
@@ -1418,10 +1420,12 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
         _vehicleRegNo = driver['vehicleRegistrationNumber'] as String?;
 
         // Resolve preferred language from API response
-        final String? langStr = (driver['preferredLanguage'] ??
-            driver['alertLanguage'] ??
-            driver['language'] ??
-            driver['lang']) as String?;
+        final String? langStr =
+            (driver['preferredLanguage'] ??
+                    driver['alertLanguage'] ??
+                    driver['language'] ??
+                    driver['lang'])
+                as String?;
         AlertLang preferred = AlertLang.english;
         if (langStr != null) {
           final cleanLang = langStr.toLowerCase().trim();
@@ -1433,7 +1437,9 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
             preferred = AlertLang.tamil;
           }
         }
-        debugPrint('[Flow] Setting voice alert language to: $preferred (from API: $langStr)');
+        debugPrint(
+          '[Flow] Setting voice alert language to: $preferred (from API: $langStr)',
+        );
         _tts.setLanguage(preferred);
       }
     } catch (e) {
@@ -1584,8 +1590,10 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
         _geofenceId = trip.geofenceId;
         _vehicleId ??= trip.vehicleId;
         _boundaryViolationReported = false;
-        debugPrint('[Boundary] Geofence set: ($_boundaryLat, $_boundaryLng) '
-            'r=${_boundaryRadiusM}m id=$_geofenceId');
+        debugPrint(
+          '[Boundary] Geofence set: ($_boundaryLat, $_boundaryLng) '
+          'r=${_boundaryRadiusM}m id=$_geofenceId',
+        );
       } else {
         _boundaryLat = null;
         _boundaryLng = null;
@@ -1649,7 +1657,8 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       // FIX: Never create an incident before face verification is complete.
       // This prevents blank images and stale/random driver names from being sent.
       // Exception: Allow if the driver is explicitly unauthorized.
-      if (_phase != Phase.monitoring || (_driverId == '—' && _state.authStatus != AuthStatus.unauthorized)) {
+      if (_phase != Phase.monitoring ||
+          (_driverId == '—' && _state.authStatus != AuthStatus.unauthorized)) {
         debugPrint(
           '[Flow] Skipping incident "$eventType" — driver not verified (phase=$_phase, id=$_driverId).',
         );
@@ -1664,8 +1673,12 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
         return;
       }
 
-      final effectiveDriverId = (_state.authStatus == AuthStatus.unauthorized) ? 'unknown' : _driverId;
-      final effectiveDriverName = (_state.authStatus == AuthStatus.unauthorized) ? 'Unknown Person' : _driverName;
+      final effectiveDriverId = (_state.authStatus == AuthStatus.unauthorized)
+          ? 'unknown'
+          : _driverId;
+      final effectiveDriverName = (_state.authStatus == AuthStatus.unauthorized)
+          ? 'Unknown Person'
+          : _driverName;
 
       _incidentsService.queueIncident(
         deviceTabletId: deviceId,
@@ -1720,9 +1733,6 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     final facePhotos = driver['facePhotos'] as List<dynamic>?;
     return facePhotos != null && facePhotos.isNotEmpty;
   }
-
-
-  
 
   Future<String?> _generateIncidentVideo(
     List<Uint8List> frames,
@@ -2000,26 +2010,26 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       _unauthorizedStart = null;
     }
     if (_state.drowsinessLevel == DrowsinessLevel.asleep) {
-              loud = true;
+      loud = true;
 
       if (_checkCooldown('Asleep')) {
         _reportIncident('Drowsiness', 'High', 1.0);
-        // _tts.speak('Warning! Wake up. You are falling asleep.');
+        _tts.speak(AlertMessages.drowsy(_tts.currentLang));
       }
     }
     if (_state.drowsinessLevel == DrowsinessLevel.drowsy) {
-              soft = true;
+      soft = true;
 
       if (_checkCooldown('Drowsiness')) {
         _reportIncident('Drowsiness', 'Medium', 0.8);
-        // _tts.speak('You look drowsy. Stay alert.');
+        _tts.speak(AlertMessages.drowsy(_tts.currentLang));
       }
     }
     if (_state.distractionStatus == DistractionStatus.distracted) {
-              soft = true;
+      soft = true;
       if (_checkCooldown('Distraction')) {
         _reportIncident('Distraction', 'Medium', 0.8);
-        // _tts.speak('Keep your eyes on the road.');
+        _tts.speak(AlertMessages.distraction(_tts.currentLang));
       }
     }
 
@@ -2036,7 +2046,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       final threshold = reportThresholds[label];
       if (threshold == null || obj.confidence <= threshold) continue;
       if (label == 'seatbelt') continue;
-               loud = true;
+      loud = true;
 
       if (_checkCooldown(label)) {
         String eventType = label;
@@ -2389,6 +2399,8 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
                 Kiosk.stop();
               } else if (pin == '0000') {
                 _openEspScannerScreen();
+              } else if (pin == '1111') {
+                _openTtsInstall();
               }
             },
             child: const Text('Exit'),
@@ -2396,6 +2408,17 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
         ],
       ),
     );
+  }
+
+  Future<void> _openTtsInstall() async {
+    try {
+      const intent = AndroidIntent(
+        action: 'android.speech.tts.engine.INSTALL_TTS_DATA',
+      );
+      await intent.launch();
+    } catch (e) {
+      debugPrint('[TTS] Install intent failed: $e');
+    }
   }
 
   void _openEspScannerScreen() {
@@ -2446,9 +2469,11 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     //final outside = distance > 5;
 
     // Log every check, regardless of in/out state.
-    debugPrint('[Boundary] distance=${distance.toStringAsFixed(1)} m | '
-        'limit=${_boundaryRadiusM!.toStringAsFixed(0)} m | '
-        '${outside ? "OUTSIDE" : "inside"}');
+    debugPrint(
+      '[Boundary] distance=${distance.toStringAsFixed(1)} m | '
+      'limit=${_boundaryRadiusM!.toStringAsFixed(0)} m | '
+      '${outside ? "OUTSIDE" : "inside"}',
+    );
 
     if (outside) {
       final beyond = distance - _boundaryRadiusM!; // meters past the boundary
@@ -2466,8 +2491,10 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       // Report to server only once per exit.
       if (!_boundaryViolationReported) {
         _boundaryViolationReported = true;
-        debugPrint('[Boundary] VIOLATION — ${distance.toStringAsFixed(1)} m '
-            'from center, ${beyond.toStringAsFixed(1)} m beyond limit.');
+        debugPrint(
+          '[Boundary] VIOLATION — ${distance.toStringAsFixed(1)} m '
+          'from center, ${beyond.toStringAsFixed(1)} m beyond limit.',
+        );
         _reportBoundaryViolation(beyond);
       }
     } else {
@@ -2483,7 +2510,6 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
         debugPrint('[Boundary] Back inside boundary.');
       }
     }
-
   }
 
   void _startHarshDetection() {
@@ -2848,45 +2874,45 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
           // 👇 CABLE UNPLUGGED banner — shows for 5 seconds only.
           // if (_showCableBanner)
           //   Positioned(
-            //   top: 0,
-            //   left: 0,
-            //   right: 0,
-            //   child: SafeArea(
-            //     child: Padding(
-            //       padding: const EdgeInsets.all(12),
-            //       child: Container(
-            //         padding: const EdgeInsets.symmetric(
-            //           horizontal: 14,
-            //           vertical: 12,
-            //         ),
-            //         decoration: BoxDecoration(
-            //           color: const Color(0xFFB91C1C),
-            //           borderRadius: BorderRadius.circular(12),
-            //         ),
-            //         child: Row(
-            //           children: const [
-            //             Icon(
-            //               Icons.power_off_rounded,
-            //               color: Colors.white,
-            //               size: 22,
-            //             ),
-            //             SizedBox(width: 10),
-            //             Expanded(
-            //               child: Text(
-            //                 '🔌 CHARGING CABLE UNPLUGGED  Reported to admin',
-            //                 style: TextStyle(
-            //                   color: Colors.white,
-            //                   fontSize: 14,
-            //                   fontWeight: FontWeight.w700,
-            //                 ),
-            //               ),
-            //             ),
-            //           ],
-            //         ),
-            //       ),
-            //     ),
-            //   ),
-            // ),
+          //   top: 0,
+          //   left: 0,
+          //   right: 0,
+          //   child: SafeArea(
+          //     child: Padding(
+          //       padding: const EdgeInsets.all(12),
+          //       child: Container(
+          //         padding: const EdgeInsets.symmetric(
+          //           horizontal: 14,
+          //           vertical: 12,
+          //         ),
+          //         decoration: BoxDecoration(
+          //           color: const Color(0xFFB91C1C),
+          //           borderRadius: BorderRadius.circular(12),
+          //         ),
+          //         child: Row(
+          //           children: const [
+          //             Icon(
+          //               Icons.power_off_rounded,
+          //               color: Colors.white,
+          //               size: 22,
+          //             ),
+          //             SizedBox(width: 10),
+          //             Expanded(
+          //               child: Text(
+          //                 '🔌 CHARGING CABLE UNPLUGGED  Reported to admin',
+          //                 style: TextStyle(
+          //                   color: Colors.white,
+          //                   fontSize: 14,
+          //                   fontWeight: FontWeight.w700,
+          //                 ),
+          //               ),
+          //             ),
+          //           ],
+          //         ),
+          //       ),
+          //     ),
+          //   ),
+          // ),
 
           _breakAlertOverlay(),
 
@@ -3246,7 +3272,9 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       _frontCamStreamUrl = 'http://$_frontCamIp:84/';
       if (!_ffmpegRecorderService.isRecording &&
           _camMode == CamMode.driverMonitoring) {
-        debugPrint('[SideCam] Starting Front camera background recording: $_frontCamStreamUrl');
+        debugPrint(
+          '[SideCam] Starting Front camera background recording: $_frontCamStreamUrl',
+        );
         _ffmpegRecorderService.startRecording(_frontCamStreamUrl);
       }
     }
@@ -3813,7 +3841,8 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
           _camConnectionStatusBar(),
           // _deviceMotionCard(),
           if (_noFaceSince != null && !_tripCompleted) _noDriverCountdown(),
-          if (_unauthorizedStart != null && !_tripCompleted) _unauthorizedDriverCountdown(),
+          if (_unauthorizedStart != null && !_tripCompleted)
+            _unauthorizedDriverCountdown(),
           const Spacer(),
           _boundaryBanner(),
           _seatbeltIndicator(),
@@ -4379,10 +4408,11 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
                         height: 76,
                         decoration: BoxDecoration(
                           shape: BoxShape.circle,
-                          color: (_unauthorizedTripStop
-                                  ? const Color(0xFFEF4444)
-                                  : const Color(0xFF10B981))
-                              .withValues(alpha: 0.15),
+                          color:
+                              (_unauthorizedTripStop
+                                      ? const Color(0xFFEF4444)
+                                      : const Color(0xFF10B981))
+                                  .withValues(alpha: 0.15),
                           border: Border.all(
                             color: _unauthorizedTripStop
                                 ? const Color(0xFFEF4444)
@@ -4391,10 +4421,11 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
                           ),
                           boxShadow: [
                             BoxShadow(
-                              color: (_unauthorizedTripStop
-                                      ? const Color(0xFFEF4444)
-                                      : const Color(0xFF10B981))
-                                  .withValues(alpha: 0.3),
+                              color:
+                                  (_unauthorizedTripStop
+                                          ? const Color(0xFFEF4444)
+                                          : const Color(0xFF10B981))
+                                      .withValues(alpha: 0.3),
                               blurRadius: 16,
                               spreadRadius: 2,
                             ),
@@ -4664,7 +4695,6 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       child: Row(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
-
           const SizedBox(width: 10),
           Text(
             text,
@@ -4683,7 +4713,8 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   Widget _boundaryBanner() {
     if (!_outsideBoundary) return const SizedBox.shrink();
 
-    final text = '🚧  OUTSIDE BOUNDARY (${_boundaryBeyondM.toStringAsFixed(0)} m)';
+    final text =
+        '🚧  OUTSIDE BOUNDARY (${_boundaryBeyondM.toStringAsFixed(0)} m)';
 
     return Container(
       width: double.infinity,
@@ -4946,7 +4977,9 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     );
   }
 
-  Future<void> _reportBoundaryViolation(double distanceFromBoundaryMeters) async {
+  Future<void> _reportBoundaryViolation(
+    double distanceFromBoundaryMeters,
+  ) async {
     if (!_isOnline) {
       debugPrint('[Boundary] Offline — violation not sent.');
       return;
