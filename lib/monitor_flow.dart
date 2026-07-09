@@ -38,6 +38,9 @@ import 'services/reversing_detector_service.dart';
 import 'views/reversing_camera_overlay.dart';
 import 'views/cam_detection_panel.dart';
 
+import 'dart:math'; // for sqrt
+import 'package:sensors_plus/sensors_plus.dart';
+
 /// The 3 phases of the driver-facing flow.
 enum Phase { verifying, details, monitoring }
 
@@ -238,6 +241,31 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   bool _outsideBoundary = false;   // true while the vehicle is beyond the radius
   double _boundaryBeyondM = 0;     // how far past the limit, in meters
 
+  // ── Harsh driving (accelerometer magnitude + GPS classification) ──
+  StreamSubscription<UserAccelerometerEvent>? _accelSub;
+
+// Force magnitude (m/s²) above which we treat it as a candidate harsh event.
+  static const double _kHarshMagnitude = 3.5;
+
+// Ignore events below this speed (parked / crawling → GPS jitter noise).
+  static const double _kMinHarshSpeedKmh = 5.0;
+
+// How much forward speed must change to classify accel vs brake (m/s).
+  static const double _kSpeedDeltaMs = 0.8;
+
+// Local debounce so one physical event isn't detected dozens of times.
+  DateTime? _lastHarshAt;
+  static const Duration _kHarshDebounce = Duration(seconds: 2);
+
+// Short rolling history of (timestamp, speed-in-m/s) for classification.
+  final List<MapEntry<DateTime, double>> _speedHistory = [];
+  // ── Harsh driving dedicated cooldown ──
+  final Map<String, DateTime> _lastHarshReportAt = {};
+  static const int _kHarshCooldownSeconds = 15;
+  // Set when a harsh event fires; drives the banner via _getMonitorBannerKey.
+  String? _harshBannerText;   // e.g. 'HARSH BRAKING'
+  DateTime? _harshEventAt;
+
   @override
   void initState() {
     super.initState();
@@ -289,6 +317,8 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     _blindSpotTimer = Timer.periodic(const Duration(seconds: 2), (_) {
       _pollBlindSpotSensors();
     });
+
+    _startHarshDetection();
   }
 
   Future<void> _checkConnectivity() async {
@@ -572,6 +602,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     _espWifiService.disconnectFromEsp32();
     _reversingDetector?.dispose();
     _blindSpotTimer?.cancel();
+    _accelSub?.cancel();
     super.dispose();
   }
 
@@ -944,7 +975,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       // Disable automatic switching to rear camera
       /*
       if (!mounted) return;
-      
+
       // Only trigger automatic reverse camera during the active monitoring phase.
       // This prevents the camera from suddenly opening due to phone handling during face verification.
       if (_phase != Phase.monitoring) return;
@@ -1571,7 +1602,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   }
 
 
-  
+
 
   Future<String?> _generateIncidentVideo(
     List<Uint8List> frames,
@@ -2244,6 +2275,93 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       }
     }
 
+  }
+
+  void _startHarshDetection() {
+    _accelSub = userAccelerometerEventStream(
+      samplingPeriod: SensorInterval.gameInterval, // ~20ms, responsive but not extreme
+    ).listen(_onAccelerometer, onError: (e) {
+      debugPrint('[Harsh] accelerometer error: $e');
+    });
+  }
+
+  void _onAccelerometer(UserAccelerometerEvent event) {
+    final now = DateTime.now();
+
+    // Only monitor while actually driving-monitoring, not during verify/details.
+    if (_phase != Phase.monitoring || _tripCompleted) return;
+
+    final speedKmh = _state.vehicleSpeed;
+    final speedMs = speedKmh / 3.6;
+
+    // Keep a rolling ~2.5s speed history (sampled here, throttled to 250ms).
+    if (_speedHistory.isEmpty ||
+        now.difference(_speedHistory.last.key).inMilliseconds >= 250) {
+      _speedHistory.add(MapEntry(now, speedMs));
+      _speedHistory.removeWhere(
+            (e) => now.difference(e.key) > const Duration(milliseconds: 2500),
+      );
+    }
+
+    // 1) Magnitude — orientation-independent total force.
+    final magnitude = sqrt(event.x * event.x +
+        event.y * event.y +
+        event.z * event.z);
+    if (magnitude < _kHarshMagnitude) return;
+
+    // 2) Guards: minimum speed + local debounce.
+    if (speedKmh < _kMinHarshSpeedKmh) return;
+    if (_lastHarshAt != null &&
+        now.difference(_lastHarshAt!) < _kHarshDebounce) {
+      return;
+    }
+
+    // 3) Classify using GPS speed change over the last ~1–2s.
+    final past = _speedHistory.firstWhere(
+          (e) => now.difference(e.key).inMilliseconds >= 800,
+      orElse: () => _speedHistory.isNotEmpty
+          ? _speedHistory.first
+          : MapEntry(now, speedMs),
+    );
+    final delta = speedMs - past.value; // + = speeding up, − = slowing down
+
+    debugPrint('[Harsh] mag=${magnitude.toStringAsFixed(2)} m/s² | '
+        'speed=${speedKmh.toStringAsFixed(1)} km/h | '
+        'Δspeed=${delta.toStringAsFixed(2)} m/s');
+
+    if (delta >= _kSpeedDeltaMs) {
+      _lastHarshAt = now;
+      if (_harshCooldown('HarshAcceleration')) {
+        _harshBannerText = ' HARSH ACCELERATION';
+        _harshEventAt = now;
+        _reportIncident('Harsh Acceleration', 'Medium', 0.9);
+        _tts.speak('Please accelerate smoothly.');
+      }
+    } else if (delta <= -_kSpeedDeltaMs) {
+      _lastHarshAt = now;
+      if (_harshCooldown('HarshBraking')) {
+        _harshBannerText = 'HARSH BRAKING';         // ← add
+        _harshEventAt = now;
+        _reportIncident('Harsh Braking', 'High', 0.9);
+        _tts.speak('Please brake gently.');
+      }
+    }
+    // else: strong force but speed barely changed → likely a turn or pothole.
+    // Intentionally ignored. (Set _lastHarshAt here too if you want to debounce
+    // these as well.)
+  }
+
+  /// Debounce for harsh-driving reports. Returns true at most once every
+  /// [_kHarshCooldownSeconds] per [key] ('HarshAcceleration' / 'HarshBraking').
+  bool _harshCooldown(String key) {
+    final now = DateTime.now();
+    final last = _lastHarshReportAt[key];
+    if (last == null ||
+        now.difference(last).inSeconds >= _kHarshCooldownSeconds) {
+      _lastHarshReportAt[key] = now;
+      return true;
+    }
+    return false;
   }
 
   // ─────────────────────────────────────────────────────────
@@ -4133,7 +4251,12 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     String? text;
     Color fg = Colors.white;
 
-    if (phone) {
+    if (_harshEventAt != null &&
+        DateTime.now().difference(_harshEventAt!) <= _kBannerVisibleDuration &&
+        _harshBannerText != null) {
+      bg = const Color(0xFFB91C1C);   // red
+      text = _harshBannerText;
+    } else if (phone) {
       bg = const Color(0xFF7E22CE);
       final percent = (_state.phoneConfidence * 100).toStringAsFixed(0);
       text = '📵  PHONE DETECTED ($percent%)';
@@ -4197,6 +4320,11 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   }
 
   String? _getMonitorBannerKey(bool phone, bool smoke) {
+    // Harsh event within the banner-visible window?
+    if (_harshEventAt != null &&
+        DateTime.now().difference(_harshEventAt!) <= _kBannerVisibleDuration) {
+      return 'harsh';
+    }
     if (phone) return 'phone';
     if (_state.drowsinessLevel == DrowsinessLevel.asleep) return 'asleep';
     if (smoke) return 'smoke';
