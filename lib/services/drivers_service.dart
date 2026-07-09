@@ -27,9 +27,13 @@ class DriversService {
   /// On success: caches the response in Hive, downloads photos, clears old embeddings.
   /// On failure: logs the error and falls back to the cached data.
   /// Returns the list of driver maps (may be empty).
+  /// [skipPhotos] – when true, skips photo download and embedding clear.
+  /// Use this for lightweight refreshes (e.g. license check) that must not
+  /// interfere with an in-progress re-enroll.
   Future<List<Map<String, dynamic>>> fetchAndCacheDrivers(
-    String deviceId,
-  ) async {
+    String deviceId, {
+    bool skipPhotos = false,
+  }) async {
     try {
       final url = Uri.parse('$_baseUrl/api/drivers/by-device/$deviceId');
 
@@ -57,11 +61,13 @@ class DriversService {
             '[DriversService] Cached ${rawList.length} drivers in Hive.',
           );
 
-          // 3. Download fresh photos (deletes old folder first)
-          await _downloadPhotos(rawList);
+          if (!skipPhotos) {
+            // 3. Download fresh photos (deletes old folder first)
+            await _downloadPhotos(rawList);
 
-          // 4. Clear old face embeddings so the auth engine re-enrolls
-          await _clearEmbeddings();
+            // 4. Clear old face embeddings so the auth engine re-enrolls
+            await _clearEmbeddings();
+          }
 
           return rawList.cast<Map<String, dynamic>>();
         } else {
