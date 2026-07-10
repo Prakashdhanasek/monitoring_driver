@@ -127,6 +127,32 @@ class DriversService {
   /// Check if there are any cached drivers available.
   bool get hasCachedDrivers => _box.containsKey(_keyDriversJson);
 
+  /// Fetches the driver list directly from the API without touching the cache.
+  /// Returns null if the API is unreachable or returns a non-200 status.
+  /// Use this when you need guaranteed-fresh API data (e.g. licence expiry check).
+  Future<List<Map<String, dynamic>>?> fetchDriversFromApiOnly(
+    String deviceId,
+  ) async {
+    try {
+      final url = Uri.parse('$_baseUrl/api/drivers/by-device/$deviceId');
+      final response = await http.get(url).timeout(const Duration(seconds: 15));
+      if (response.statusCode == 200) {
+        final List<dynamic> rawList = jsonDecode(response.body);
+        debugPrint(
+          '[DriversService] fetchDriversFromApiOnly: ${rawList.length} drivers from API.',
+        );
+        return rawList.cast<Map<String, dynamic>>();
+      }
+      debugPrint(
+        '[DriversService] fetchDriversFromApiOnly: API returned ${response.statusCode}.',
+      );
+      return null;
+    } catch (e) {
+      debugPrint('[DriversService] fetchDriversFromApiOnly failed: $e');
+      return null;
+    }
+  }
+
   // ── Photo Downloading ─────────────────────────────────────
 
   /// Downloads face photos for all drivers.
