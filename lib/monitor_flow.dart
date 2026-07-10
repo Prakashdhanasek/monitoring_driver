@@ -1411,21 +1411,29 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     }
 
     try {
-      // Always fetch live API data for the license check.
-      // skipPhotos=true: updates Hive JSON only, no photo download or
-      // embedding clear, so it won't interfere with _refreshDriversOnFaceDetection.
+      // Fetch live API data for the licence check.
+      // fetchDriversFromApiOnly returns null on any failure — no cache fallback.
+      // If API is reachable we use its data; if offline, driver falls back to
+      // cache (which _startReverification already refreshed at trip end).
+      Map<String, dynamic>? driver;
+      bool driverFromApi = false;
       final deviceId = _settings.getDeviceId();
       if (deviceId != null && deviceId.isNotEmpty) {
-        try {
-          await _driversService.fetchAndCacheDrivers(
-            deviceId,
-            skipPhotos: true,
+        final liveDrivers =
+            await _driversService.fetchDriversFromApiOnly(deviceId);
+        if (liveDrivers != null) {
+          driverFromApi = true;
+          final match = liveDrivers.firstWhere(
+            (d) => d['id']?.toString() == driverId,
+            orElse: () => <String, dynamic>{},
           );
-        } catch (e) {
-          debugPrint('[Flow] Live license fetch failed, using cache: $e');
+          if (match.isNotEmpty) driver = match;
+        } else {
+          debugPrint('[Flow] API unavailable — licence check skipped, using cache for other fields.');
         }
       }
-      final driver = _driversService.getDriverById(driverId);
+      // Fall back to cache only for non-licence fields (name, language, vehicleId).
+      driver ??= _driversService.getDriverById(driverId);
       if (driver != null && driver.isNotEmpty) {
         // ── DEBUG: dump all API fields so we can find the exact language key ──
         debugPrint('[Flow][DriverFields] ALL KEYS: ${driver.keys.toList()}');
@@ -1461,7 +1469,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
         );
        await _tts.setLanguage(preferred);
 
-        // ── License expiry check ────────────────────────────────────────
+        // ── Licence expiry check (API data preferred; cache fallback) ────────
         final String? licenseNum = driver['licenseNumber'] as String?;
         final String? licenseExpiryStr = driver['licenseExpiry'] as String?;
         if (licenseExpiryStr != null) {
@@ -2471,25 +2479,24 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     DateTime expiry,
   ) async {
     if (!mounted) return;
-    int secondsLeft = 5;
-    Timer? countdownTimer;
+    bool _ttsStarted = false;
 
     await showDialog<void>(
       context: context,
       barrierDismissible: false,
       builder: (ctx) => StatefulBuilder(
         builder: (ctx2, setDialogState) {
-          countdownTimer ??= Timer.periodic(const Duration(seconds: 1), (t) {
-            secondsLeft--;
-            if (secondsLeft <= 0) {
-              t.cancel();
-              // Use widget-state context (always valid while widget is mounted)
-              // instead of dialog ctx which can become stale on rebuilds.
+          if (!_ttsStarted) {
+            _ttsStarted = true;
+            // Speak in driver's preferred language; dismiss when TTS finishes.
+            // A 3-second minimum ensures the dialog is readable even for short phrases.
+            Future.wait([
+              _tts.speakImmediately(AlertMessages.licenseExpired(_tts.currentLang)),
+              Future.delayed(const Duration(seconds: 3)),
+            ]).then((_) {
               if (mounted) Navigator.of(context, rootNavigator: true).pop();
-            } else {
-              setDialogState(() {});
-            }
-          });
+            });
+          }
 
           return Dialog(
             backgroundColor: const Color(0xFF1C1F2E),
@@ -2591,9 +2598,9 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
                     ),
                   ),
                   const SizedBox(height: 14),
-                  Text(
-                    'Returning to verify in $secondsLeft s...',
-                    style: const TextStyle(
+                  const Text(
+                    'Please wait...',
+                    style: TextStyle(
                       color: Color(0xFFABB4C8),
                       fontSize: 11,
                       fontWeight: FontWeight.w400,
@@ -2606,7 +2613,6 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
         },
       ),
     );
-    countdownTimer?.cancel();
   }
 
   Future<void> _showLicenseExpiryWarningDialog(
@@ -2615,23 +2621,24 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     int daysLeft,
   ) async {
     if (!mounted) return;
-    int secondsLeft = 5;
-    Timer? countdownTimer;
+    bool _ttsStarted = false;
 
     await showDialog<void>(
       context: context,
       barrierDismissible: false,
       builder: (ctx) => StatefulBuilder(
         builder: (ctx2, setDialogState) {
-          countdownTimer ??= Timer.periodic(const Duration(seconds: 1), (t) {
-            secondsLeft--;
-            if (secondsLeft <= 0) {
-              t.cancel();
+          if (!_ttsStarted) {
+            _ttsStarted = true;
+            // Speak in driver's preferred language; dismiss when TTS finishes.
+            // A 3-second minimum ensures the dialog is readable even for short phrases.
+            Future.wait([
+              _tts.speakImmediately(AlertMessages.licenseExpiringSoon(_tts.currentLang, daysLeft)),
+              Future.delayed(const Duration(seconds: 3)),
+            ]).then((_) {
               if (mounted) Navigator.of(context, rootNavigator: true).pop();
-            } else {
-              setDialogState(() {});
-            }
-          });
+            });
+          }
 
           return Dialog(
             backgroundColor: const Color(0xFF1C1F2E),
@@ -2735,9 +2742,9 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
                     ),
                   ),
                   const SizedBox(height: 14),
-                  Text(
-                    'Continuing in $secondsLeft s...',
-                    style: const TextStyle(
+                  const Text(
+                    'Please wait...',
+                    style: TextStyle(
                       color: Color(0xFFABB4C8),
                       fontSize: 11,
                       fontWeight: FontWeight.w400,
@@ -2750,7 +2757,6 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
         },
       ),
     );
-    countdownTimer?.cancel();
   }
 
   void _showExitPinDialog() {

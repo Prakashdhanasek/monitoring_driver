@@ -40,10 +40,23 @@ class MainActivity : FlutterActivity() {
                         try {
                             stopLockTask()
                         } catch (_: Exception) {}
+                        // Remove the persistent HOME preference so the system
+                        // launcher takes over — without this the device relaunches
+                        // this app immediately as the preferred HOME activity.
                         try {
-                            moveTaskToBack(true)
+                            val dpm = getSystemService(Context.DEVICE_POLICY_SERVICE) as DevicePolicyManager
+                            val admin = ComponentName(this, KioskAdminReceiver::class.java)
+                            if (dpm.isDeviceOwnerApp(packageName)) {
+                                dpm.clearPackagePersistentPreferredActivities(admin, packageName)
+                            }
                         } catch (_: Exception) {}
                         result.success(true)
+                        // Close the activity so the system launcher comes to front.
+                        try {
+                            finishAndRemoveTask()
+                        } catch (_: Exception) {
+                            try { finish() } catch (_: Exception) {}
+                        }
                     }
                     "installApk" -> {
                         val path = call.argument<String>("path")
@@ -247,6 +260,18 @@ class MainActivity : FlutterActivity() {
 
             if (dpm.isDeviceOwnerApp(packageName)) {
                 dpm.setLockTaskPackages(admin, arrayOf(packageName))
+
+                // Always keep app as preferred HOME so it auto-launches on boot.
+                // OPPO/ColorOS blocks BOOT_COMPLETED receivers for third-party apps,
+                // but the HOME app is always started by the system on every boot.
+                try {
+                    val homeFilter = android.content.IntentFilter(Intent.ACTION_MAIN).apply {
+                        addCategory(Intent.CATEGORY_HOME)
+                        addCategory(Intent.CATEGORY_DEFAULT)
+                    }
+                    val mainComp = ComponentName(packageName, "${packageName}.MainActivity")
+                    dpm.addPersistentPreferredActivity(admin, homeFilter, mainComp)
+                } catch (_: Exception) {}
 
                 try {
                     dpm.setGlobalSetting(

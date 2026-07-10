@@ -95,6 +95,21 @@ class TtsService {
     }
   }
 
+  /// Speaks [message] immediately, bypassing the 3-second throttle, and
+  /// awaits full speech completion. Use for critical one-shot alerts
+  /// (e.g. licence expiry dialogs) where guaranteed playback is required.
+  Future<void> speakImmediately(String message) async {
+    if (!_ready) return;
+    _lastSpokeAt = DateTime.now();
+    try {
+      await _tts.stop();
+      await _tts.speak(message);
+      debugPrint('[TTS] speakImmediately: $message');
+    } catch (e) {
+      debugPrint('[TTS] speakImmediately error: $e');
+    }
+  }
+
   Future<void> dispose() async {
     try {
       await _tts.stop();
