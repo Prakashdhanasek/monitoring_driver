@@ -117,8 +117,9 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   CamMode _camMode = CamMode.driverMonitoring;
   // String _esp32StreamUrl = 'http://10.119.135.95:82/';
 
-  String _esp32StreamUrl = ''; // Auto-discovered on startup
-  String _frontCamStreamUrl = '';
+  String _esp32StreamUrl =
+      'http://192.168.150.52:82/'; // Auto-discovered on startup
+  String _frontCamStreamUrl = 'http://192.168.150.51:84/';
 
   // ── Side cameras (blind spot)
   // Left cam  — video :86,  sensor :87
@@ -136,9 +137,12 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   // String?
   // _frontCamIp; // video :84
 
-  String? _leftCamIp; // video :86  sensor :87 (auto-discovered)
-  String? _rightCamIp; // video :80  sensor :81 (auto-discovered)
-  String? _frontCamIp; // video :84  sensor :85 (auto-discovered)
+  String? _leftCamIp =
+      '192.168.150.53'; // video :86  sensor :87 (auto-discovered)
+  String? _rightCamIp =
+      '192.168.150.54'; // video :80  sensor :81 (auto-discovered)
+  String? _frontCamIp =
+      '192.168.150.51'; // video :84  sensor :85 (auto-discovered)
   // (resolved by scanner, not shown in strict mode)
   DateTime? _lastSideCamScanAt; // throttle scanner to once per 60 s
   Timer? _blindSpotTimer;
@@ -373,8 +377,8 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     final results = await Future.wait([
       _ping(_leftCamIp, 87, 'LEFT'), // left  sensor
       _ping(_rightCamIp, 81, 'RIGHT'), // right sensor
-      _ping(_frontCamIp, 85, 'FRONT'), // front sensor
-      _ping(rearHost, 83, 'REAR'), // rear  sensor
+      _ping(_frontCamIp, 84, 'FRONT'), // front video (no sensor)
+      _ping(rearHost, 82, 'REAR'), // rear  video (no sensor)
     ]);
 
     // final results = await Future.wait([
@@ -2759,6 +2763,27 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       }
 
       if (subnet == null) return;
+
+      // Try known static IP first (instant connection)
+      const String _knownRearIp = '192.168.150.52';
+      try {
+        final socket = await Socket.connect(
+          _knownRearIp,
+          82,
+        ).timeout(const Duration(milliseconds: 600));
+        await socket.close();
+        _esp32StreamUrl = 'http://$_knownRearIp:82/';
+        debugPrint('[AutoDiscover] ✓ Rear cam at static IP $_knownRearIp:82');
+        if (mounted) {
+          setState(() => _isConnectedToEsp32 = true);
+          if (!_ffmpegRecorderService.isRecording &&
+              _camMode == CamMode.driverMonitoring) {
+            _ffmpegRecorderService.startRecording(_esp32StreamUrl);
+          }
+        }
+        return;
+      } catch (_) {}
+
       debugPrint('[AutoDiscover] Scanning $subnet.* for rear cam (port 82)...');
 
       for (int start = 1; start <= 254; start += 50) {
@@ -2899,7 +2924,28 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     if (_rightCamIp != null) excludeIps.add(_rightCamIp!);
     if (_frontCamIp != null) excludeIps.add(_frontCamIp!);
 
+    // ── Known static IPs (4G router network) — try these first ──
+    const Map<int, String> _knownStaticIps = {
+      87: '192.168.150.53', // left cam sensor port
+      81: '192.168.150.54', // right cam sensor port
+      84: '192.168.150.51', // front cam video port (no sensor)
+    };
+
     Future<String?> scanForPort(int sensorPort, int videoPort) async {
+      // Strategy 0: Try known static IP first (instant)
+      final knownIp = _knownStaticIps[sensorPort] ?? _knownStaticIps[videoPort];
+      if (knownIp != null && !excludeIps.contains(knownIp)) {
+        try {
+          final socket = await Socket.connect(
+            knownIp,
+            videoPort,
+          ).timeout(const Duration(milliseconds: 600));
+          await socket.close();
+          debugPrint('[SideCam] Static IP hit: $knownIp:$videoPort');
+          return knownIp;
+        } catch (_) {}
+      }
+
       // Strategy 1: Try sensor endpoint (returns JSON with distance_cm)
       Future<String?> probeSensor(String ip) async {
         if (excludeIps.contains(ip)) return null;
@@ -3065,15 +3111,9 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     final rightUrl = _rightCamIp != null
         ? 'http://$_rightCamIp:81/sensor'
         : null;
-    final frontUrl = _frontCamIp != null
-        ? 'http://$_frontCamIp:85/sensor'
-        : null;
+    // Front and rear cams have no sensor — skip polling them
 
-    final results = await Future.wait([
-      fetch(leftUrl),
-      fetch(rightUrl),
-      fetch(frontUrl),
-    ]);
+    final results = await Future.wait([fetch(leftUrl), fetch(rightUrl)]);
     if (!mounted) {
       _isPollingBlindSpot = false;
       return;
@@ -3081,7 +3121,6 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
 
     final double? left = results[0];
     final double? right = results[1];
-    final double? front = results[2];
 
     if (_camMode != CamMode.rear && !_rearManualOverride) {
       if (left != null && left < 50.0) {
@@ -3090,21 +3129,13 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       } else if (right != null && right < 50.0) {
         _rightManualOverride = false;
         _setCamMode(CamMode.right);
-      } else if (front != null && front < 50.0) {
-        // Sensor triggered — not a manual open, so override is off.
-        _frontManualOverride = false;
-        _setCamMode(CamMode.front);
       } else {
         final bool leftClear = left == null || left > 60.0;
         final bool rightClear = right == null || right > 60.0;
-        final bool frontClear = front == null || front > 60.0;
         if (leftClear &&
             rightClear &&
-            frontClear &&
             ((_camMode == CamMode.left && !_leftManualOverride) ||
-                (_camMode == CamMode.right && !_rightManualOverride) ||
-                // Only auto-close front cam if it was NOT manually opened.
-                (_camMode == CamMode.front && !_frontManualOverride))) {
+                (_camMode == CamMode.right && !_rightManualOverride))) {
           _setCamMode(CamMode.driverMonitoring);
         }
       }
@@ -3745,38 +3776,38 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
             ),
           ),
           const SizedBox(width: 6),
-          GestureDetector(
-            behavior: HitTestBehavior.opaque,
-            onTap: _openHotspotSettings,
-            child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-              decoration: BoxDecoration(
-                color: Colors.tealAccent.withValues(alpha: 0.20),
-                borderRadius: BorderRadius.circular(6),
-                border: Border.all(color: Colors.tealAccent, width: 1),
-              ),
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: const [
-                  Icon(
-                    Icons.wifi_tethering_rounded,
-                    color: Colors.white,
-                    size: 16,
-                  ),
-                  SizedBox(width: 4),
-                  Text(
-                    'HOTSPOT',
-                    style: TextStyle(
-                      color: Colors.white,
-                      fontSize: 11,
-                      fontWeight: FontWeight.w700,
-                      letterSpacing: 0.5,
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ),
+          // GestureDetector(
+          //   behavior: HitTestBehavior.opaque,
+          //   onTap: _openHotspotSettings,
+          //   child: Container(
+          //     padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+          //     decoration: BoxDecoration(
+          //       color: Colors.tealAccent.withValues(alpha: 0.20),
+          //       borderRadius: BorderRadius.circular(6),
+          //       border: Border.all(color: Colors.tealAccent, width: 1),
+          //     ),
+          //     child: Row(
+          //       mainAxisSize: MainAxisSize.min,
+          //       children: const [
+          //         Icon(
+          //           Icons.wifi_tethering_rounded,
+          //           color: Colors.white,
+          //           size: 16,
+          //         ),
+          //         SizedBox(width: 4),
+          //         Text(
+          //           'HOTSPOT',
+          //           style: TextStyle(
+          //             color: Colors.white,
+          //             fontSize: 11,
+          //             fontWeight: FontWeight.w700,
+          //             letterSpacing: 0.5,
+          //           ),
+          //         ),
+          //       ],
+          //     ),
+          //   ),
+          // ),
         ],
       ),
     );
