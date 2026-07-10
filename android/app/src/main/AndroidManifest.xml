@@ -108,7 +108,11 @@
              OPPO/ColorOS; starting from a foreground service is allowed. -->
         <service
             android:name=".OtaRestartService"
-            android:exported="false" />
+            android:foregroundServiceType="specialUse"
+            android:exported="false">
+            <property android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                      android:value="ota_app_restart" />
+        </service>
 
         <!-- Don't delete the meta-data below.
              This is used by the Flutter tool to generate GeneratedPluginRegistrant.java -->
