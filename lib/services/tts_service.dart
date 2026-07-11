@@ -31,20 +31,48 @@ class TtsService {
   }
 
   Future<void> setLanguage(AlertLang lang) async {
-    _lang = lang;
+    if (lang == AlertLang.english) {
+      _lang = AlertLang.english;
+      await _tts.setLanguage('en-US');
+      debugPrint('[TTS] Language set to en-US');
+      return;
+    }
+
     final code = _langCodes[lang]!;
     try {
+      // Step 1: check if locale is recognised at all
       final available = await _tts.isLanguageAvailable(code);
-      if (available == true) {
+      if (available != true) {
+        debugPrint('[TTS] $code not supported — falling back to en-US');
+        _lang = AlertLang.english;
+        await _tts.setLanguage('en-US');
+        return;
+      }
+
+      // Step 2: check that an actual voice exists for this locale.
+      // isLanguageAvailable can return true even when no voice pack is
+      // installed, causing a silent "No local or network voice found" failure.
+      final voices = await _tts.getVoices as List?;
+      final langPrefix = code.split('-').first.toLowerCase(); // e.g. "ml"
+      final hasVoice = voices?.any((v) {
+        final locale = (v['locale'] ?? '').toString().toLowerCase();
+        return locale.startsWith(langPrefix);
+      }) ?? false;
+
+      if (hasVoice) {
         await _tts.setLanguage(code);
+        _lang = lang;
         debugPrint('[TTS] Language set to $code');
       } else {
-        debugPrint('[TTS] $code not available on device — falling back to en-US');
-        await _tts.setLanguage('en-US');
+        debugPrint('[TTS] $code has no installed voice pack — falling back to en-US. '
+            'Install voices: Settings → General Management → Text-to-speech → Google → Language → Download $code');
         _lang = AlertLang.english;
+        await _tts.setLanguage('en-US');
       }
     } catch (e) {
       debugPrint('[TTS] setLanguage error: $e');
+      _lang = AlertLang.english;
+      await _tts.setLanguage('en-US');
     }
   }
 
