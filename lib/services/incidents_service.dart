@@ -232,8 +232,6 @@
 // //   }
 // // }
 
-
-
 // // lib/services/incidents_service.dart
 // // Handles offline queuing and background syncing of incident reports via Hive.
 // // Incidents are saved locally first, then uploaded to the API in batches.
@@ -503,8 +501,6 @@
 //   }
 // }
 
-
-
 // lib/services/incidents_service.dart
 // Handles offline queuing and background syncing of incident reports via Hive.
 // Incidents are saved locally first, then uploaded to the API in batches.
@@ -565,13 +561,17 @@ class IncidentsService {
       'vehicleSpeed': vehicleSpeed.toInt(),
       'gpsLatitude': gpsLatitude,
       'gpsLongitude': gpsLongitude,
-      'snapshotUrl': snapshotUrl.isEmpty ? 'string' : snapshotUrl,
+      'snapshotUrl': (snapshotUrl.isEmpty || snapshotUrl == 'string')
+          ? ''
+          : snapshotUrl,
 
       // snapshotPath = exact on-device image file path.
       // Sync-il upload cheyt URL aakum.
       if (exactSnapshotPath.isNotEmpty) 'snapshotPath': exactSnapshotPath,
 
-      'videoClipUrl': videoClipUrl.isEmpty ? 'string' : videoClipUrl,
+      'videoClipUrl': (videoClipUrl.isEmpty || videoClipUrl == 'string')
+          ? ''
+          : videoClipUrl,
       if (videoPath.isNotEmpty) 'videoPath': videoPath,
       'status': 'Open',
       'occurredAt': DateTime.now().toUtc().toIso8601String(),
@@ -694,23 +694,19 @@ class IncidentsService {
 
               if (uploadedUrl != null && uploadedUrl.isNotEmpty) {
                 decoded['videoClipUrl'] = uploadedUrl;
-                debugPrint(
-                  '[IncidentsService] Video uploaded -> $uploadedUrl',
-                );
+                debugPrint('[IncidentsService] Video uploaded -> $uploadedUrl');
               } else {
                 debugPrint(
                   '[IncidentsService] Video upload failed; sending without video clip.',
                 );
               }
-              
+
               // Clean up the local temporary video file after attempting upload
               try {
                 await videoFile.delete();
               } catch (_) {}
             } else {
-              debugPrint(
-                '[IncidentsService] Video file not found: $videoPath',
-              );
+              debugPrint('[IncidentsService] Video file not found: $videoPath');
             }
 
             // Remove device path from payload
@@ -780,8 +776,8 @@ class IncidentsService {
       debugPrint('[IncidentsService] Evidence file path -> ${imageFile.path}');
 
       final streamed = await request.send().timeout(
-            const Duration(seconds: 60),
-          );
+        const Duration(seconds: 60),
+      );
 
       final response = await http.Response.fromStream(streamed);
 
@@ -793,7 +789,8 @@ class IncidentsService {
       if (response.statusCode == 200 || response.statusCode == 201) {
         final decoded = jsonDecode(response.body) as Map<String, dynamic>;
 
-        final dynamic url = decoded['url'] ??
+        final dynamic url =
+            decoded['url'] ??
             decoded['fileUrl'] ??
             decoded['snapshotUrl'] ??
             decoded['path'];

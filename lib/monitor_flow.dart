@@ -374,11 +374,10 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     // Ping SENSOR ports (not video). ESP32-CAM allows only ONE client on the
     // video port — pinging video steals the slot the overlay/recorder needs,
     // causing the drops. Sensor server is separate, safe to poll.
+    // Front and rear cams have NO sensor — do NOT ping their video ports!
     final results = await Future.wait([
       _ping(_leftCamIp, 87, 'LEFT'), // left  sensor
       _ping(_rightCamIp, 81, 'RIGHT'), // right sensor
-      _ping(_frontCamIp, 84, 'FRONT'), // front video (no sensor)
-      _ping(rearHost, 82, 'REAR'), // rear  video (no sensor)
     ]);
 
     // final results = await Future.wait([
@@ -388,18 +387,22 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     //   _ping(rearHost, 82, 'REAR'),
     // ]);
 
+    // Front/rear have no sensor — mark them as connected if IP is set
+    final frontConnected = _frontCamIp != null && _frontCamIp!.isNotEmpty;
+    final rearConnected = rearHost != null && rearHost.isNotEmpty;
+
     final changed =
         results[0] != _leftCamConnected ||
         results[1] != _rightCamConnected ||
-        results[2] != _frontCamConnected ||
-        results[3] != _rearCamConnected;
+        frontConnected != _frontCamConnected ||
+        rearConnected != _rearCamConnected;
 
     if (changed && mounted) {
       setState(() {
         _leftCamConnected = results[0];
         _rightCamConnected = results[1];
-        _frontCamConnected = results[2];
-        _rearCamConnected = results[3];
+        _frontCamConnected = frontConnected;
+        _rearCamConnected = rearConnected;
       });
     }
   }
@@ -1163,7 +1166,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
               if (jpeg != null) {
                 _latestFrameJpeg = jpeg;
                 _recentFrames.add(jpeg);
-                if (_recentFrames.length > 15) {
+                if (_recentFrames.length > 30) {
                   _recentFrames.removeAt(0); // Maintain max 15 frames (~5s)
                 }
               }
@@ -1727,8 +1730,8 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   bool _checkCooldown(String label) {
     final now = DateTime.now();
     final lastTime = _lastIncidentReportAt[label];
-    // 5 minutes cooldown for incident REPORTING to server only
-    if (lastTime == null || now.difference(lastTime).inSeconds >= 5 * 60) {
+    // 15 minutes cooldown for incident REPORTING to server
+    if (lastTime == null || now.difference(lastTime).inSeconds >= 15 * 60) {
       _lastIncidentReportAt[label] = now;
       return true;
     }
@@ -2678,15 +2681,13 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     final nowMonitoring = mode == CamMode.driverMonitoring;
     _camMode = mode;
 
-    final needsLiveStream =
-        mode == CamMode.rear ||
-        mode == CamMode.front ||
-        mode == CamMode.left ||
-        mode == CamMode.right;
-    if (needsLiveStream && _ffmpegRecorderService.isRecording) {
+    // Only stop recording when opening FRONT cam overlay (same port 84 conflict).
+    // Rear/left/right use different ports — no conflict with front cam recording.
+    final needsStopRecording = mode == CamMode.front;
+    if (needsStopRecording && _ffmpegRecorderService.isRecording) {
       await _ffmpegRecorderService.stopRecording();
       debugPrint(
-        '[CamMode] Recorder STOPPED — releasing ESP32 stream for $mode',
+        '[CamMode] Recorder STOPPED — releasing front cam stream for overlay',
       );
     } else if (nowMonitoring &&
         _frontCamConnected &&
