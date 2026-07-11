@@ -2071,6 +2071,41 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     bool loud = false;
     bool soft = false;
 
+    // ── UNAUTHORIZED DRIVER ALERT ──────────────────────────────────
+    // If the driver is unauthorized, skip all other alerts (seatbelt, drowsiness, objects, etc.)
+    // and only process the unauthorized timer and report.
+    if (_state.authStatus == AuthStatus.unauthorized &&
+        _phase == Phase.monitoring &&
+        !_tripCompleted) {
+      _unauthorizedStart ??= now;
+      if (now.difference(_unauthorizedStart!).inSeconds >= 30) {
+        final hasPhoto = _driverHasReferencePhoto();
+        if (hasPhoto) {
+          if (currentImage != null) {
+            final jpeg = _captureFaceJpeg(currentImage, targetWidth: 240);
+            if (jpeg != null) {
+              _latestFrameJpeg = jpeg;
+            }
+          }
+
+          // Always report unauthorized driver incidents immediately without cooldown
+          _reportIncident('Unauthorized Driver', 'High', 1.0);
+          _tts.speak(AlertMessages.unauthorized(_tts.currentLang));
+
+          _tripCompleted = true;
+          _tripCompletedAt = now;
+          _unauthorizedTripStop = true;
+          _sendTripEnd();
+
+          _playAlert('audio/alert_loud.mp3');
+        }
+        _unauthorizedStart = null;
+      }
+      return; // Skip all other alerts
+    } else {
+      _unauthorizedStart = null;
+    }
+
     // ── SEATBELT CYCLIC ALERT ──────────────────────────────────────
     if (!_state.seatbeltBuckled &&
         _phase == Phase.monitoring &&
@@ -2115,38 +2150,6 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       _seatbeltPhaseStart = null;
       _seatbeltInBeepPhase = true;
       _lastVoiceAlertAt.remove('seatbelt');
-    }
-
-    // ── GENERAL ALERTS (sound + report on 5-min cooldown) ────────────────
-    if (_state.authStatus == AuthStatus.unauthorized &&
-        _phase == Phase.monitoring &&
-        !_tripCompleted) {
-      if (_unauthorizedStart == null) {
-        _unauthorizedStart = now;
-      } else if (now.difference(_unauthorizedStart!).inSeconds >= 30) {
-        final hasPhoto = _driverHasReferencePhoto();
-        if (hasPhoto) {
-          if (currentImage != null) {
-            final jpeg = _captureFaceJpeg(currentImage, targetWidth: 240);
-            if (jpeg != null) {
-              _latestFrameJpeg = jpeg;
-            }
-          }
-
-          // Always report unauthorized driver incidents immediately without cooldown
-          loud = true;
-          _reportIncident('Unauthorized Driver', 'High', 1.0);
-          _tts.speak(AlertMessages.unauthorized(_tts.currentLang));
-
-          _tripCompleted = true;
-          _tripCompletedAt = now;
-          _unauthorizedTripStop = true;
-          _sendTripEnd();
-        }
-        _unauthorizedStart = null;
-      }
-    } else {
-      _unauthorizedStart = null;
     }
     if (_state.drowsinessLevel == DrowsinessLevel.asleep) {
       loud = true;
