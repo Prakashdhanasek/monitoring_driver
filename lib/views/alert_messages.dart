@@ -133,4 +133,24 @@ class AlertMessages {
             ta: 'ஆழமாக சுவாசியுங்கள். மன அழுத்தத்தை குறைக்க ஆழமாக சுவாசிக்கவும்.');
     }
   }
+
+  static String licenseExpired(AlertLang lang) => _pick(lang,
+      en: 'Your driving license has expired. Trip cannot be started. Please renew your license.',
+      hi: 'आपका ड्राइविंग लाइसेंस समाप्त हो गया है। यात्रा शुरू नहीं की जा सकती। कृपया अपना लाइसेंस नवीनीकृत करें।',
+      ml: 'നിങ്ങളുടെ ഡ്രൈവിംഗ് ലൈസൻസ് കാലഹരണപ്പെട്ടു. യാത്ര ആരംഭിക്കാൻ കഴിയില്ല. ദയവായി ലൈസൻസ് പുതുക്കുക.',
+      ta: 'உங்கள் ஓட்டுநர் உரிமம் காலாவதியானது. பயணத்தை தொடங்க முடியாது. உரிமத்தை புதுப்பிக்கவும்.');
+
+  static String licenseExpiringSoon(AlertLang lang, int daysLeft) => _pick(lang,
+      en: daysLeft == 0
+          ? 'Warning. Your driving license expires today. Please renew immediately.'
+          : 'Warning. Your driving license expires in $daysLeft day${daysLeft == 1 ? '' : 's'}. Please renew soon.',
+      hi: daysLeft == 0
+          ? 'चेतावनी। आपका ड्राइविंग लाइसेंस आज समाप्त हो रहा है। कृपया तुरंत नवीनीकृत करें।'
+          : 'चेतावनी। आपका ड्राइविंग लाइसेंस $daysLeft दिन${daysLeft == 1 ? '' : 'ों'} में समाप्त हो रहा है। कृपया जल्द नवीनीकृत करें।',
+      ml: daysLeft == 0
+          ? 'മുന്നറിയിപ്പ്. നിങ്ങളുടെ ഡ്രൈവിംഗ് ലൈസൻസ് ഇന്ന് കാലഹരണപ്പെടുന്നു. ഉടനടി പുതുക്കുക.'
+          : 'മുന്നറിയിപ്പ്. നിങ്ങളുടെ ഡ്രൈവിംഗ് ലൈസൻസ് $daysLeft ദിവസത്തിനുള്ളിൽ കാലഹരണപ്പെടും. ഉടനെ പുതുക്കുക.',
+      ta: daysLeft == 0
+          ? 'எச்சரிக்கை. உங்கள் ஓட்டுநர் உரிமம் இன்று காலாவதியாகிறது. உடனே புதுப்பிக்கவும்.'
+          : 'எச்சரிக்கை. உங்கள் ஓட்டுநர் உரிமம் $daysLeft நாள${daysLeft == 1 ? '' : 'களி'}ல் காலாவதியாகும். விரைவில் புதுப்பிக்கவும்.');
 }

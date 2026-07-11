@@ -27,9 +27,13 @@ class DriversService {
   /// On success: caches the response in Hive, downloads photos, clears old embeddings.
   /// On failure: logs the error and falls back to the cached data.
   /// Returns the list of driver maps (may be empty).
+  /// [skipPhotos] – when true, skips photo download and embedding clear.
+  /// Use this for lightweight refreshes (e.g. license check) that must not
+  /// interfere with an in-progress re-enroll.
   Future<List<Map<String, dynamic>>> fetchAndCacheDrivers(
-    String deviceId,
-  ) async {
+    String deviceId, {
+    bool skipPhotos = false,
+  }) async {
     try {
       final url = Uri.parse('$_baseUrl/api/drivers/by-device/$deviceId');
 
@@ -57,11 +61,13 @@ class DriversService {
             '[DriversService] Cached ${rawList.length} drivers in Hive.',
           );
 
-          // 3. Download fresh photos (deletes old folder first)
-          await _downloadPhotos(rawList);
+          if (!skipPhotos) {
+            // 3. Download fresh photos (deletes old folder first)
+            await _downloadPhotos(rawList);
 
-          // 4. Clear old face embeddings so the auth engine re-enrolls
-          await _clearEmbeddings();
+            // 4. Clear old face embeddings so the auth engine re-enrolls
+            await _clearEmbeddings();
+          }
 
           return rawList.cast<Map<String, dynamic>>();
         } else {
@@ -120,6 +126,32 @@ class DriversService {
 
   /// Check if there are any cached drivers available.
   bool get hasCachedDrivers => _box.containsKey(_keyDriversJson);
+
+  /// Fetches the driver list directly from the API without touching the cache.
+  /// Returns null if the API is unreachable or returns a non-200 status.
+  /// Use this when you need guaranteed-fresh API data (e.g. licence expiry check).
+  Future<List<Map<String, dynamic>>?> fetchDriversFromApiOnly(
+    String deviceId,
+  ) async {
+    try {
+      final url = Uri.parse('$_baseUrl/api/drivers/by-device/$deviceId');
+      final response = await http.get(url).timeout(const Duration(seconds: 15));
+      if (response.statusCode == 200) {
+        final List<dynamic> rawList = jsonDecode(response.body);
+        debugPrint(
+          '[DriversService] fetchDriversFromApiOnly: ${rawList.length} drivers from API.',
+        );
+        return rawList.cast<Map<String, dynamic>>();
+      }
+      debugPrint(
+        '[DriversService] fetchDriversFromApiOnly: API returned ${response.statusCode}.',
+      );
+      return null;
+    } catch (e) {
+      debugPrint('[DriversService] fetchDriversFromApiOnly failed: $e');
+      return null;
+    }
+  }
 
   // ── Photo Downloading ─────────────────────────────────────
 

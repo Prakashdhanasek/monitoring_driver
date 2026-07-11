@@ -22,9 +22,13 @@ class InstallResultReceiver : BroadcastReceiver() {
 
         Log.i("AppInstall", "📦 Install result: status=$status message=$message")
 
-        when (status) {
-            PackageInstaller.STATUS_SUCCESS -> {
-                Log.i("AppInstall", "✅ Install SUCCESS — launching app via foreground service")
+        // OPPO/ColorOS (Android 8.x) reports OTA success as -999 instead of
+        // the standard STATUS_SUCCESS (0).  Treat it identically.
+        val isSuccess = status == PackageInstaller.STATUS_SUCCESS || status == -999
+
+        when {
+            isSuccess -> {
+                Log.i("AppInstall", "✅ Install SUCCESS (status=$status) — launching app via foreground service")
 
                 // Set our app as preferred HOME so the system brings it to the
                 // foreground (required on OPPO/ColorOS where background activity
@@ -57,7 +61,7 @@ class InstallResultReceiver : BroadcastReceiver() {
                     context.startService(serviceIntent)
                 }
             }
-            PackageInstaller.STATUS_PENDING_USER_ACTION -> {
+            status == PackageInstaller.STATUS_PENDING_USER_ACTION -> {
                 // Not Device Owner — prompt user to confirm install.
                 val confirmIntent = intent.getParcelableExtra<Intent>(Intent.EXTRA_INTENT)
                 if (confirmIntent != null) {
@@ -66,12 +70,11 @@ class InstallResultReceiver : BroadcastReceiver() {
                 }
             }
             else -> {
-                Log.e("AppInstall", "❌ Install FAILED: status=$status message=$message")
-                // Relaunch so the app can show an error / retry.
-                val launchIntent = Intent(context, MainActivity::class.java).apply {
-                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
-                }
-                context.startActivity(launchIntent)
+                // Unknown / failure status — log and do nothing.
+                // (Direct startActivity from a BroadcastReceiver is blocked on OPPO
+                //  background launch restrictions; OtaRestartService handles relaunch
+                //  for all success paths above, including -999.)
+                Log.e("AppInstall", "❌ Install FAILED or unknown: status=$status message=$message")
             }
         }
     }
