@@ -524,6 +524,9 @@ class IncidentsService {
 
   Box get _box => Hive.box(_boxName);
 
+  // Sync concurrency guard
+  bool _isSyncing = false;
+
   // ── Queue an Incident Locally ─────────────────────────────
 
   /// Saves an incident to the local Hive queue.
@@ -565,22 +568,21 @@ class IncidentsService {
       'vehicleSpeed': vehicleSpeed.toInt(),
       'gpsLatitude': gpsLatitude,
       'gpsLongitude': gpsLongitude,
-      if (snapshotUrl.isNotEmpty && snapshotUrl != 'string') 'snapshotUrl': snapshotUrl,
+      'snapshotUrl': (snapshotUrl.isNotEmpty && snapshotUrl != 'string') ? snapshotUrl : null,
 
       // snapshotPath = exact on-device image file path.
       // Sync-il upload cheyt URL aakum.
       if (exactSnapshotPath.isNotEmpty) 'snapshotPath': exactSnapshotPath,
 
-      if (videoClipUrl.isNotEmpty && videoClipUrl != 'string') 'videoClipUrl': videoClipUrl,
+      'videoClipUrl': (videoClipUrl.isNotEmpty && videoClipUrl != 'string') ? videoClipUrl : null,
       if (videoPath.isNotEmpty) 'videoPath': videoPath,
       'status': 'Open',
       'occurredAt': DateTime.now().toUtc().toIso8601String(),
 
-      if (vehicleId != null && vehicleId.trim().isNotEmpty) 'vehicleId': vehicleId,
-      if (vehicleRegistrationNumber != null && vehicleRegistrationNumber.trim().isNotEmpty)
-        'vehicleRegistrationNumber': vehicleRegistrationNumber,
-      if (driverId != null && driverId.trim().isNotEmpty) 'driverId': driverId,
-      if (driverName != null && driverName.trim().isNotEmpty) 'driverName': driverName,
+      'vehicleId': (vehicleId != null && vehicleId.trim().isNotEmpty) ? vehicleId : null,
+      'vehicleRegistrationNumber': (vehicleRegistrationNumber != null && vehicleRegistrationNumber.trim().isNotEmpty) ? vehicleRegistrationNumber : null,
+      'driverId': (driverId != null && driverId.trim().isNotEmpty) ? driverId : null,
+      'driverName': (driverName != null && driverName.trim().isNotEmpty) ? driverName : null,
     };
 
     final key = DateTime.now().microsecondsSinceEpoch.toString();
@@ -608,172 +610,181 @@ class IncidentsService {
   /// Successfully uploaded incidents are removed from the local queue.
   /// Stops on the first network error to avoid spamming failed requests.
   Future<void> syncPendingIncidents() async {
+    if (_isSyncing) {
+      debugPrint('[IncidentsService] Sync already in progress. Skipping.');
+      return;
+    }
     if (_box.isEmpty) return;
 
-    final url = Uri.parse(_apiUrl);
-    final keys = _box.keys.toList();
+    _isSyncing = true;
+    try {
+      final url = Uri.parse(_apiUrl);
+      final keys = _box.keys.toList();
 
-    debugPrint('==================================================');
-    debugPrint(
-      '[SYNC START] Moving ${keys.length} offline events to online server...',
-    );
-    debugPrint('==================================================');
+      debugPrint('==================================================');
+      debugPrint(
+        '[SYNC START] Moving ${keys.length} offline events to online server...',
+      );
+      debugPrint('==================================================');
 
-    const int batchSize = 10;
-    bool networkFailed = false;
+      const int batchSize = 10;
+      bool networkFailed = false;
 
-    for (int i = 0; i < keys.length; i += batchSize) {
-      if (networkFailed) {
-        debugPrint(
-          '[SYNC ABORTED] Sync aborted due to network connectivity issues.',
-        );
-        break;
+      for (int i = 0; i < keys.length; i += batchSize) {
+        if (networkFailed) {
+          debugPrint(
+            '[SYNC ABORTED] Sync aborted due to network connectivity issues.',
+          );
+          break;
+        }
+
+        final end = (i + batchSize < keys.length) ? i + batchSize : keys.length;
+        final batchKeys = keys.sublist(i, end);
+
+        final futures = batchKeys.map((key) async {
+          final String? jsonBody = _box.get(key);
+          if (jsonBody == null) return;
+
+          String eventType = 'Unknown';
+
+          try {
+            final d = jsonDecode(jsonBody) as Map<String, dynamic>;
+            eventType = d['eventType'] ?? 'Unknown';
+          } catch (_) {}
+
+          try {
+            final decoded = jsonDecode(jsonBody) as Map<String, dynamic>;
+
+            // ── STEP 1: snapshotPath undenkil, image evidence endpoint-il
+            // upload cheyt server URL vaanguka. Aa URL snapshotUrl aakkuka. ──
+            final String? snapshotPath = decoded['snapshotPath'] as String?;
+
+            if (snapshotPath != null && snapshotPath.isNotEmpty) {
+              final File? snapshotFile = _findLatestSnapshotFile(snapshotPath);
+
+              if (snapshotFile != null && await snapshotFile.exists()) {
+                debugPrint(
+                  '[IncidentsService] Uploading exact evidence file: ${snapshotFile.path}',
+                );
+
+                final uploadedUrl = await _uploadEvidence(snapshotFile);
+
+                if (uploadedUrl != null && uploadedUrl.isNotEmpty) {
+                  decoded['snapshotUrl'] = uploadedUrl;
+                  debugPrint(
+                    '[IncidentsService] Evidence uploaded -> $uploadedUrl',
+                  );
+                } else {
+                  debugPrint(
+                    '[IncidentsService] Evidence upload failed; sending without snapshot.',
+                  );
+                }
+              } else {
+                debugPrint(
+                  '[IncidentsService] Snapshot file not found: $snapshotPath',
+                );
+              }
+
+              // Device path API-il ayakkenda — neekkuka.
+              decoded.remove('snapshotPath');
+            }
+
+            // ── STEP 1.5: videoPath ──
+            final String? videoPath = decoded['videoPath'] as String?;
+            if (videoPath != null && videoPath.isNotEmpty) {
+              final File videoFile = File(videoPath);
+              if (await videoFile.exists()) {
+                debugPrint(
+                  '[IncidentsService] Uploading video evidence file: ${videoFile.path}',
+                );
+
+                final uploadedUrl = await _uploadEvidence(videoFile);
+
+                if (uploadedUrl != null && uploadedUrl.isNotEmpty) {
+                  decoded['videoClipUrl'] = uploadedUrl;
+                  debugPrint(
+                    '[IncidentsService] Video uploaded -> $uploadedUrl',
+                  );
+                } else {
+                  debugPrint(
+                    '[IncidentsService] Video upload failed; sending without video clip.',
+                  );
+                }
+                
+                // Clean up the local temporary video file after attempting upload
+                try {
+                  await videoFile.delete();
+                } catch (_) {}
+              } else {
+                debugPrint(
+                  '[IncidentsService] Video file not found: $videoPath',
+                );
+              }
+
+              // Remove device path from payload
+              decoded.remove('videoPath');
+            }
+
+            // Clean up payload: replace empty string or 'string' placeholder with null
+            decoded.forEach((key, value) {
+              if (value is String) {
+                final clean = value.trim();
+                if (clean.isEmpty || clean.toLowerCase() == 'string') {
+                  decoded[key] = null;
+                }
+              }
+            });
+
+            final String finalBody = jsonEncode(decoded);
+
+            debugPrint('--------------------------------------------------');
+            debugPrint('[API REQUEST] POST -> $url');
+            debugPrint('[API REQUEST] PAYLOAD: $finalBody');
+            debugPrint('--------------------------------------------------');
+
+            // ── STEP 2: incident JSON POST, always application/json ──
+            final response = await http
+                .post(
+                  url,
+                  headers: {'Content-Type': 'application/json'},
+                  body: finalBody,
+                )
+                .timeout(const Duration(seconds: 15));
+
+            debugPrint('--------------------------------------------------');
+            debugPrint('[API RESPONSE] Status Code: ${response.statusCode}');
+            debugPrint('[API RESPONSE] Body: ${response.body}');
+            debugPrint('--------------------------------------------------');
+
+            if (response.statusCode == 200 || response.statusCode == 201) {
+              debugPrint(
+                '[EVENT SYNC SUCCESS] ✓ Successfully moved offline event to online server: $key ($eventType)',
+              );
+              _box.delete(key);
+            } else {
+              debugPrint(
+                '[EVENT SYNC FAILURE] ✗ Failed to move offline event $key ($eventType) online. Status: ${response.statusCode}',
+              );
+            }
+          } catch (e) {
+            debugPrint(
+              '[EVENT SYNC ERROR] ✗ Error moving offline event $key ($eventType) online: $e',
+            );
+            networkFailed = true;
+          }
+        });
+
+        await Future.wait(futures);
       }
 
-      final end = (i + batchSize < keys.length) ? i + batchSize : keys.length;
-      final batchKeys = keys.sublist(i, end);
-
-      final futures = batchKeys.map((key) async {
-        final String? jsonBody = _box.get(key);
-        if (jsonBody == null) return;
-
-        String eventType = 'Unknown';
-
-        try {
-          final d = jsonDecode(jsonBody) as Map<String, dynamic>;
-          eventType = d['eventType'] ?? 'Unknown';
-        } catch (_) {}
-
-        try {
-          final decoded = jsonDecode(jsonBody) as Map<String, dynamic>;
-
-          // ── STEP 1: snapshotPath undenkil, image evidence endpoint-il
-          // upload cheyt server URL vaanguka. Aa URL snapshotUrl aakkuka. ──
-          final String? snapshotPath = decoded['snapshotPath'] as String?;
-
-          if (snapshotPath != null && snapshotPath.isNotEmpty) {
-            final File? snapshotFile = _findLatestSnapshotFile(snapshotPath);
-
-            if (snapshotFile != null && await snapshotFile.exists()) {
-              debugPrint(
-                '[IncidentsService] Uploading exact evidence file: ${snapshotFile.path}',
-              );
-
-              final uploadedUrl = await _uploadEvidence(snapshotFile);
-
-              if (uploadedUrl != null && uploadedUrl.isNotEmpty) {
-                decoded['snapshotUrl'] = uploadedUrl;
-                debugPrint(
-                  '[IncidentsService] Evidence uploaded -> $uploadedUrl',
-                );
-              } else {
-                debugPrint(
-                  '[IncidentsService] Evidence upload failed; sending without snapshot.',
-                );
-              }
-            } else {
-              debugPrint(
-                '[IncidentsService] Snapshot file not found: $snapshotPath',
-              );
-            }
-
-            // Device path API-il ayakkenda — neekkuka.
-            decoded.remove('snapshotPath');
-          }
-
-          // ── STEP 1.5: videoPath ──
-          final String? videoPath = decoded['videoPath'] as String?;
-          if (videoPath != null && videoPath.isNotEmpty) {
-            final File videoFile = File(videoPath);
-            if (await videoFile.exists()) {
-              debugPrint(
-                '[IncidentsService] Uploading video evidence file: ${videoFile.path}',
-              );
-
-              final uploadedUrl = await _uploadEvidence(videoFile);
-
-              if (uploadedUrl != null && uploadedUrl.isNotEmpty) {
-                decoded['videoClipUrl'] = uploadedUrl;
-                debugPrint(
-                  '[IncidentsService] Video uploaded -> $uploadedUrl',
-                );
-              } else {
-                debugPrint(
-                  '[IncidentsService] Video upload failed; sending without video clip.',
-                );
-              }
-              
-              // Clean up the local temporary video file after attempting upload
-              try {
-                await videoFile.delete();
-              } catch (_) {}
-            } else {
-              debugPrint(
-                '[IncidentsService] Video file not found: $videoPath',
-              );
-            }
-
-            // Remove device path from payload
-            decoded.remove('videoPath');
-          }
-
-          // Clean up payload: remove any keys where value is null, empty string, or 'string' placeholder
-          decoded.removeWhere((key, value) {
-            if (value == null) return true;
-            if (value is String) {
-              final clean = value.trim();
-              return clean.isEmpty || clean.toLowerCase() == 'string';
-            }
-            return false;
-          });
-
-          final String finalBody = jsonEncode(decoded);
-
-          debugPrint('--------------------------------------------------');
-          debugPrint('[API REQUEST] POST -> $url');
-          debugPrint('[API REQUEST] PAYLOAD: $finalBody');
-          debugPrint('--------------------------------------------------');
-
-          // ── STEP 2: incident JSON POST, always application/json ──
-          final response = await http
-              .post(
-                url,
-                headers: {'Content-Type': 'application/json'},
-                body: finalBody,
-              )
-              .timeout(const Duration(seconds: 15));
-
-          debugPrint('--------------------------------------------------');
-          debugPrint('[API RESPONSE] Status Code: ${response.statusCode}');
-          debugPrint('[API RESPONSE] Body: ${response.body}');
-          debugPrint('--------------------------------------------------');
-
-          if (response.statusCode == 200 || response.statusCode == 201) {
-            debugPrint(
-              '[EVENT SYNC SUCCESS] ✓ Successfully moved offline event to online server: $key ($eventType)',
-            );
-            _box.delete(key);
-          } else {
-            debugPrint(
-              '[EVENT SYNC FAILURE] ✗ Failed to move offline event $key ($eventType) online. Status: ${response.statusCode}',
-            );
-          }
-        } catch (e) {
-          debugPrint(
-            '[EVENT SYNC ERROR] ✗ Error moving offline event $key ($eventType) online: $e',
-          );
-          networkFailed = true;
-        }
-      });
-
-      await Future.wait(futures);
+      debugPrint('==================================================');
+      debugPrint(
+        '[SYNC COMPLETE] Finished moving offline events. Remaining pending: ${_box.length}',
+      );
+      debugPrint('==================================================');
+    } finally {
+      _isSyncing = false;
     }
-
-    debugPrint('==================================================');
-    debugPrint(
-      '[SYNC COMPLETE] Finished moving offline events. Remaining pending: ${_box.length}',
-    );
-    debugPrint('==================================================');
   }
 
   /// Evidence image-ne POST /api/incidents/evidence multipart-il upload cheyt,

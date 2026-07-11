@@ -191,6 +191,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   AuthStatus _prevAuthSound = AuthStatus.scanning;
   final Map<String, DateTime> _lastIncidentReportAt = {};
   final Map<String, DateTime> _lastVoiceAlertAt = {};
+  final Map<String, DateTime> _lastCooldownLogAt = {};
   String? _activeBannerKey;
   DateTime? _activeBannerAt;
   static const Duration _kBannerVisibleDuration = Duration(seconds: 3);
@@ -1763,8 +1764,8 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
         return;
       }
 
-      final effectiveDriverId = (_state.authStatus == AuthStatus.unauthorized)
-          ? 'unknown'
+      final String? effectiveDriverId = (_state.authStatus == AuthStatus.unauthorized)
+          ? null
           : _driverId;
       final effectiveDriverName = (_state.authStatus == AuthStatus.unauthorized)
           ? 'Unknown Person'
@@ -2011,10 +2012,36 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   bool _checkCooldown(String label) {
     final now = DateTime.now();
     final lastTime = _lastIncidentReportAt[label];
-    // 10 minutes cooldown for incident REPORTING to server only
-    if (lastTime == null || now.difference(lastTime).inSeconds >= 10 * 60) {
+    const int cooldownDuration = 30; // 30 seconds cooldown for incident REPORTING to server only
+
+    if (lastTime == null) {
       _lastIncidentReportAt[label] = now;
+      debugPrint('[IncidentCooldown] $label first trigger. Reporting allowed.');
       return true;
+    }
+
+    final elapsed = now.difference(lastTime).inSeconds;
+    if (elapsed >= cooldownDuration) {
+      _lastIncidentReportAt[label] = now;
+      debugPrint('[IncidentCooldown] Cooldown expired for $label ($elapsed s elapsed). Reporting allowed.');
+      return true;
+    }
+
+    final remainingSeconds = cooldownDuration - elapsed;
+    final remainingMinutes = (remainingSeconds / 60).floor();
+    final remSecs = remainingSeconds % 60;
+
+    // Throttle logs to once every 10 seconds to avoid spamming the console
+    final lastLogTime = _lastCooldownLogAt[label];
+    if (lastLogTime == null || now.difference(lastLogTime).inSeconds >= 10) {
+      _lastCooldownLogAt[label] = now;
+      final String timeStr = remainingMinutes > 0
+          ? '$remainingMinutes min $remSecs sec'
+          : '$remainingSeconds sec';
+      debugPrint(
+        '[IncidentCooldown] $label API report blocked (Cooldown active). '
+        'Remaining time: $timeStr ($elapsed s elapsed since last report).',
+      );
     }
     return false;
   }
@@ -2070,7 +2097,9 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       if (_checkCooldown('seatbelt')) {
         _reportIncident('Seatbelt Not Worn', 'High', 1.0);
       }
-      if (_checkVoiceCooldown('seatbelt', const Duration(seconds: 15))) {
+
+      // Speak warning once immediately, then once every 1 minute if still unbuckled
+      if (_checkVoiceCooldown('seatbelt', const Duration(minutes: 1))) {
         _tts.speak(AlertMessages.seatbelt(_tts.currentLang));
       }
     } else {
@@ -2078,6 +2107,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       _seatbeltAlertStart = null;
       _seatbeltPhaseStart = null;
       _seatbeltInBeepPhase = true;
+      _lastVoiceAlertAt.remove('seatbelt');
     }
 
     // ── GENERAL ALERTS (sound + report on 5-min cooldown) ────────────────
@@ -2117,7 +2147,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       if (_checkCooldown('Asleep')) {
         _reportIncident('Drowsiness', 'High', 1.0);
       }
-      if (_checkVoiceCooldown('Asleep', const Duration(seconds: 15))) {
+      if (_checkVoiceCooldown('Asleep', const Duration(seconds: 3))) {
         _tts.speak(AlertMessages.drowsy(_tts.currentLang));
       }
     }
@@ -2127,7 +2157,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       if (_checkCooldown('Drowsiness')) {
         _reportIncident('Drowsiness', 'Medium', 0.8);
       }
-      if (_checkVoiceCooldown('Drowsiness', const Duration(seconds: 15))) {
+      if (_checkVoiceCooldown('Drowsiness', const Duration(seconds: 3))) {
         _tts.speak(AlertMessages.drowsy(_tts.currentLang));
       }
     }
@@ -2136,7 +2166,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       if (_checkCooldown('Distraction')) {
         _reportIncident('Distraction', 'Medium', 0.8);
       }
-      if (_checkVoiceCooldown('Distraction', const Duration(seconds: 15))) {
+      if (_checkVoiceCooldown('Distraction', const Duration(seconds: 3))) {
         _tts.speak(AlertMessages.distraction(_tts.currentLang));
       }
     }
@@ -2174,7 +2204,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
         _reportIncident(eventType, 'High', obj.confidence);
       }
 
-      if (_checkVoiceCooldown(label, const Duration(seconds: 15))) {
+      if (_checkVoiceCooldown(label, const Duration(seconds: 3))) {
         String voice = '';
         if (label == 'phone') {
           voice = AlertMessages.phone(_tts.currentLang);
