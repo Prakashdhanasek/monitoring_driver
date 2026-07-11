@@ -194,6 +194,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   DistractionStatus _prevDistract = DistractionStatus.forward;
   AuthStatus _prevAuthSound = AuthStatus.scanning;
   final Map<String, DateTime> _lastIncidentReportAt = {};
+  final Map<String, DateTime> _lastVoiceAlertAt = {};
   String? _activeBannerKey;
   DateTime? _activeBannerAt;
   static const Duration _kBannerVisibleDuration = Duration(seconds: 3);
@@ -2017,9 +2018,19 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   bool _checkCooldown(String label) {
     final now = DateTime.now();
     final lastTime = _lastIncidentReportAt[label];
-    // 15 minutes cooldown for incident REPORTING to server
-    if (lastTime == null || now.difference(lastTime).inSeconds >= 15 * 60) {
+    // 10 minutes cooldown for incident REPORTING to server only
+    if (lastTime == null || now.difference(lastTime).inSeconds >= 10 * 60) {
       _lastIncidentReportAt[label] = now;
+      return true;
+    }
+    return false;
+  }
+
+  bool _checkVoiceCooldown(String label, Duration duration) {
+    final now = DateTime.now();
+    final lastTime = _lastVoiceAlertAt[label];
+    if (lastTime == null || now.difference(lastTime) >= duration) {
+      _lastVoiceAlertAt[label] = now;
       return true;
     }
     return false;
@@ -2062,9 +2073,11 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
         soft = true;
       }
 
-      // Report incident once per 5 min
+      // Report incident once per 10 min
       if (_checkCooldown('seatbelt')) {
         _reportIncident('Seatbelt Not Worn', 'High', 1.0);
+      }
+      if (_checkVoiceCooldown('seatbelt', const Duration(seconds: 15))) {
         _tts.speak(AlertMessages.seatbelt(_tts.currentLang));
       }
     } else {
@@ -2110,6 +2123,8 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
 
       if (_checkCooldown('Asleep')) {
         _reportIncident('Drowsiness', 'High', 1.0);
+      }
+      if (_checkVoiceCooldown('Asleep', const Duration(seconds: 15))) {
         _tts.speak(AlertMessages.drowsy(_tts.currentLang));
       }
     }
@@ -2118,6 +2133,8 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
 
       if (_checkCooldown('Drowsiness')) {
         _reportIncident('Drowsiness', 'Medium', 0.8);
+      }
+      if (_checkVoiceCooldown('Drowsiness', const Duration(seconds: 15))) {
         _tts.speak(AlertMessages.drowsy(_tts.currentLang));
       }
     }
@@ -2125,6 +2142,8 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       soft = true;
       if (_checkCooldown('Distraction')) {
         _reportIncident('Distraction', 'Medium', 0.8);
+      }
+      if (_checkVoiceCooldown('Distraction', const Duration(seconds: 15))) {
         _tts.speak(AlertMessages.distraction(_tts.currentLang));
       }
     }
@@ -2146,25 +2165,36 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
 
       if (_checkCooldown(label)) {
         String eventType = label;
-        String voice = '';
         if (label == 'phone') {
           eventType = 'Phone Usage';
-          voice = AlertMessages.phone(_tts.currentLang);
         }
         if (label == 'cigarette') {
           eventType = 'Smoking';
-          voice = AlertMessages.cigarette(_tts.currentLang);
         }
         if (label == 'eating') {
           eventType = 'Eating';
-          voice = AlertMessages.eating(_tts.currentLang);
         }
         if (label == 'drinking') {
           eventType = 'Drinking';
-          voice = AlertMessages.drinking(_tts.currentLang);
         }
 
         _reportIncident(eventType, 'High', obj.confidence);
+      }
+
+      if (_checkVoiceCooldown(label, const Duration(seconds: 15))) {
+        String voice = '';
+        if (label == 'phone') {
+          voice = AlertMessages.phone(_tts.currentLang);
+        }
+        if (label == 'cigarette') {
+          voice = AlertMessages.cigarette(_tts.currentLang);
+        }
+        if (label == 'eating') {
+          voice = AlertMessages.eating(_tts.currentLang);
+        }
+        if (label == 'drinking') {
+          voice = AlertMessages.drinking(_tts.currentLang);
+        }
         if (voice.isNotEmpty) _tts.speak(voice);
       }
     }
