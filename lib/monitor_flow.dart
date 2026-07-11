@@ -2286,9 +2286,17 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       _lastCamAlertSoundAt = now;
       _playAlert('audio/alert_loud.mp3');
 
-      // TTS for person specifically
+      // TTS for detected objects in driver's language
       if (labels.contains('person')) {
         _tts.speak(AlertMessages.personDetected(_tts.currentLang));
+      } else if (labels.contains('motorcycle')) {
+        _tts.speak(AlertMessages.motorcycleDetected(_tts.currentLang));
+      } else if (labels.contains('bus')) {
+        _tts.speak(AlertMessages.busDetected(_tts.currentLang));
+      } else if (labels.contains('truck')) {
+        _tts.speak(AlertMessages.truckDetected(_tts.currentLang));
+      } else if (labels.contains('bicycle')) {
+        _tts.speak(AlertMessages.bicycleDetected(_tts.currentLang));
       } else if (labels.contains('car') ||
           labels.contains('truck') ||
           labels.contains('bus')) {
@@ -2950,6 +2958,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
           'from center, ${beyond.toStringAsFixed(1)} m beyond limit.',
         );
         _reportBoundaryViolation(beyond);
+        _tts.speak(AlertMessages.boundaryViolation(_tts.currentLang));
       }
     } else {
       // Back inside — clear banner and re-arm.
@@ -3024,15 +3033,15 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
         _harshBannerText = ' HARSH ACCELERATION';
         _harshEventAt = now;
         _reportIncident('Harsh Acceleration', 'Medium', 0.9);
-        _tts.speak('Please accelerate smoothly.');
+        _tts.speak(AlertMessages.harshAcceleration(_tts.currentLang));
       }
     } else if (delta <= -_kSpeedDeltaMs) {
       _lastHarshAt = now;
       if (_harshCooldown('HarshBraking')) {
-        _harshBannerText = 'HARSH BRAKING';         // ← add
+        _harshBannerText = 'HARSH BRAKING';
         _harshEventAt = now;
         _reportIncident('Harsh Braking', 'High', 0.9);
-        _tts.speak('Please brake gently.');
+        _tts.speak(AlertMessages.harshBraking(_tts.currentLang));
       }
     }
     // else: strong force but speed barely changed → likely a turn or pothole.

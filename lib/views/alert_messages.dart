@@ -103,6 +103,48 @@ class AlertMessages {
       ml: 'മുന്നറിയിപ്പ്. വാഹനത്തെ കണ്ടെത്തി.',
       ta: 'எச்சரிக்கை. வாகனம் கண்டறியப்பட்டது.');
 
+  static String harshBraking(AlertLang lang) => _pick(lang,
+      en: 'Please brake gently.',
+      hi: 'कृपया धीरे से ब्रेक लगाएं।',
+      ml: 'ദയവായി സാവധാനത്തിൽ ബ്രേക്ക് ചെയ്യുക.',
+      ta: 'மெதுவாக பிரேக் செய்யவும்.');
+
+  static String harshAcceleration(AlertLang lang) => _pick(lang,
+      en: 'Please accelerate smoothly.',
+      hi: 'कृपया धीरे-धीरे गति बढ़ाएं।',
+      ml: 'ദയവായി സാവധാനത്തിൽ വേഗത കൂട്ടുക.',
+      ta: 'மெதுவாக வேகத்தை அதிகரிக்கவும்.');
+
+  static String boundaryViolation(AlertLang lang) => _pick(lang,
+      en: 'Warning. You have crossed the boundary limit.',
+      hi: 'चेतावनी। आपने सीमा पार कर ली है।',
+      ml: 'മുന്നറിയിപ്പ്. നിങ്ങൾ അതിർത്തി കടന്നിരിക്കുന്നു.',
+      ta: 'எச்சரிக்கை. நீங்கள் எல்லையை தாண்டிவிட்டீர்கள்.');
+
+  static String motorcycleDetected(AlertLang lang) => _pick(lang,
+      en: 'Warning. Motorcycle detected.',
+      hi: 'चेतावनी। मोटरसाइकिल का पता चला।',
+      ml: 'മുന്നറിയിപ്പ്. മോട്ടോർസൈക്കിൾ കണ്ടെത്തി.',
+      ta: 'எச்சரிக்கை. இருசக்கர வாகனம் கண்டறியப்பட்டது.');
+
+  static String busDetected(AlertLang lang) => _pick(lang,
+      en: 'Warning. Bus detected.',
+      hi: 'चेतावनी। बस का पता चला।',
+      ml: 'മുന്നറിയിപ്പ്. ബസ് കണ്ടെത്തി.',
+      ta: 'எச்சரிக்கை. பேருந்து கண்டறியப்பட்டது.');
+
+  static String bicycleDetected(AlertLang lang) => _pick(lang,
+      en: 'Warning. Bicycle detected.',
+      hi: 'चेतावनी। साइकिल का पता चला।',
+      ml: 'മുന്നറിയിപ്പ്. സൈക്കിൾ കണ്ടെത്തി.',
+      ta: 'எச்சரிக்கை. மிதிவண்டி கண்டறியப்பட்டது.');
+
+  static String truckDetected(AlertLang lang) => _pick(lang,
+      en: 'Warning. Truck detected.',
+      hi: 'चेतावनी। ट्रक का पता चला।',
+      ml: 'മുന്നറിയിപ്പ്. ട്രക്ക് കണ്ടെത്തി.',
+      ta: 'எச்சரிக்கை. லாரி கண்டறியப்பட்டது.');
+
   /// Break reminder messages — rotates through 4 variations (index 0–3).
   static String breakReminder(AlertLang lang, int index) {
     switch (index % 4) {
