@@ -246,13 +246,16 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   bool _flashScreenshot = false;
   DateTime? _lastFlashAt;
 
+  // ── No-drivers auto-retry (retries fetch every 30 s while stuck) ──
+  Timer? _noDriversRetryTimer;
+
   // ── Break alert (periodic driver fatigue reminder) ──
   bool _showBreakAlert = false;
   int _breakAlertIndex = 0;
   Map<String, String>? _currentBreakMsg;
   Timer? _breakAlertTimer;
   Timer? _breakAlertDismissTimer;
-  static const Duration _kBreakAlertInterval = Duration(seconds: 90);
+  static const Duration _kBreakAlertInterval = Duration(seconds: 20);
   static const Duration _kBreakAlertDisplayDuration = Duration(seconds: 12);
   static const List<Map<String, String>> _kBreakMessages = [
     {'emoji': '☕', 'title': 'Time for a Break!', 'sub': 'Pull over safely and rest for a few minutes.'},
@@ -665,6 +668,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     _blindSpotTimer?.cancel();
     _breakAlertTimer?.cancel();
     _breakAlertDismissTimer?.cancel();
+    _noDriversRetryTimer?.cancel();
     _accelSub?.cancel();
     super.dispose();
   }
@@ -1918,8 +1922,9 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     if (!mounted) return;
     if (_phase != Phase.monitoring) { debugPrint('[BreakAlert] SKIP: not monitoring'); return; }
     if (_tripCompleted) { debugPrint('[BreakAlert] SKIP: trip completed'); return; }
+    if (_camMode != CamMode.driverMonitoring) { debugPrint('[BreakAlert] SKIP: camera overlay active ($_camMode)'); return; }
     if (_getMonitorBannerKey(_state.hasPhone, _state.hasCigarette) != null) { debugPrint('[BreakAlert] SKIP: active banner (${_getMonitorBannerKey(_state.hasPhone, _state.hasCigarette)})'); return; }
-    if (!_state.seatbeltBuckled && _activeBannerKey != null) { debugPrint('[BreakAlert] SKIP: seatbelt banner'); return; }
+    if (!_state.seatbeltBuckled) { debugPrint('[BreakAlert] SKIP: seatbelt unbuckled'); return; }
     if (_state.drowsinessLevel == DrowsinessLevel.drowsy || _state.drowsinessLevel == DrowsinessLevel.asleep) { debugPrint('[BreakAlert] SKIP: drowsy/asleep'); return; }
     if (_state.distractionStatus == DistractionStatus.distracted) { debugPrint('[BreakAlert] SKIP: distracted'); return; }
     if (_state.vehicleSpeed > _kSpeedLimitKmh) { debugPrint('[BreakAlert] SKIP: overspeed'); return; }
@@ -1947,11 +1952,20 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
 
   /// Bottom-center break alert toast — no container, just emoji + text with glance pulse.
   Widget _breakAlertOverlay() {
+    // Guard: never render outside the active monitoring phase.
+    // The overlay sits in the root Stack so without this it can bleed over
+    // the verifying / details / trip-completed screens on slower devices.
+    if (_phase != Phase.monitoring || _tripCompleted || _camMode != CamMode.driverMonitoring) {
+      if (_showBreakAlert) {
+        WidgetsBinding.instance.addPostFrameCallback((_) => _dismissBreakAlert());
+      }
+      return const SizedBox.shrink();
+    }
     // Auto-dismiss if any real alert becomes active while toast is showing.
     if (_showBreakAlert) {
       final anyAlertActive =
           _getMonitorBannerKey(_state.hasPhone, _state.hasCigarette) != null ||
-          (!_state.seatbeltBuckled && _activeBannerKey != null) ||
+          !_state.seatbeltBuckled ||
           _state.drowsinessLevel == DrowsinessLevel.drowsy ||
           _state.drowsinessLevel == DrowsinessLevel.asleep ||
           _state.distractionStatus == DistractionStatus.distracted ||
@@ -3870,15 +3884,22 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   // ── VERIFYING ──
   Widget _verifyingOverlay() {
     if (!_initializing && !_authEngine.isEnrolled && !_isRefreshingDrivers) {
+      // Auto-retry: re-fetch drivers every 30 s while stuck on this screen.
+      _noDriversRetryTimer ??= Timer(const Duration(seconds: 30), () {
+        _noDriversRetryTimer = null;
+        if (mounted && !_authEngine.isEnrolled && !_isRefreshingDrivers) {
+          _refreshDriversOnFaceDetection();
+        }
+      });
       return Container(
         color: Colors.black.withValues(alpha: 0.85),
-        child: const Center(
+        child: Center(
           child: Column(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              Icon(Icons.people_outlined, color: Colors.redAccent, size: 64),
-              SizedBox(height: 24),
-              Text(
+              const Icon(Icons.people_outlined, color: Colors.redAccent, size: 64),
+              const SizedBox(height: 24),
+              const Text(
                 'No Drivers Assigned',
                 style: TextStyle(
                   color: Colors.white,
@@ -3886,8 +3907,8 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
                   fontWeight: FontWeight.w600,
                 ),
               ),
-              SizedBox(height: 8),
-              Text(
+              const SizedBox(height: 8),
+              const Text(
                 'No registered/authorized drivers found for this device.',
                 style: TextStyle(color: Colors.white70, fontSize: 14),
                 textAlign: TextAlign.center,
