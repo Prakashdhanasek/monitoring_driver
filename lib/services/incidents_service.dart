@@ -565,22 +565,22 @@ class IncidentsService {
       'vehicleSpeed': vehicleSpeed.toInt(),
       'gpsLatitude': gpsLatitude,
       'gpsLongitude': gpsLongitude,
-      'snapshotUrl': snapshotUrl.isEmpty ? 'string' : snapshotUrl,
+      if (snapshotUrl.isNotEmpty && snapshotUrl != 'string') 'snapshotUrl': snapshotUrl,
 
       // snapshotPath = exact on-device image file path.
       // Sync-il upload cheyt URL aakum.
       if (exactSnapshotPath.isNotEmpty) 'snapshotPath': exactSnapshotPath,
 
-      'videoClipUrl': videoClipUrl.isEmpty ? 'string' : videoClipUrl,
+      if (videoClipUrl.isNotEmpty && videoClipUrl != 'string') 'videoClipUrl': videoClipUrl,
       if (videoPath.isNotEmpty) 'videoPath': videoPath,
       'status': 'Open',
       'occurredAt': DateTime.now().toUtc().toIso8601String(),
 
-      if (vehicleId != null) 'vehicleId': vehicleId,
-      if (vehicleRegistrationNumber != null)
+      if (vehicleId != null && vehicleId.trim().isNotEmpty) 'vehicleId': vehicleId,
+      if (vehicleRegistrationNumber != null && vehicleRegistrationNumber.trim().isNotEmpty)
         'vehicleRegistrationNumber': vehicleRegistrationNumber,
-      if (driverId != null) 'driverId': driverId,
-      if (driverName != null) 'driverName': driverName,
+      if (driverId != null && driverId.trim().isNotEmpty) 'driverId': driverId,
+      if (driverName != null && driverName.trim().isNotEmpty) 'driverName': driverName,
     };
 
     final key = DateTime.now().microsecondsSinceEpoch.toString();
@@ -716,6 +716,16 @@ class IncidentsService {
             // Remove device path from payload
             decoded.remove('videoPath');
           }
+
+          // Clean up payload: remove any keys where value is null, empty string, or 'string' placeholder
+          decoded.removeWhere((key, value) {
+            if (value == null) return true;
+            if (value is String) {
+              final clean = value.trim();
+              return clean.isEmpty || clean.toLowerCase() == 'string';
+            }
+            return false;
+          });
 
           final String finalBody = jsonEncode(decoded);
 
