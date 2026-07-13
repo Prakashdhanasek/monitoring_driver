@@ -175,7 +175,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   DateTime? _lastDriversRefreshAt;
 
   // Verified driver
-  String _driverName = 'Driver';
+  String _driverName = '';
   String _driverId = '—';
   String? _vehicleId;
   String? _vehicleRegNo;
@@ -257,7 +257,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   Map<String, String>? _currentBreakMsg;
   Timer? _breakAlertTimer;
   Timer? _breakAlertDismissTimer;
-  static const Duration _kBreakAlertInterval = Duration(seconds: 90);
+  static const Duration _kBreakAlertInterval = Duration(hours: 1);
   static const Duration _kBreakAlertDisplayDuration = Duration(seconds: 12);
   static const List<Map<String, String>> _kBreakMessages = [
     {
@@ -1743,8 +1743,17 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       final deviceId = _settings.getDeviceId();
       if (deviceId == null || deviceId.isEmpty) return;
 
-      // Ella alert-inum screenshot effect kaanikkuka.
+      // Ella alert-inum screenshot effect kaanikkuka (this happens every 30s locally).
       _showScreenshotFlash();
+
+      // Check 10-minute cooldown for API syncing
+      final now = DateTime.now();
+      final lastApiReport = _settings.getLastApiReportTime(eventType);
+      if (lastApiReport != null && now.difference(lastApiReport).inMinutes < 10) {
+        debugPrint('[Flow] API report throttled for 10 mins: $eventType');
+        return;
+      }
+      _settings.setLastApiReportTime(eventType, now);
 
       // Save the CURRENT camera frame directly as the incident snapshot.
       // This avoids the race condition where the evidence folder from the
@@ -2079,8 +2088,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   bool _checkCooldown(String label) {
     final now = DateTime.now();
     final lastTime = _lastIncidentReportAt[label];
-    const int cooldownDuration =
-        30; // 30 seconds cooldown for incident REPORTING to server only
+    const int cooldownDuration = 30; // 30 seconds cooldown for UI flash and local sound
 
     if (lastTime == null) {
       _lastIncidentReportAt[label] = now;
@@ -2217,30 +2225,21 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     if (_state.drowsinessLevel == DrowsinessLevel.asleep) {
       loud = true;
 
-      if (_checkCooldown('Asleep')) {
+      // Use 'Drowsiness' for both asleep and drowsy so they share the 10 min API cooldown
+      if (_checkCooldown('Drowsiness')) {
         _reportIncident('Drowsiness', 'High', 1.0);
       }
-      if (_checkVoiceCooldown('Asleep', const Duration(seconds: 3))) {
-        _tts.speak(AlertMessages.drowsy(_tts.currentLang));
-      }
-    }
-    if (_state.drowsinessLevel == DrowsinessLevel.drowsy) {
+    } else if (_state.drowsinessLevel == DrowsinessLevel.drowsy) {
       soft = true;
 
       if (_checkCooldown('Drowsiness')) {
         _reportIncident('Drowsiness', 'Medium', 0.8);
-      }
-      if (_checkVoiceCooldown('Drowsiness', const Duration(seconds: 3))) {
-        _tts.speak(AlertMessages.drowsy(_tts.currentLang));
       }
     }
     if (_state.distractionStatus == DistractionStatus.distracted) {
       soft = true;
       if (_checkCooldown('Distraction')) {
         _reportIncident('Distraction', 'Medium', 0.8);
-      }
-      if (_checkVoiceCooldown('Distraction', const Duration(seconds: 3))) {
-        _tts.speak(AlertMessages.distraction(_tts.currentLang));
       }
     }
 
@@ -2276,23 +2275,6 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
 
         _reportIncident(eventType, 'High', obj.confidence);
       }
-
-      if (_checkVoiceCooldown(label, const Duration(seconds: 3))) {
-        String voice = '';
-        if (label == 'phone') {
-          voice = AlertMessages.phone(_tts.currentLang);
-        }
-        if (label == 'cigarette') {
-          voice = AlertMessages.cigarette(_tts.currentLang);
-        }
-        if (label == 'eating') {
-          voice = AlertMessages.eating(_tts.currentLang);
-        }
-        if (label == 'drinking') {
-          voice = AlertMessages.drinking(_tts.currentLang);
-        }
-        if (voice.isNotEmpty) _tts.speak(voice);
-      }
     }
 
     final currentBannerKey = _getMonitorBannerKey(phone, smoke);
@@ -2304,6 +2286,35 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     } else {
       _activeBannerKey = null;
       _activeBannerAt = null;
+    }
+
+    // --- Unified TTS Logic based on Banner Priority ---
+    if (currentBannerKey != null && currentBannerKey != 'harsh') {
+      int cooldownSeconds = 30;
+      if (currentBannerKey == 'asleep' || currentBannerKey == 'drowsy') cooldownSeconds = 5;
+      
+      if (_checkVoiceCooldown(currentBannerKey, Duration(seconds: cooldownSeconds))) {
+        String voice = '';
+        if (currentBannerKey == 'phone') {
+          voice = AlertMessages.phone(_tts.currentLang);
+        } else if (currentBannerKey == 'smoke') {
+          voice = AlertMessages.cigarette(_tts.currentLang);
+        } else if (currentBannerKey == 'eating') {
+          voice = AlertMessages.eating(_tts.currentLang);
+        } else if (currentBannerKey == 'drinking') {
+          voice = AlertMessages.drinking(_tts.currentLang);
+        } else if (currentBannerKey == 'multiple' || currentBannerKey == 'distracted') {
+          voice = AlertMessages.distraction(_tts.currentLang);
+        } else if (currentBannerKey == 'asleep' || currentBannerKey == 'drowsy') {
+          voice = AlertMessages.drowsy(_tts.currentLang);
+        } else if (currentBannerKey == 'unauthorized') {
+          voice = AlertMessages.unauthorized(_tts.currentLang);
+        }
+        
+        if (voice.isNotEmpty) {
+          _tts.speak(voice);
+        }
+      }
     }
 
     // Remember current states for next-frame transition checks.

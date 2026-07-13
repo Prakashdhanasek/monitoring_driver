@@ -63,9 +63,6 @@ class _DeviceEnrollmentScreenState extends State<DeviceEnrollmentScreen> {
   }
 
   Future<String> _getDeviceImei() async {
-
-     _settings.saveDeviceId(''); // Clear cached ID first to ensure fresh fetch
-  try { await _storage.delete(key: 'device_id'); } catch (_) {}
     String? hardwareImei;
 
     // 1. AADYAM real hardware IMEI try cheyyuka (device-owner -> real IMEI).

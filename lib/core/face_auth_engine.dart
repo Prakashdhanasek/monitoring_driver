@@ -123,6 +123,22 @@ class FaceAuthEngine {
       return; // Skip heavy FaceNet embedding
     }
 
+    // ── HEAD ANGLE LENIENCY FOR AUTHENTICATED DRIVER ─────────────────────────
+    // If the driver is already authenticated, check head angle before doing verification.
+    // Head turns (yaw), pitch, and roll shifts shouldn't trigger unauthorized states instantly,
+    // but we must increment misses so a new person doesn't stay authenticated indefinitely.
+    if (state.authStatus == AuthStatus.authenticated) {
+      final yaw = face.headEulerAngleY ?? 0.0;
+      final pitch = face.headEulerAngleX ?? 0.0;
+      final roll = face.headEulerAngleZ ?? 0.0;
+
+      if (yaw.abs() > 25.0 || pitch.abs() > 25.0 || roll.abs() > 25.0) {
+        // Driver is looking away (e.g. checking mirrors). Skip FaceNet for this frame.
+        // We DO NOT increment misses here so they don't get kicked out to unauthorized.
+        return;
+      }
+    }
+
     final liveEmbedding = _embedFaceFromCameraImage(
       image,
       rotation,
@@ -183,20 +199,12 @@ class FaceAuthEngine {
       _consecutiveMatch = 0;
       lastMatchedLabel = null;
 
-      // If the tracking ID changed (different physical face) and it fails verification,
-      // kick them out quickly (sudden unauthorized).
-      final bool isDifferentFace = face.trackingId != null &&
-          state.authenticatedTrackingId != null &&
-          face.trackingId != state.authenticatedTrackingId;
-
-      // Allow 8 frames of mismatch for any authenticated driver to prevent
-      // false alarms from head turns and tracking ID resets.
-      // Kick out after 3 frames if not yet authenticated.
-      final requiredMisses = isDifferentFace
-          ? 1
-          : (state.authStatus == AuthStatus.authenticated)
-              ? 8
-              : 3;
+      // Once authenticated, we allow a small buffer of consecutive misses (e.g., 8 frames)
+      // to prevent false alarms from temporary mismatches, shadows, or sunglasses.
+      // A different person replacing the driver will consistently mismatch and exceed 8 frames.
+      final requiredMisses = (state.authStatus == AuthStatus.authenticated)
+          ? 8
+          : 3;
 
       if (_consecutiveMiss >= requiredMisses) {
         state.authStatus = AuthStatus.unauthorized;

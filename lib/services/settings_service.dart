@@ -53,6 +53,20 @@ class SettingsService {
   /// Check if the device has been registered.
   bool get isRegistered => _box.get(_keyIsRegistered, defaultValue: false);
 
+  // ── Cooldowns ─────────────────────────────────────────────
+
+  /// Get the last time an event type was reported to the API.
+  DateTime? getLastApiReportTime(String eventType) {
+    final int? timestamp = _box.get('cooldown_$eventType');
+    if (timestamp == null) return null;
+    return DateTime.fromMillisecondsSinceEpoch(timestamp);
+  }
+
+  /// Save the last time an event type was reported to the API.
+  void setLastApiReportTime(String eventType, DateTime time) {
+    _box.put('cooldown_$eventType', time.millisecondsSinceEpoch);
+  }
+
   // ── Clear ─────────────────────────────────────────────────
 
   /// Clear all settings (used for factory reset / debugging).
