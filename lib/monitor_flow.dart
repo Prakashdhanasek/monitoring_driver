@@ -166,7 +166,8 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   bool _camReady = false;
   bool _busy = false;
   bool _streaming = false;
-  bool _updatingApp = false; // true while OTA dialog is open → blocks frame processing
+  bool _updatingApp =
+      false; // true while OTA dialog is open → blocks frame processing
   int _frame = 0;
   bool _isRefreshingDrivers = false;
   DateTime? _lastAuthAttemptAt;
@@ -259,11 +260,31 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   static const Duration _kBreakAlertInterval = Duration(seconds: 90);
   static const Duration _kBreakAlertDisplayDuration = Duration(seconds: 12);
   static const List<Map<String, String>> _kBreakMessages = [
-    {'emoji': '☕', 'title': 'Time for a Break!', 'sub': 'Pull over safely and rest for a few minutes.'},
-    {'emoji': '💧', 'title': 'Stay Hydrated!', 'sub': 'Drink some water to stay alert and focused.'},
-    {'emoji': '👀', 'title': 'Rest Your Eyes', 'sub': 'Blink often and glance at distant objects.'},
-    {'emoji': '🧘', 'title': 'Stretch a Little', 'sub': 'A short walk can refresh your body and mind.'},
-    {'emoji': '🌬️', 'title': 'Take a Deep Breath', 'sub': 'Breathe deeply to reduce stress and stay calm.'},
+    {
+      'emoji': '☕',
+      'title': 'Time for a Break!',
+      'sub': 'Pull over safely and rest for a few minutes.',
+    },
+    {
+      'emoji': '💧',
+      'title': 'Stay Hydrated!',
+      'sub': 'Drink some water to stay alert and focused.',
+    },
+    {
+      'emoji': '👀',
+      'title': 'Rest Your Eyes',
+      'sub': 'Blink often and glance at distant objects.',
+    },
+    {
+      'emoji': '🧘',
+      'title': 'Stretch a Little',
+      'sub': 'A short walk can refresh your body and mind.',
+    },
+    {
+      'emoji': '🌬️',
+      'title': 'Take a Deep Breath',
+      'sub': 'Breathe deeply to reduce stress and stay calm.',
+    },
   ];
 
   // ── Geofence / boundary violation ──
@@ -278,26 +299,26 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   // ── Harsh driving (accelerometer magnitude + GPS classification) ──
   StreamSubscription<UserAccelerometerEvent>? _accelSub;
 
-// Force magnitude (m/s²) above which we treat it as a candidate harsh event.
+  // Force magnitude (m/s²) above which we treat it as a candidate harsh event.
   static const double _kHarshMagnitude = 3.5;
 
-// Ignore events below this speed (parked / crawling → GPS jitter noise).
+  // Ignore events below this speed (parked / crawling → GPS jitter noise).
   static const double _kMinHarshSpeedKmh = 5.0;
 
-// How much forward speed must change to classify accel vs brake (m/s).
+  // How much forward speed must change to classify accel vs brake (m/s).
   static const double _kSpeedDeltaMs = 0.8;
 
-// Local debounce so one physical event isn't detected dozens of times.
+  // Local debounce so one physical event isn't detected dozens of times.
   DateTime? _lastHarshAt;
   static const Duration _kHarshDebounce = Duration(seconds: 2);
 
-// Short rolling history of (timestamp, speed-in-m/s) for classification.
+  // Short rolling history of (timestamp, speed-in-m/s) for classification.
   final List<MapEntry<DateTime, double>> _speedHistory = [];
   // ── Harsh driving dedicated cooldown ──
   final Map<String, DateTime> _lastHarshReportAt = {};
   static const int _kHarshCooldownSeconds = 15;
   // Set when a harsh event fires; drives the banner via _getMonitorBannerKey.
-  String? _harshBannerText;   // e.g. 'HARSH BRAKING'
+  String? _harshBannerText; // e.g. 'HARSH BRAKING'
   DateTime? _harshEventAt;
 
   @override
@@ -633,7 +654,10 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       _connectivityTimer = Timer.periodic(const Duration(seconds: 5), (_) {
         _checkConnectivity();
         _checkCamConnections();
-        if (_leftCamIp == null || _rightCamIp == null || _frontCamIp == null || _esp32StreamUrl.isEmpty) {
+        if (_leftCamIp == null ||
+            _rightCamIp == null ||
+            _frontCamIp == null ||
+            _esp32StreamUrl.isEmpty) {
           _resolveSideCamIps();
           if (_esp32StreamUrl.isEmpty) _autoDiscoverRearCam();
         }
@@ -1428,8 +1452,9 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       bool driverFromApi = false;
       final deviceId = _settings.getDeviceId();
       if (deviceId != null && deviceId.isNotEmpty) {
-        final liveDrivers =
-            await _driversService.fetchDriversFromApiOnly(deviceId);
+        final liveDrivers = await _driversService.fetchDriversFromApiOnly(
+          deviceId,
+        );
         if (liveDrivers != null) {
           driverFromApi = true;
           final match = liveDrivers.firstWhere(
@@ -1438,7 +1463,9 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
           );
           if (match.isNotEmpty) driver = match;
         } else {
-          debugPrint('[Flow] API unavailable — licence check skipped, using cache for other fields.');
+          debugPrint(
+            '[Flow] API unavailable — licence check skipped, using cache for other fields.',
+          );
         }
       }
       // Fall back to cache only for non-licence fields (name, language, vehicleId).
@@ -1476,7 +1503,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
         debugPrint(
           '[Flow] Setting voice alert language to: $preferred (from API: $langStr)',
         );
-       await _tts.setLanguage(preferred);
+        await _tts.setLanguage(preferred);
 
         // ── Licence expiry check (API data preferred; cache fallback) ────────
         final String? licenseNum = driver['licenseNumber'] as String?;
@@ -1771,9 +1798,8 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
         return;
       }
 
-      final String? effectiveDriverId = (_state.authStatus == AuthStatus.unauthorized)
-          ? null
-          : _driverId;
+      final String? effectiveDriverId =
+          (_state.authStatus == AuthStatus.unauthorized) ? null : _driverId;
       final effectiveDriverName = (_state.authStatus == AuthStatus.unauthorized)
           ? 'Unknown Person'
           : _driverName;
@@ -1923,21 +1949,53 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
 
   void _triggerBreakAlert() {
     if (!mounted) return;
-    if (_phase != Phase.monitoring) { debugPrint('[BreakAlert] SKIP: not monitoring'); return; }
-    if (_tripCompleted) { debugPrint('[BreakAlert] SKIP: trip completed'); return; }
-    if (_getMonitorBannerKey(_state.hasPhone, _state.hasCigarette) != null) { debugPrint('[BreakAlert] SKIP: active banner (${_getMonitorBannerKey(_state.hasPhone, _state.hasCigarette)})'); return; }
-    if (!_state.seatbeltBuckled && _activeBannerKey != null) { debugPrint('[BreakAlert] SKIP: seatbelt banner'); return; }
-    if (_state.drowsinessLevel == DrowsinessLevel.drowsy || _state.drowsinessLevel == DrowsinessLevel.asleep) { debugPrint('[BreakAlert] SKIP: drowsy/asleep'); return; }
-    if (_state.distractionStatus == DistractionStatus.distracted) { debugPrint('[BreakAlert] SKIP: distracted'); return; }
-    if (_state.vehicleSpeed > _kSpeedLimitKmh) { debugPrint('[BreakAlert] SKIP: overspeed'); return; }
-    if (_state.authStatus == AuthStatus.unauthorized) { debugPrint('[BreakAlert] SKIP: unauthorized'); return; }
-    if (_camDetectionAlert != null && _camDetectionAlertAt != null &&
-        DateTime.now().difference(_camDetectionAlertAt!).inSeconds < 3) { debugPrint('[BreakAlert] SKIP: cam detection alert'); return; }
+    if (_phase != Phase.monitoring) {
+      debugPrint('[BreakAlert] SKIP: not monitoring');
+      return;
+    }
+    if (_tripCompleted) {
+      debugPrint('[BreakAlert] SKIP: trip completed');
+      return;
+    }
+    if (_getMonitorBannerKey(_state.hasPhone, _state.hasCigarette) != null) {
+      debugPrint(
+        '[BreakAlert] SKIP: active banner (${_getMonitorBannerKey(_state.hasPhone, _state.hasCigarette)})',
+      );
+      return;
+    }
+    if (!_state.seatbeltBuckled && _activeBannerKey != null) {
+      debugPrint('[BreakAlert] SKIP: seatbelt banner');
+      return;
+    }
+    if (_state.drowsinessLevel == DrowsinessLevel.drowsy ||
+        _state.drowsinessLevel == DrowsinessLevel.asleep) {
+      debugPrint('[BreakAlert] SKIP: drowsy/asleep');
+      return;
+    }
+    if (_state.distractionStatus == DistractionStatus.distracted) {
+      debugPrint('[BreakAlert] SKIP: distracted');
+      return;
+    }
+    if (_state.vehicleSpeed > _kSpeedLimitKmh) {
+      debugPrint('[BreakAlert] SKIP: overspeed');
+      return;
+    }
+    if (_state.authStatus == AuthStatus.unauthorized) {
+      debugPrint('[BreakAlert] SKIP: unauthorized');
+      return;
+    }
+    if (_camDetectionAlert != null &&
+        _camDetectionAlertAt != null &&
+        DateTime.now().difference(_camDetectionAlertAt!).inSeconds < 3) {
+      debugPrint('[BreakAlert] SKIP: cam detection alert');
+      return;
+    }
 
     debugPrint('[BreakAlert] ✓ SHOWING alert index=$_breakAlertIndex');
 
     setState(() => _showBreakAlert = true);
-    _currentBreakMsg = _kBreakMessages[_breakAlertIndex % _kBreakMessages.length];
+    _currentBreakMsg =
+        _kBreakMessages[_breakAlertIndex % _kBreakMessages.length];
     // Speak in the driver's preferred language.
     _tts.speak(AlertMessages.breakReminder(_tts.currentLang, _breakAlertIndex));
     _breakAlertIndex++;
@@ -1965,7 +2023,9 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
           _state.vehicleSpeed > _kSpeedLimitKmh ||
           _state.authStatus == AuthStatus.unauthorized;
       if (anyAlertActive) {
-        WidgetsBinding.instance.addPostFrameCallback((_) => _dismissBreakAlert());
+        WidgetsBinding.instance.addPostFrameCallback(
+          (_) => _dismissBreakAlert(),
+        );
         return const SizedBox.shrink();
       }
     }
@@ -2019,7 +2079,8 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   bool _checkCooldown(String label) {
     final now = DateTime.now();
     final lastTime = _lastIncidentReportAt[label];
-    const int cooldownDuration = 30; // 30 seconds cooldown for incident REPORTING to server only
+    const int cooldownDuration =
+        30; // 30 seconds cooldown for incident REPORTING to server only
 
     if (lastTime == null) {
       _lastIncidentReportAt[label] = now;
@@ -2030,7 +2091,9 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     final elapsed = now.difference(lastTime).inSeconds;
     if (elapsed >= cooldownDuration) {
       _lastIncidentReportAt[label] = now;
-      debugPrint('[IncidentCooldown] Cooldown expired for $label ($elapsed s elapsed). Reporting allowed.');
+      debugPrint(
+        '[IncidentCooldown] Cooldown expired for $label ($elapsed s elapsed). Reporting allowed.',
+      );
       return true;
     }
 
@@ -2546,8 +2609,18 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
 
   String _formatDate(DateTime date) {
     const months = [
-      'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
-      'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
+      'Jan',
+      'Feb',
+      'Mar',
+      'Apr',
+      'May',
+      'Jun',
+      'Jul',
+      'Aug',
+      'Sep',
+      'Oct',
+      'Nov',
+      'Dec',
     ];
     return '${date.day} ${months[date.month - 1]} ${date.year}';
   }
@@ -2569,7 +2642,9 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
             // Speak in driver's preferred language; dismiss when TTS finishes.
             // A 3-second minimum ensures the dialog is readable even for short phrases.
             Future.wait([
-              _tts.speakImmediately(AlertMessages.licenseExpired(_tts.currentLang)),
+              _tts.speakImmediately(
+                AlertMessages.licenseExpired(_tts.currentLang),
+              ),
               Future.delayed(const Duration(seconds: 3)),
             ]).then((_) {
               if (mounted) Navigator.of(context, rootNavigator: true).pop();
@@ -2581,8 +2656,13 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
             surfaceTintColor: Colors.transparent,
             elevation: 24,
             shadowColor: Colors.black54,
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-            insetPadding: const EdgeInsets.symmetric(horizontal: 52, vertical: 40),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(20),
+            ),
+            insetPadding: const EdgeInsets.symmetric(
+              horizontal: 52,
+              vertical: 40,
+            ),
             child: Container(
               decoration: BoxDecoration(
                 color: const Color(0xFF252839),
@@ -2636,7 +2716,10 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
                   const SizedBox(height: 16),
                   Container(
                     width: double.infinity,
-                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 14,
+                      vertical: 10,
+                    ),
                     decoration: BoxDecoration(
                       color: Colors.white.withOpacity(0.05),
                       borderRadius: BorderRadius.circular(10),
@@ -2647,7 +2730,11 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
                       children: [
                         Row(
                           children: [
-                            const Icon(Icons.badge_outlined, size: 14, color: Color(0xFFFF5C5C)),
+                            const Icon(
+                              Icons.badge_outlined,
+                              size: 14,
+                              color: Color(0xFFFF5C5C),
+                            ),
                             const SizedBox(width: 6),
                             Expanded(
                               child: Text(
@@ -2664,11 +2751,18 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
                         const SizedBox(height: 4),
                         Row(
                           children: [
-                            const Icon(Icons.calendar_today_outlined, size: 14, color: Color(0xFFABB4C8)),
+                            const Icon(
+                              Icons.calendar_today_outlined,
+                              size: 14,
+                              color: Color(0xFFABB4C8),
+                            ),
                             const SizedBox(width: 6),
                             Text(
                               'Expired: ${_formatDate(expiry)}',
-                              style: const TextStyle(fontSize: 11, color: Color(0xFFABB4C8)),
+                              style: const TextStyle(
+                                fontSize: 11,
+                                color: Color(0xFFABB4C8),
+                              ),
                             ),
                           ],
                         ),
@@ -2711,7 +2805,9 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
             // Speak in driver's preferred language; dismiss when TTS finishes.
             // A 3-second minimum ensures the dialog is readable even for short phrases.
             Future.wait([
-              _tts.speakImmediately(AlertMessages.licenseExpiringSoon(_tts.currentLang, daysLeft)),
+              _tts.speakImmediately(
+                AlertMessages.licenseExpiringSoon(_tts.currentLang, daysLeft),
+              ),
               Future.delayed(const Duration(seconds: 3)),
             ]).then((_) {
               if (mounted) Navigator.of(context, rootNavigator: true).pop();
@@ -2723,8 +2819,13 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
             surfaceTintColor: Colors.transparent,
             elevation: 24,
             shadowColor: Colors.black54,
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-            insetPadding: const EdgeInsets.symmetric(horizontal: 52, vertical: 40),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(20),
+            ),
+            insetPadding: const EdgeInsets.symmetric(
+              horizontal: 52,
+              vertical: 40,
+            ),
             child: Container(
               decoration: BoxDecoration(
                 color: const Color(0xFF252839),
@@ -2780,7 +2881,10 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
                   const SizedBox(height: 16),
                   Container(
                     width: double.infinity,
-                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 14,
+                      vertical: 10,
+                    ),
                     decoration: BoxDecoration(
                       color: Colors.white.withOpacity(0.05),
                       borderRadius: BorderRadius.circular(10),
@@ -2791,7 +2895,11 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
                       children: [
                         Row(
                           children: [
-                            const Icon(Icons.badge_outlined, size: 14, color: Color(0xFFFBBF24)),
+                            const Icon(
+                              Icons.badge_outlined,
+                              size: 14,
+                              color: Color(0xFFFBBF24),
+                            ),
                             const SizedBox(width: 6),
                             Expanded(
                               child: Text(
@@ -2808,11 +2916,18 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
                         const SizedBox(height: 4),
                         Row(
                           children: [
-                            const Icon(Icons.calendar_today_outlined, size: 14, color: Color(0xFFABB4C8)),
+                            const Icon(
+                              Icons.calendar_today_outlined,
+                              size: 14,
+                              color: Color(0xFFABB4C8),
+                            ),
                             const SizedBox(width: 6),
                             Text(
                               'Expires: ${_formatDate(expiry)}',
-                              style: const TextStyle(fontSize: 11, color: Color(0xFFABB4C8)),
+                              style: const TextStyle(
+                                fontSize: 11,
+                                color: Color(0xFFABB4C8),
+                              ),
                             ),
                           ],
                         ),
@@ -2884,7 +2999,6 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       debugPrint('[TTS] Install intent failed: $e');
     }
   }
-
 
   void _openEspScannerScreen() {
     Navigator.of(context).push(
@@ -2979,11 +3093,16 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   }
 
   void _startHarshDetection() {
-    _accelSub = userAccelerometerEventStream(
-      samplingPeriod: SensorInterval.gameInterval, // ~20ms, responsive but not extreme
-    ).listen(_onAccelerometer, onError: (e) {
-      debugPrint('[Harsh] accelerometer error: $e');
-    });
+    _accelSub =
+        userAccelerometerEventStream(
+          samplingPeriod:
+              SensorInterval.gameInterval, // ~20ms, responsive but not extreme
+        ).listen(
+          _onAccelerometer,
+          onError: (e) {
+            debugPrint('[Harsh] accelerometer error: $e');
+          },
+        );
   }
 
   void _onAccelerometer(UserAccelerometerEvent event) {
@@ -3000,14 +3119,14 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
         now.difference(_speedHistory.last.key).inMilliseconds >= 250) {
       _speedHistory.add(MapEntry(now, speedMs));
       _speedHistory.removeWhere(
-            (e) => now.difference(e.key) > const Duration(milliseconds: 2500),
+        (e) => now.difference(e.key) > const Duration(milliseconds: 2500),
       );
     }
 
     // 1) Magnitude — orientation-independent total force.
-    final magnitude = sqrt(event.x * event.x +
-        event.y * event.y +
-        event.z * event.z);
+    final magnitude = sqrt(
+      event.x * event.x + event.y * event.y + event.z * event.z,
+    );
     if (magnitude < _kHarshMagnitude) return;
 
     // 2) Guards: minimum speed + local debounce.
@@ -3019,16 +3138,18 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
 
     // 3) Classify using GPS speed change over the last ~1–2s.
     final past = _speedHistory.firstWhere(
-          (e) => now.difference(e.key).inMilliseconds >= 800,
+      (e) => now.difference(e.key).inMilliseconds >= 800,
       orElse: () => _speedHistory.isNotEmpty
           ? _speedHistory.first
           : MapEntry(now, speedMs),
     );
     final delta = speedMs - past.value; // + = speeding up, − = slowing down
 
-    debugPrint('[Harsh] mag=${magnitude.toStringAsFixed(2)} m/s² | '
-        'speed=${speedKmh.toStringAsFixed(1)} km/h | '
-        'Δspeed=${delta.toStringAsFixed(2)} m/s');
+    debugPrint(
+      '[Harsh] mag=${magnitude.toStringAsFixed(2)} m/s² | '
+      'speed=${speedKmh.toStringAsFixed(1)} km/h | '
+      'Δspeed=${delta.toStringAsFixed(2)} m/s',
+    );
 
     if (delta >= _kSpeedDeltaMs) {
       _lastHarshAt = now;
@@ -3379,7 +3500,6 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
           //     ),
           //   ),
           // ),
-
           _breakAlertOverlay(),
 
           // Screenshot effect — alert varumbol screen quick shrink + border + dim
@@ -3447,6 +3567,9 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       if (wasMonitoring && _streaming) {
         c.stopImageStream().catchError((_) {});
         _streaming = false;
+        // Reset no-face timer when switching away — camera is paused,
+        // so no face detection happens. Don't let old timer cause trip end.
+        _noFaceSince = null;
         debugPrint('[CamMode] → $mode | phone cam PAUSED');
       } else if (nowMonitoring && !_streaming && _camReady) {
         c.startImageStream(_processImage).catchError((_) {});
@@ -5025,7 +5148,10 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
                 GestureDetector(
                   onTap: _checkForUpdateInBackground,
                   child: Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 16,
+                      vertical: 8,
+                    ),
                     decoration: BoxDecoration(
                       color: Colors.white.withValues(alpha: 0.07),
                       borderRadius: BorderRadius.circular(20),
@@ -5083,7 +5209,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     if (_harshEventAt != null &&
         DateTime.now().difference(_harshEventAt!) <= _kBannerVisibleDuration &&
         _harshBannerText != null) {
-      bg = const Color(0xFFB91C1C);   // red
+      bg = const Color(0xFFB91C1C); // red
       text = _harshBannerText;
     } else if (phone) {
       bg = const Color(0xFF7E22CE);
@@ -5537,17 +5663,12 @@ class _BreakToastWidgetState extends State<_BreakToastWidget>
       ),
       child: AnimatedBuilder(
         animation: _glance,
-        builder: (context, child) => Opacity(
-          opacity: 0.70 + 0.30 * _glance.value,
-          child: child,
-        ),
+        builder: (context, child) =>
+            Opacity(opacity: 0.70 + 0.30 * _glance.value, child: child),
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Text(
-              widget.msg['emoji']!,
-              style: const TextStyle(fontSize: 30),
-            ),
+            Text(widget.msg['emoji']!, style: const TextStyle(fontSize: 30)),
             const SizedBox(height: 4),
             Text(
               widget.msg['title']!,
