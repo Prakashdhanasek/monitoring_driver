@@ -125,14 +125,16 @@ class FaceAuthEngine {
 
     // ── HEAD ANGLE LENIENCY FOR AUTHENTICATED DRIVER ─────────────────────────
     // If the driver is already authenticated, check head angle before doing verification.
-    // Head turns (yaw), pitch, and roll shifts shouldn't trigger unauthorized states.
+    // Head turns (yaw), pitch, and roll shifts shouldn't trigger unauthorized states instantly,
+    // but we must increment misses so a new person doesn't stay authenticated indefinitely.
     if (state.authStatus == AuthStatus.authenticated) {
       final yaw = face.headEulerAngleY ?? 0.0;
       final pitch = face.headEulerAngleX ?? 0.0;
       final roll = face.headEulerAngleZ ?? 0.0;
 
-      if (yaw.abs() > 15.0 || pitch.abs() > 15.0 || roll.abs() > 15.0) {
-        // Skip FaceNet verification, keep current state (don't reset misses/matches)
+      if (yaw.abs() > 25.0 || pitch.abs() > 25.0 || roll.abs() > 25.0) {
+        // Driver is looking away (e.g. checking mirrors). Skip FaceNet for this frame.
+        // We DO NOT increment misses here so they don't get kicked out to unauthorized.
         return;
       }
     }
@@ -197,12 +199,11 @@ class FaceAuthEngine {
       _consecutiveMatch = 0;
       lastMatchedLabel = null;
 
-      // Once authenticated, we allow a large buffer of consecutive misses (e.g., 15 frames, 
-      // which at 1.5s interval is 22.5s) to completely prevent false alarms from temporary 
-      // mismatches, shadows, or sunglasses for the verified driver.
-      // A different person replacing the driver will consistently mismatch and exceed 15 frames.
+      // Once authenticated, we allow a small buffer of consecutive misses (e.g., 8 frames)
+      // to prevent false alarms from temporary mismatches, shadows, or sunglasses.
+      // A different person replacing the driver will consistently mismatch and exceed 8 frames.
       final requiredMisses = (state.authStatus == AuthStatus.authenticated)
-          ? 15
+          ? 8
           : 3;
 
       if (_consecutiveMiss >= requiredMisses) {

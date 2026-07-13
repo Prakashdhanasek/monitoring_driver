@@ -671,22 +671,25 @@ class IncidentsService {
 
                 if (uploadedUrl != null && uploadedUrl.isNotEmpty) {
                   decoded['snapshotUrl'] = uploadedUrl;
+                  decoded.remove('snapshotPath');
+                  _box.put(key, jsonEncode(decoded)); // Save URL to avoid re-upload on retry
+
                   debugPrint(
                     '[IncidentsService] Evidence uploaded -> $uploadedUrl',
                   );
                 } else {
                   debugPrint(
-                    '[IncidentsService] Evidence upload failed; sending without snapshot.',
+                    '[IncidentsService] Evidence upload failed; will retry later.',
                   );
                 }
               } else {
                 debugPrint(
                   '[IncidentsService] Snapshot file not found: $snapshotPath',
                 );
+                // Only remove if file doesn't exist, to prevent infinite retries for a missing file
+                decoded.remove('snapshotPath');
+                _box.put(key, jsonEncode(decoded));
               }
-
-              // Device path API-il ayakkenda — neekkuka.
-              decoded.remove('snapshotPath');
             }
 
             // ── STEP 1.5: videoPath ──
@@ -702,27 +705,30 @@ class IncidentsService {
 
                 if (uploadedUrl != null && uploadedUrl.isNotEmpty) {
                   decoded['videoClipUrl'] = uploadedUrl;
+                  decoded.remove('videoPath');
+                  _box.put(key, jsonEncode(decoded)); // Save URL to avoid re-upload on retry
+
                   debugPrint(
                     '[IncidentsService] Video uploaded -> $uploadedUrl',
                   );
+
+                  // Clean up the local temporary video file ONLY after successful upload
+                  try {
+                    await videoFile.delete();
+                  } catch (_) {}
                 } else {
                   debugPrint(
-                    '[IncidentsService] Video upload failed; sending without video clip.',
+                    '[IncidentsService] Video upload failed; will retry later.',
                   );
                 }
-                
-                // Clean up the local temporary video file after attempting upload
-                try {
-                  await videoFile.delete();
-                } catch (_) {}
               } else {
                 debugPrint(
                   '[IncidentsService] Video file not found: $videoPath',
                 );
+                // Only remove if file doesn't exist, to prevent infinite retries for a missing file
+                decoded.remove('videoPath');
+                _box.put(key, jsonEncode(decoded));
               }
-
-              // Remove device path from payload
-              decoded.remove('videoPath');
             }
 
             // Clean up payload: replace empty string or 'string' placeholder with null
@@ -749,7 +755,7 @@ class IncidentsService {
                   headers: {'Content-Type': 'application/json'},
                   body: finalBody,
                 )
-                .timeout(const Duration(seconds: 15));
+                .timeout(const Duration(seconds: 60));
 
             debugPrint('--------------------------------------------------');
             debugPrint('[API RESPONSE] Status Code: ${response.statusCode}');
