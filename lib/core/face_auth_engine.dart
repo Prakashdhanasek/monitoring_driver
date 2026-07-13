@@ -123,6 +123,20 @@ class FaceAuthEngine {
       return; // Skip heavy FaceNet embedding
     }
 
+    // ── HEAD ANGLE LENIENCY FOR AUTHENTICATED DRIVER ─────────────────────────
+    // If the driver is already authenticated, check head angle before doing verification.
+    // Head turns (yaw), pitch, and roll shifts shouldn't trigger unauthorized states.
+    if (state.authStatus == AuthStatus.authenticated) {
+      final yaw = face.headEulerAngleY ?? 0.0;
+      final pitch = face.headEulerAngleX ?? 0.0;
+      final roll = face.headEulerAngleZ ?? 0.0;
+
+      if (yaw.abs() > 15.0 || pitch.abs() > 15.0 || roll.abs() > 15.0) {
+        // Skip FaceNet verification, keep current state (don't reset misses/matches)
+        return;
+      }
+    }
+
     final liveEmbedding = _embedFaceFromCameraImage(
       image,
       rotation,
@@ -183,20 +197,13 @@ class FaceAuthEngine {
       _consecutiveMatch = 0;
       lastMatchedLabel = null;
 
-      // If the tracking ID changed (different physical face) and it fails verification,
-      // kick them out quickly (sudden unauthorized).
-      final bool isDifferentFace = face.trackingId != null &&
-          state.authenticatedTrackingId != null &&
-          face.trackingId != state.authenticatedTrackingId;
-
-      // Allow 8 frames of mismatch for any authenticated driver to prevent
-      // false alarms from head turns and tracking ID resets.
-      // Kick out after 3 frames if not yet authenticated.
-      final requiredMisses = isDifferentFace
-          ? 1
-          : (state.authStatus == AuthStatus.authenticated)
-              ? 8
-              : 3;
+      // Once authenticated, we allow a large buffer of consecutive misses (e.g., 15 frames, 
+      // which at 1.5s interval is 22.5s) to completely prevent false alarms from temporary 
+      // mismatches, shadows, or sunglasses for the verified driver.
+      // A different person replacing the driver will consistently mismatch and exceed 15 frames.
+      final requiredMisses = (state.authStatus == AuthStatus.authenticated)
+          ? 15
+          : 3;
 
       if (_consecutiveMiss >= requiredMisses) {
         state.authStatus = AuthStatus.unauthorized;

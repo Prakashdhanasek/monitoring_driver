@@ -252,7 +252,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   Map<String, String>? _currentBreakMsg;
   Timer? _breakAlertTimer;
   Timer? _breakAlertDismissTimer;
-  static const Duration _kBreakAlertInterval = Duration(seconds: 90);
+  static const Duration _kBreakAlertInterval = Duration(hours: 1);
   static const Duration _kBreakAlertDisplayDuration = Duration(seconds: 12);
   static const List<Map<String, String>> _kBreakMessages = [
     {'emoji': '☕', 'title': 'Time for a Break!', 'sub': 'Pull over safely and rest for a few minutes.'},
