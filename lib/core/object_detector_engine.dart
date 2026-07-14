@@ -191,8 +191,8 @@ class ObjectDetectorEngine {
     }
 
     // Map detections to state booleans using stronger per-label confidence thresholds
-    const double kPhoneConfidence = 0.62;
-    const double kCigaretteConfidence = 0.35;
+    const double kPhoneConfidence = 0.60;
+    const double kCigaretteConfidence = 0.60;
     const double kEatingConfidence = 0.50;
     const double kDrinkingConfidence = 0.50;
     const double kSeatbeltConfidence = 0.50;
@@ -202,7 +202,9 @@ class ObjectDetectorEngine {
     );
     state.hasEating = eatingDetections.isNotEmpty || state.isChewing;
     state.eatingConfidence = eatingDetections.isNotEmpty
-        ? eatingDetections.map((o) => o.confidence).reduce((a, b) => a > b ? a : b)
+        ? eatingDetections
+              .map((o) => o.confidence)
+              .reduce((a, b) => a > b ? a : b)
         : 0.0;
 
     final drinkingDetections = result.detectedObjects.where(
@@ -210,7 +212,9 @@ class ObjectDetectorEngine {
     );
     state.hasDrinking = drinkingDetections.isNotEmpty;
     state.drinkingConfidence = drinkingDetections.isNotEmpty
-        ? drinkingDetections.map((o) => o.confidence).reduce((a, b) => a > b ? a : b)
+        ? drinkingDetections
+              .map((o) => o.confidence)
+              .reduce((a, b) => a > b ? a : b)
         : 0.0;
 
     final phoneDetections = result.detectedObjects.where(
@@ -218,7 +222,9 @@ class ObjectDetectorEngine {
     );
     state.hasPhone = phoneDetections.isNotEmpty;
     state.phoneConfidence = phoneDetections.isNotEmpty
-        ? phoneDetections.map((o) => o.confidence).reduce((a, b) => a > b ? a : b)
+        ? phoneDetections
+              .map((o) => o.confidence)
+              .reduce((a, b) => a > b ? a : b)
         : 0.0;
 
     final cigaretteDetections = result.detectedObjects.where(
@@ -226,7 +232,9 @@ class ObjectDetectorEngine {
     );
     state.hasCigarette = cigaretteDetections.isNotEmpty;
     state.cigaretteConfidence = cigaretteDetections.isNotEmpty
-        ? cigaretteDetections.map((o) => o.confidence).reduce((a, b) => a > b ? a : b)
+        ? cigaretteDetections
+              .map((o) => o.confidence)
+              .reduce((a, b) => a > b ? a : b)
         : 0.0;
 
     final now = DateTime.now();

@@ -184,7 +184,7 @@ class AlertMessages {
 
   /// Break reminder messages — rotates through 4 variations (index 0–3).
   static String breakReminder(AlertLang lang, int index) {
-    switch (index % 4) {
+    switch (index % 2) {
       case 0:
         return _pick(
           lang,
@@ -194,22 +194,6 @@ class AlertMessages {
           ta: 'நீரேற்றமாக இருங்கள்! கவனமாக இருக்க கொஞ்சம் தண்ணீர் குடியுங்கள்.',
         );
       case 1:
-        return _pick(
-          lang,
-          en: 'Rest Your Eyes. Blink often and glance at distant objects.',
-          hi: 'अपनी आँखें आराम दें। बार-बार पलकें झपकाएं और दूर की चीज़ें देखें।',
-          ml: 'കണ്ണുകൾ വിശ്രമിക്കുക. ഇടയ്ക്കിടെ ചിമ്മുകയും ദൂരത്തുള്ള വസ്തുക്കൾ നോക്കുകയും ചെയ്യുക.',
-          ta: 'கண்களை ஓய்வெடுங்கள். அடிக்கடி இமைக்கவும் தொலைவிலுள்ளவற்றை பாருங்கள்.',
-        );
-      case 2:
-        return _pick(
-          lang,
-          en: 'Stretch a Little. A short walk can refresh your body and mind.',
-          hi: 'थोड़ा खिंचाव करें। एक छोटी सी चहलकदमी आपके शरीर और मन को तरोताज़ा कर सकती है।',
-          ml: 'അൽപ്പം നീട്ടുക. ഒരു ചെറിയ നടത്തം ശരീരത്തിനും മനസ്സിനും ഉന്മേഷം നൽകും.',
-          ta: 'கொஞ்சம் நீட்டுங்கள். ஒரு சிறிய நடைப்பயிற்சி உடலையும் மனதையும் புதுப்பிக்கும்.',
-        );
-      case 3:
       default:
         return _pick(
           lang,

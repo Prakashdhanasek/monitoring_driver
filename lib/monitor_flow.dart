@@ -991,17 +991,19 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     if (!_isOnline) return;
     final deviceId = _settings.getDeviceId();
     if (deviceId == null || deviceId.isEmpty) return;
-    if (_vehicleId == null || _vehicleId!.isEmpty) {
-      debugPrint('[Flow] No VehicleId available yet. Skipping video upload.');
-      return;
-    }
 
-    debugPrint('[Flow] Online. Starting HTTP background video upload...');
+    final effectiveVehicleId = (_vehicleId != null && _vehicleId!.isNotEmpty)
+        ? _vehicleId!
+        : 'unknown';
+
+    debugPrint(
+      '[Flow] Online. Starting HTTP background video upload... (vehicleId: $effectiveVehicleId)',
+    );
     try {
       await _httpVideoUploadService.uploadPendingFiles(
         uploadUrl:
             'https://proximity-driver-api.prod-app.in/api/video-recordings/upload',
-        vehicleId: _vehicleId!,
+        vehicleId: effectiveVehicleId,
         deviceTabletId: deviceId,
         driverId: (_driverId == '—' || _driverId.isEmpty) ? null : _driverId,
         tripId: _tripId,
@@ -1749,7 +1751,8 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       // Check 10-minute cooldown for API syncing
       final now = DateTime.now();
       final lastApiReport = _settings.getLastApiReportTime(eventType);
-      if (lastApiReport != null && now.difference(lastApiReport).inMinutes < 10) {
+      if (lastApiReport != null &&
+          now.difference(lastApiReport).inMinutes < 10) {
         debugPrint('[Flow] API report throttled for 10 mins: $eventType');
         return;
       }
@@ -2088,7 +2091,8 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   bool _checkCooldown(String label) {
     final now = DateTime.now();
     final lastTime = _lastIncidentReportAt[label];
-    const int cooldownDuration = 30; // 30 seconds cooldown for UI flash and local sound
+    const int cooldownDuration =
+        30; // 30 seconds cooldown for UI flash and local sound
 
     if (lastTime == null) {
       _lastIncidentReportAt[label] = now;
@@ -2291,9 +2295,13 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     // --- Unified TTS Logic based on Banner Priority ---
     if (currentBannerKey != null && currentBannerKey != 'harsh') {
       int cooldownSeconds = 30;
-      if (currentBannerKey == 'asleep' || currentBannerKey == 'drowsy') cooldownSeconds = 5;
-      
-      if (_checkVoiceCooldown(currentBannerKey, Duration(seconds: cooldownSeconds))) {
+      if (currentBannerKey == 'asleep' || currentBannerKey == 'drowsy')
+        cooldownSeconds = 5;
+
+      if (_checkVoiceCooldown(
+        currentBannerKey,
+        Duration(seconds: cooldownSeconds),
+      )) {
         String voice = '';
         if (currentBannerKey == 'phone') {
           voice = AlertMessages.phone(_tts.currentLang);
@@ -2303,14 +2311,16 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
           voice = AlertMessages.eating(_tts.currentLang);
         } else if (currentBannerKey == 'drinking') {
           voice = AlertMessages.drinking(_tts.currentLang);
-        } else if (currentBannerKey == 'multiple' || currentBannerKey == 'distracted') {
+        } else if (currentBannerKey == 'multiple' ||
+            currentBannerKey == 'distracted') {
           voice = AlertMessages.distraction(_tts.currentLang);
-        } else if (currentBannerKey == 'asleep' || currentBannerKey == 'drowsy') {
+        } else if (currentBannerKey == 'asleep' ||
+            currentBannerKey == 'drowsy') {
           voice = AlertMessages.drowsy(_tts.currentLang);
         } else if (currentBannerKey == 'unauthorized') {
           voice = AlertMessages.unauthorized(_tts.currentLang);
         }
-        
+
         if (voice.isNotEmpty) {
           _tts.speak(voice);
         }
@@ -4306,14 +4316,16 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
                   style: TextStyle(color: Color(0xFF6B7280), fontSize: 15),
                 ),
                 const SizedBox(height: 4),
-                Text(
-                  _driverName,
-                  style: const TextStyle(
-                    color: Color(0xFF111827),
-                    fontSize: 26,
-                    fontWeight: FontWeight.w700,
+                if (_driverName.isNotEmpty && _driverName != 'Driver')
+                  Text(
+                    _driverName,
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(
+                      color: Color(0xFF111827),
+                      fontSize: 26,
+                      fontWeight: FontWeight.w700,
+                    ),
                   ),
-                ),
                 // const SizedBox(height: 14),
                 // Container(
                 //   padding: const EdgeInsets.symmetric(
@@ -4453,13 +4465,13 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          Align(
-            alignment: Alignment.centerLeft,
-            child: Padding(
-              padding: const EdgeInsets.only(left: 12, top: 2, bottom: 2),
-              child: _syncIconButton(),
-            ),
-          ),
+          // Align(
+          //   alignment: Alignment.centerLeft,
+          //   child: Padding(
+          //     padding: const EdgeInsets.only(left: 12, top: 2, bottom: 2),
+          //     child: _syncIconButton(),
+          //   ),
+          // ),
           // _cableUnpluggedBanner(),
           _monitorStatusBar(),
           _esp32StatusBanner(),
