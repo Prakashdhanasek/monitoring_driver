@@ -1571,6 +1571,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
                 if (_countdown <= 0) {
                   t.cancel();
                   _state.resetCalibration();
+                  _state.authStatus = AuthStatus.authenticated;
                   _phase = Phase.monitoring;
                   _sendTripStart();
                   _breakAlertTimer?.cancel();
@@ -1605,6 +1606,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
         t.cancel();
         // Start fresh calibration for the monitoring session.
         _state.resetCalibration();
+        _state.authStatus = AuthStatus.authenticated;
         _phase = Phase.monitoring;
         _sendTripStart();
         // Restart break alert timer for the new trip.
@@ -5154,30 +5156,30 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
 
                 // ── DEBUG: manual update check trigger ──
                 const SizedBox(height: 24),
-                GestureDetector(
-                  onTap: _checkForUpdateInBackground,
-                  child: Container(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 16,
-                      vertical: 8,
-                    ),
-                    decoration: BoxDecoration(
-                      color: Colors.white.withValues(alpha: 0.07),
-                      borderRadius: BorderRadius.circular(20),
-                      border: Border.all(
-                        color: Colors.white.withValues(alpha: 0.15),
-                      ),
-                    ),
-                    child: const Text(
-                      'Check for Updates Test 20',
-                      style: TextStyle(
-                        color: Color(0xFF64748B),
-                        fontSize: 11,
-                        fontWeight: FontWeight.w500,
-                      ),
-                    ),
-                  ),
-                ),
+                // GestureDetector(
+                //   onTap: _checkForUpdateInBackground,
+                //   child: Container(
+                //     padding: const EdgeInsets.symmetric(
+                //       horizontal: 16,
+                //       vertical: 8,
+                //     ),
+                //     decoration: BoxDecoration(
+                //       color: Colors.white.withValues(alpha: 0.07),
+                //       borderRadius: BorderRadius.circular(20),
+                //       border: Border.all(
+                //         color: Colors.white.withValues(alpha: 0.15),
+                //       ),
+                //     ),
+                //     child: const Text(
+                //       'Check for Updates Test 20',
+                //       style: TextStyle(
+                //         color: Color(0xFF64748B),
+                //         fontSize: 11,
+                //         fontWeight: FontWeight.w500,
+                //       ),
+                //     ),
+                //   ),
+                // ),
               ],
             ),
           ),
