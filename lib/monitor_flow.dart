@@ -5,6 +5,7 @@ import 'package:android_intent_plus/android_intent.dart';
 import 'package:camera/camera.dart';
 import 'package:device_info_plus/device_info_plus.dart';
 import 'package:flutter/material.dart';
+import 'package:package_info_plus/package_info_plus.dart';
 import 'package:flutter/services.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:google_mlkit_face_detection/google_mlkit_face_detection.dart';
@@ -217,6 +218,9 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   // Still face image captured at the moment of successful verification.
   Uint8List? _capturedFace;
 
+  // App version string (fetched from PackageInfo on init)
+  String _appVersion = '';
+
   // Latest camera frame as JPEG — updated every object detection frame.
   // Used for incident snapshots so the correct detection-time image is uploaded.
   Uint8List? _latestFrameJpeg;
@@ -300,7 +304,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   StreamSubscription<UserAccelerometerEvent>? _accelSub;
 
   // Force magnitude (m/s²) above which we treat it as a candidate harsh event.
-  static const double _kHarshMagnitude = 3.5;
+  static const double _kHarshMagnitude = 4.5;
 
   // Ignore events below this speed (parked / crawling → GPS jitter noise).
   static const double _kMinHarshSpeedKmh = 5.0;
@@ -328,6 +332,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     _monitoringEngine = MonitoringEngine(_state);
     _tts.init();
     WakelockPlus.enable();
+    _loadAppVersion();
     _init();
 
     _syncTimer = Timer.periodic(const Duration(seconds: 30), (_) {
@@ -380,6 +385,17 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     });
 
     _startHarshDetection();
+  }
+
+  Future<void> _loadAppVersion() async {
+    try {
+      final info = await PackageInfo.fromPlatform();
+      if (mounted) {
+        setState(() => _appVersion = 'v${info.version}+${info.buildNumber}');
+      }
+    } catch (e) {
+      debugPrint('[Flow] Error loading app version: $e');
+    }
   }
 
   Future<void> _checkConnectivity() async {
@@ -2376,6 +2392,8 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       // TTS for detected objects in driver's language
       if (labels.contains('person')) {
         _tts.speak(AlertMessages.personDetected(_tts.currentLang));
+      } else if (labels.contains('vehicle')) {
+        _tts.speak(AlertMessages.vehicleDetected(_tts.currentLang));
       } else if (labels.contains('motorcycle')) {
         _tts.speak(AlertMessages.motorcycleDetected(_tts.currentLang));
       } else if (labels.contains('bus')) {
@@ -2384,9 +2402,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
         _tts.speak(AlertMessages.truckDetected(_tts.currentLang));
       } else if (labels.contains('bicycle')) {
         _tts.speak(AlertMessages.bicycleDetected(_tts.currentLang));
-      } else if (labels.contains('car') ||
-          labels.contains('truck') ||
-          labels.contains('bus')) {
+      } else if (labels.contains('car')) {
         _tts.speak(AlertMessages.vehicleDetected(_tts.currentLang));
       }
     }
@@ -3236,6 +3252,9 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
                 _rearManualOverride = false;
                 _setCamMode(CamMode.driverMonitoring);
               },
+              enableYolo: true,
+              symbol: 'B',
+              label: 'REAR CAM ACTIVE',
               onDetection: _onCamObjectDetected,
             ),
 
@@ -3283,7 +3302,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
               label: 'LEFT CAM ACTIVE',
               symbol: 'L',
               themeColor: Colors.redAccent,
-              enableYolo: true,
+              enableYolo: false,
             ),
 
           // if (_phase == Phase.monitoring &&
@@ -3318,7 +3337,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
               label: 'RIGHT CAM ACTIVE',
               symbol: 'R',
               themeColor: Colors.redAccent,
-              enableYolo: true,
+              enableYolo: false,
             ),
           if (_phase == Phase.monitoring &&
               !_tripCompleted &&
@@ -4475,8 +4494,8 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
           // _cableUnpluggedBanner(),
           _monitorStatusBar(),
           _esp32StatusBanner(),
-          _camConnectionStatusBar(),
           // _deviceMotionCard(),
+          const SizedBox(height: 10),
           if (_noFaceSince != null && !_tripCompleted) _noDriverCountdown(),
           if (_unauthorizedStart != null && !_tripCompleted)
             _unauthorizedDriverCountdown(),
@@ -4519,67 +4538,67 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   // }
 
   Widget _esp32StatusBanner() {
-    final bool isRecording = _ffmpegRecorderService.isRecording;
-
-    final Color bgColor;
-    final IconData icon;
-    final String text;
-
-    if (_isConnectingToEsp32) {
-      bgColor = const Color(0xFFD97706);
-      icon = Icons.wifi_protected_setup_rounded;
-      text = 'Connecting to ESP32-CAM WiFi...';
-    } else if (_isConnectedToEsp32) {
-      if (isRecording) {
-        bgColor = const Color(0xFF16A34A);
-        icon = Icons.videocam_rounded;
-        text = 'ESP32-CAM: Connected & Recording (1-min segments)';
-      } else {
-        bgColor = const Color(0xFF2563EB);
-        icon = Icons.wifi_rounded;
-        text = 'ESP32-CAM: Connected (Idle)';
-      }
-    } else {
-      bgColor = const Color(0xFF475569);
-      icon = Icons.videocam_off_rounded;
-      text = 'ESP32-CAM: Disconnected (Tap to connect)';
+    Widget camDot(String label, bool connected) {
+      return Container(
+        padding: const EdgeInsets.symmetric(vertical: 5, horizontal: 6),
+        decoration: BoxDecoration(
+          color: connected
+              ? const Color(0xFF22C55E).withValues(alpha: 0.15)
+              : const Color(0xFFEF4444).withValues(alpha: 0.15),
+          borderRadius: BorderRadius.circular(6),
+          border: Border.all(
+            color: connected
+                ? const Color(0xFF22C55E).withValues(alpha: 0.4)
+                : const Color(0xFFEF4444).withValues(alpha: 0.4),
+            width: 1,
+          ),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              width: 8,
+              height: 8,
+              decoration: BoxDecoration(
+                color: connected
+                    ? const Color(0xFF22C55E)
+                    : const Color(0xFFEF4444),
+                shape: BoxShape.circle,
+              ),
+            ),
+            const SizedBox(width: 4),
+            Text(
+              label,
+              style: const TextStyle(
+                color: Colors.white,
+                fontSize: 11,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+          ],
+        ),
+      );
     }
 
     return Container(
       margin: const EdgeInsets.only(left: 12, right: 12, top: 8),
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
       decoration: BoxDecoration(
-        color: bgColor.withValues(alpha: 0.92),
+        color: Colors.black.withValues(alpha: 0.6),
         borderRadius: BorderRadius.circular(10),
       ),
       child: Row(
         children: [
-          // ── Tap icon+text area to connect to ESP32 WiFi ──
-          Expanded(
-            child: GestureDetector(
-              behavior: HitTestBehavior.opaque,
-              onTap: _connectToEsp32Wifi,
-              child: Row(
-                children: [
-                  Icon(icon, color: Colors.white, size: 16),
-                  const SizedBox(width: 6),
-                  Expanded(
-                    child: Text(
-                      text,
-                      overflow: TextOverflow.ellipsis,
-                      maxLines: 1,
-                      style: const TextStyle(
-                        color: Colors.white,
-                        fontSize: 11,
-                        fontWeight: FontWeight.w600,
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ),
-          const SizedBox(width: 8),
+          // ── L/R/F/B cam status (fills remaining space) ──
+          camDot('L', _leftCamConnected),
+          const SizedBox(width: 4),
+          camDot('R', _rightCamConnected),
+          const SizedBox(width: 4),
+          camDot('F', _frontCamConnected),
+          const SizedBox(width: 4),
+          camDot('B', _rearCamConnected),
+          const SizedBox(width: 10),
+          // ── REAR button ──
           GestureDetector(
             behavior: HitTestBehavior.opaque,
             onTap: () {
@@ -4623,8 +4642,8 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
               ),
             ),
           ),
-          // ── FRONT cam toggle button ──
           const SizedBox(width: 6),
+          // ── FRONT button ──
           GestureDetector(
             behavior: HitTestBehavior.opaque,
             onTap: () {
@@ -4668,39 +4687,6 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
               ),
             ),
           ),
-          const SizedBox(width: 6),
-          // GestureDetector(
-          //   behavior: HitTestBehavior.opaque,
-          //   onTap: _openHotspotSettings,
-          //   child: Container(
-          //     padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-          //     decoration: BoxDecoration(
-          //       color: Colors.tealAccent.withValues(alpha: 0.20),
-          //       borderRadius: BorderRadius.circular(6),
-          //       border: Border.all(color: Colors.tealAccent, width: 1),
-          //     ),
-          //     child: Row(
-          //       mainAxisSize: MainAxisSize.min,
-          //       children: const [
-          //         Icon(
-          //           Icons.wifi_tethering_rounded,
-          //           color: Colors.white,
-          //           size: 16,
-          //         ),
-          //         SizedBox(width: 4),
-          //         Text(
-          //           'HOTSPOT',
-          //           style: TextStyle(
-          //             color: Colors.white,
-          //             fontSize: 11,
-          //             fontWeight: FontWeight.w700,
-          //             letterSpacing: 0.5,
-          //           ),
-          //         ),
-          //       ],
-          //     ),
-          //   ),
-          // ),
         ],
       ),
     );
@@ -4965,9 +4951,9 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
             ),
           ),
           const SizedBox(width: 8),
-          const Text(
-            'MONITORING',
-            style: TextStyle(
+          Text(
+            _appVersion.isNotEmpty ? _appVersion : 'MONITORING',
+            style: const TextStyle(
               color: Colors.white,
               fontSize: 13,
               fontWeight: FontWeight.w700,
@@ -5316,12 +5302,11 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     return null;
   }
 
-  // Seatbelt status: red alert kaanikkum (off aanenkil). Buckled aanenkil hide.
   Widget _seatbeltIndicator() {
     final on = _state.seatbeltBuckled;
     if (on) return const SizedBox.shrink();
     final bg = on ? const Color(0xFF16A34A) : const Color(0xFFDC2626);
-    final icon = on ? Icons.check_circle_rounded : Icons.cancel_rounded;
+    // final icon = on ? Icons.check_circle_rounded : Icons.cancel_rounded;
     final text = on ? '🔒  SEATBELT ON' : '⚠️  FASTEN SEATBELT';
 
     return Container(

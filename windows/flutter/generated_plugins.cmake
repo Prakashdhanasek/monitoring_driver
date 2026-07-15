@@ -6,6 +6,7 @@ list(APPEND FLUTTER_PLUGIN_LIST
   audioplayers_windows
   battery_plus
   connectivity_plus
+  ffmpeg_kit_flutter_new_min_gpl
   flutter_secure_storage_windows
   flutter_tts
   geolocator_windows
