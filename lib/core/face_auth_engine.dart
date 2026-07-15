@@ -201,9 +201,9 @@ class FaceAuthEngine {
 
       // Once authenticated, we allow a small buffer of consecutive misses (e.g., 8 frames)
       // to prevent false alarms from temporary mismatches, shadows, or sunglasses.
-      // A different person replacing the driver will consistently mismatch and exceed 8 frames.
+      // A different person replacing the driver will consistently mismatch.
       final requiredMisses = (state.authStatus == AuthStatus.authenticated)
-          ? 8
+          ? 5
           : 3;
 
       if (_consecutiveMiss >= requiredMisses) {

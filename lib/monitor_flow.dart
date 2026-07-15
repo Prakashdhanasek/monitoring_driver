@@ -431,7 +431,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     // Front ESP32-CAM continuous recording check (restart recording if stopped)
     if (_frontCamConnected && _frontCamStreamUrl.isNotEmpty) {
       if (!_ffmpegRecorderService.isRecording &&
-          _camMode == CamMode.driverMonitoring) {
+          _camMode != CamMode.front) {
         await _ffmpegRecorderService.startRecording(_frontCamStreamUrl);
       }
     }
@@ -1016,7 +1016,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       '[Flow] Online. Starting HTTP background video upload... (vehicleId: $effectiveVehicleId)',
     );
     try {
-      await _httpVideoUploadService.uploadPendingFiles(
+      final int uploadedCount = await _httpVideoUploadService.uploadPendingFiles(
         uploadUrl:
             'https://proximity-driver-api.prod-app.in/api/video-recordings/upload',
         vehicleId: effectiveVehicleId,
@@ -1025,6 +1025,19 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
         tripId: _tripId,
         cameraType: 'FrontCam',
       );
+
+      if (uploadedCount > 0 && mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              'API Upload Success: $uploadedCount video(s) sent.',
+              style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+            ),
+            backgroundColor: Colors.green,
+            duration: const Duration(seconds: 4),
+          ),
+        );
+      }
     } catch (e) {
       debugPrint('[Flow] Video upload error: $e');
     }
@@ -3589,15 +3602,10 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     final nowMonitoring = mode == CamMode.driverMonitoring;
     _camMode = mode;
 
-    // Only stop recording when opening FRONT cam overlay (same port 84 conflict).
-    // Rear/left/right use different ports — no conflict with front cam recording.
-    final needsStopRecording = mode == CamMode.front;
-    if (needsStopRecording && _ffmpegRecorderService.isRecording) {
-      await _ffmpegRecorderService.stopRecording();
-      debugPrint(
-        '[CamMode] Recorder STOPPED — releasing front cam stream for overlay',
-      );
-    } else if (nowMonitoring &&
+    // To ensure continuous recording, we DO NOT stop the recorder even if the front
+    // camera overlay is opened. Note: this might cause the overlay to fail to load
+    // if the ESP32-CAM firmware strictly limits to 1 connection.
+    if (nowMonitoring &&
         _frontCamConnected &&
         _frontCamStreamUrl.isNotEmpty &&
         !_ffmpegRecorderService.isRecording) {
@@ -3689,7 +3697,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
         if (mounted) {
           setState(() => _isConnectedToEsp32 = true);
           if (!_ffmpegRecorderService.isRecording &&
-              _camMode == CamMode.driverMonitoring) {
+              _camMode != CamMode.front) {
             _ffmpegRecorderService.startRecording(_esp32StreamUrl);
           }
         }
@@ -3726,7 +3734,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
               _isConnectedToEsp32 = true;
             });
             if (!_ffmpegRecorderService.isRecording &&
-                _camMode == CamMode.driverMonitoring) {
+                _camMode != CamMode.front) {
               _ffmpegRecorderService.startRecording(_esp32StreamUrl);
             }
           }
@@ -3942,7 +3950,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     if (_frontCamIp != null) {
       _frontCamStreamUrl = 'http://$_frontCamIp:84/';
       if (!_ffmpegRecorderService.isRecording &&
-          _camMode == CamMode.driverMonitoring) {
+          _camMode != CamMode.front) {
         debugPrint(
           '[SideCam] Starting Front camera background recording: $_frontCamStreamUrl',
         );

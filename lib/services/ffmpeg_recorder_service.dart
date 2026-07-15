@@ -147,9 +147,9 @@ class FFmpegVideoRecorderService {
         ? '-rtsp_transport tcp '
         : '';
 
-    // CCTV-style timestamp overlay using Android system font
-    final String drawtextFilter =
-        '-vf "drawtext=fontfile=/system/fonts/Roboto-Regular.ttf:text=\'%{localtime\\\\:%Y-%m-%d %H\\\\:%M\\\\:%S}\':fontcolor=white:fontsize=24:box=1:boxcolor=black@0.5:boxborderw=5:x=(w-text_w)-10:y=10"';
+    // CCTV-style timestamp overlay is disabled to prevent FFmpeg crashing
+    // on devices that do not have the expected system font.
+    final String drawtextFilter = '';
 
     final String ffmpegCommand =
         '-y $rtspOpt -use_wallclock_as_timestamps 1 -i $_streamUrl '

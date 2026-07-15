@@ -10,7 +10,7 @@ class HttpVideoUploadService {
   /// 
   /// [uploadUrl] is the REST API endpoint (e.g., 'https://api.yourdomain.com/v1/trips/upload-video')
   /// [bearerToken] is an optional auth token for authorization headers.
-  Future<void> uploadPendingFiles({
+  Future<int> uploadPendingFiles({
     required String uploadUrl,
     required String vehicleId,
     required String deviceTabletId,
@@ -36,9 +36,11 @@ class HttpVideoUploadService {
 
 
 
+    int successCount = 0;
+
     if (files.isEmpty) {
       debugPrint('[HTTP Upload] No pending or saved videos found in local storage.');
-      return;
+      return successCount;
     }
 
     debugPrint('==================================================');
@@ -124,6 +126,7 @@ class HttpVideoUploadService {
         } else if (response.statusCode == 200 || response.statusCode == 201) {
           // Delete from upload queue folder on success
           await file.delete();
+          successCount++;
           debugPrint('[HTTP Upload] Deleted local chunk: $fileName');
         }
       } catch (e) {
@@ -135,6 +138,7 @@ class HttpVideoUploadService {
     debugPrint('==================================================');
     debugPrint('[HTTP Upload COMPLETE] Upload run finished.');
     debugPrint('==================================================');
+    return successCount;
   }
 
   Future<Directory> _getVisibleDirectory() async {
