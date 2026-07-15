@@ -124,9 +124,8 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   CamMode _camMode = CamMode.driverMonitoring;
   // String _esp32StreamUrl = 'http://10.119.135.95:82/';
 
-  String _esp32StreamUrl =
-      'http://192.168.150.52:82/'; // Auto-discovered on startup
-  String _frontCamStreamUrl = 'http://192.168.150.51:84/';
+  String _esp32StreamUrl = ''; // Auto-discovered on startup
+  String _frontCamStreamUrl = '';
 
   // ── Side cameras (blind spot)
   // Left cam  — video :86,  sensor :87
@@ -144,16 +143,15 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   // String?
   // _frontCamIp; // video :84
 
-  String? _leftCamIp =
-      '192.168.150.53'; // video :86  sensor :87 (auto-discovered)
-  String? _rightCamIp =
-      '192.168.150.54'; // video :80  sensor :81 (auto-discovered)
-  String? _frontCamIp =
-      '192.168.150.51'; // video :84  sensor :85 (auto-discovered)
+  String? _leftCamIp; // video :86  sensor :87 (auto-discovered)
+  String? _rightCamIp; // video :80  sensor :81 (auto-discovered)
+  String? _frontCamIp; // video :84  sensor :85 (auto-discovered)
   // (resolved by scanner, not shown in strict mode)
   DateTime? _lastSideCamScanAt; // throttle scanner to once per 60 s
   Timer? _blindSpotTimer;
   bool _isPollingBlindSpot = false;
+  DateTime? _blindSpotObjectLastSeenAt; // last time object was < 50cm
+  static const int _kBlindSpotLingerSec = 5; // keep cam open 5s after clear
 
   // ESP32 camera connection status
   bool _rearCamConnected = false;
@@ -251,7 +249,6 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   // // Timer? _cableBannerTimer;
   // DateTime? _lastCableReportAt;
 
-  // ── Screenshot flash (alert varumbol screenshot effect) ──
   bool _flashScreenshot = false;
   DateTime? _lastFlashAt;
 
@@ -275,16 +272,6 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       'sub': 'Drink some water to stay alert and focused.',
     },
     {
-      'emoji': '👀',
-      'title': 'Rest Your Eyes',
-      'sub': 'Blink often and glance at distant objects.',
-    },
-    {
-      'emoji': '🧘',
-      'title': 'Stretch a Little',
-      'sub': 'A short walk can refresh your body and mind.',
-    },
-    {
       'emoji': '🌬️',
       'title': 'Take a Deep Breath',
       'sub': 'Breathe deeply to reduce stress and stay calm.',
@@ -304,7 +291,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   StreamSubscription<UserAccelerometerEvent>? _accelSub;
 
   // Force magnitude (m/s²) above which we treat it as a candidate harsh event.
-  static const double _kHarshMagnitude = 4.5;
+  static const double _kHarshMagnitude = 7.5;
 
   // Ignore events below this speed (parked / crawling → GPS jitter noise).
   static const double _kMinHarshSpeedKmh = 5.0;
@@ -437,26 +424,43 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     }
   }
 
-  /// Checks TCP connectivity to each ESP32 camera's video port.
+  /// Checks actual connectivity to each ESP32 camera.
+  /// Left/Right: HTTP GET /sensor (validates JSON response).
+  /// Front/Rear: Quick TCP probe on video port (single attempt, 2s timeout).
   Future<void> _checkCamConnections() async {
-    Future<bool> _ping(String? ip, int port, String tag) async {
-      if (ip == null || ip.isEmpty) {
-        debugPrint('[CamPing] $tag → SKIP (no IP assigned)');
-        return false;
-      }
-      // 2 attempts, 3s each — ESP under load may not answer in 2s.
-      for (int attempt = 1; attempt <= 2; attempt++) {
-        try {
-          final socket = await Socket.connect(
-            ip,
-            port,
-          ).timeout(const Duration(seconds: 3));
-          await socket.close();
-          debugPrint('[CamPing] $tag → OK ($ip:$port)');
-          return true;
-        } catch (e) {
-          debugPrint('[CamPing] $tag → FAIL attempt $attempt ($ip:$port): $e');
+    /// Validates sensor endpoint — returns true only if it responds with distance_cm JSON.
+    Future<bool> _pingSensor(String? ip, int sensorPort, String tag) async {
+      if (ip == null || ip.isEmpty) return false;
+      try {
+        final res = await http
+            .get(Uri.parse('http://$ip:$sensorPort/sensor'))
+            .timeout(const Duration(seconds: 2));
+        if (res.statusCode == 200) {
+          final data = jsonDecode(res.body) as Map<String, dynamic>;
+          if (data.containsKey('distance_cm')) {
+            debugPrint('[CamPing] $tag → OK (sensor at $ip:$sensorPort)');
+            return true;
+          }
         }
+      } catch (e) {
+        debugPrint('[CamPing] $tag → FAIL ($ip:$sensorPort): $e');
+      }
+      return false;
+    }
+
+    /// Quick TCP probe for video port — used only for cams without sensor server.
+    Future<bool> _pingVideo(String? ip, int videoPort, String tag) async {
+      if (ip == null || ip.isEmpty) return false;
+      try {
+        final socket = await Socket.connect(
+          ip,
+          videoPort,
+        ).timeout(const Duration(seconds: 2));
+        await socket.close();
+        debugPrint('[CamPing] $tag → OK ($ip:$videoPort)');
+        return true;
+      } catch (e) {
+        debugPrint('[CamPing] $tag → FAIL ($ip:$videoPort): $e');
       }
       return false;
     }
@@ -466,38 +470,27 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
         ? null
         : Uri.parse(_esp32StreamUrl).host;
 
-    // Ping SENSOR ports (not video). ESP32-CAM allows only ONE client on the
-    // video port — pinging video steals the slot the overlay/recorder needs,
-    // causing the drops. Sensor server is separate, safe to poll.
-    // Front and rear cams have NO sensor — do NOT ping their video ports!
+    // Left/Right: validate via sensor endpoint (proper JSON check).
+    // Front/Rear: TCP probe on video port (they have no sensor server).
     final results = await Future.wait([
-      _ping(_leftCamIp, 87, 'LEFT'), // left  sensor
-      _ping(_rightCamIp, 81, 'RIGHT'), // right sensor
+      _pingSensor(_leftCamIp, 87, 'LEFT'),
+      _pingSensor(_rightCamIp, 81, 'RIGHT'),
+      _pingVideo(_frontCamIp, 84, 'FRONT'),
+      _pingVideo(rearHost, 82, 'REAR'),
     ]);
-
-    // final results = await Future.wait([
-    //   _ping(_leftCamIp, 86, 'LEFT'),
-    //   _ping(_rightCamIp, 80, 'RIGHT'),
-    //   _ping(_frontCamIp, 84, 'FRONT'),
-    //   _ping(rearHost, 82, 'REAR'),
-    // ]);
-
-    // Front/rear have no sensor — mark them as connected if IP is set
-    final frontConnected = _frontCamIp != null && _frontCamIp!.isNotEmpty;
-    final rearConnected = rearHost != null && rearHost.isNotEmpty;
 
     final changed =
         results[0] != _leftCamConnected ||
         results[1] != _rightCamConnected ||
-        frontConnected != _frontCamConnected ||
-        rearConnected != _rearCamConnected;
+        results[2] != _frontCamConnected ||
+        results[3] != _rearCamConnected;
 
     if (changed && mounted) {
       setState(() {
         _leftCamConnected = results[0];
         _rightCamConnected = results[1];
-        _frontCamConnected = frontConnected;
-        _rearCamConnected = rearConnected;
+        _frontCamConnected = results[2];
+        _rearCamConnected = results[3];
       });
     }
   }
@@ -3677,25 +3670,6 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       if (subnet == null) return;
 
       // Try known static IP first (instant connection)
-      const String _knownRearIp = '192.168.150.52';
-      try {
-        final socket = await Socket.connect(
-          _knownRearIp,
-          82,
-        ).timeout(const Duration(milliseconds: 600));
-        await socket.close();
-        _esp32StreamUrl = 'http://$_knownRearIp:82/';
-        debugPrint('[AutoDiscover] ✓ Rear cam at static IP $_knownRearIp:82');
-        if (mounted) {
-          setState(() => _isConnectedToEsp32 = true);
-          if (!_ffmpegRecorderService.isRecording &&
-              _camMode == CamMode.driverMonitoring) {
-            _ffmpegRecorderService.startRecording(_esp32StreamUrl);
-          }
-        }
-        return;
-      } catch (_) {}
-
       debugPrint('[AutoDiscover] Scanning $subnet.* for rear cam (port 82)...');
 
       for (int start = 1; start <= 254; start += 50) {
@@ -3836,28 +3810,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     if (_rightCamIp != null) excludeIps.add(_rightCamIp!);
     if (_frontCamIp != null) excludeIps.add(_frontCamIp!);
 
-    // ── Known static IPs (4G router network) — try these first ──
-    const Map<int, String> _knownStaticIps = {
-      87: '192.168.150.53', // left cam sensor port
-      81: '192.168.150.54', // right cam sensor port
-      84: '192.168.150.51', // front cam video port (no sensor)
-    };
-
     Future<String?> scanForPort(int sensorPort, int videoPort) async {
-      // Strategy 0: Try known static IP first (instant)
-      final knownIp = _knownStaticIps[sensorPort] ?? _knownStaticIps[videoPort];
-      if (knownIp != null && !excludeIps.contains(knownIp)) {
-        try {
-          final socket = await Socket.connect(
-            knownIp,
-            videoPort,
-          ).timeout(const Duration(milliseconds: 600));
-          await socket.close();
-          debugPrint('[SideCam] Static IP hit: $knownIp:$videoPort');
-          return knownIp;
-        } catch (_) {}
-      }
-
       // Strategy 1: Try sensor endpoint (returns JSON with distance_cm)
       Future<String?> probeSensor(String ip) async {
         if (excludeIps.contains(ip)) return null;
@@ -3873,16 +3826,25 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
         return null;
       }
 
-      // Strategy 2: Try raw TCP connect on video port
+      // Strategy 2: Try video port — verify it's an MJPEG stream (not a random HTTP server)
       Future<String?> probeVideo(String ip) async {
         if (excludeIps.contains(ip)) return null;
         try {
-          final socket = await Socket.connect(
-            ip,
-            videoPort,
-          ).timeout(const Duration(milliseconds: 800));
-          await socket.close();
-          return ip;
+          // HTTP GET and check for multipart content-type (MJPEG signature)
+          final req = http.Request('GET', Uri.parse('http://$ip:$videoPort/'));
+          final client = http.Client();
+          final response = await client
+              .send(req)
+              .timeout(const Duration(milliseconds: 1200));
+          final contentType = response.headers['content-type'] ?? '';
+          client.close();
+          if (contentType.contains('multipart') ||
+              contentType.contains('image/jpeg')) {
+            return ip;
+          }
+          debugPrint(
+            '[SideCam] $ip:$videoPort responded but not MJPEG (content-type: $contentType)',
+          );
         } catch (_) {}
         return null;
       }
@@ -4035,20 +3997,36 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     final double? right = results[1];
 
     if (_camMode != CamMode.rear && !_rearManualOverride) {
-      if (left != null && left < 50.0) {
-        _leftManualOverride = false;
-        _setCamMode(CamMode.left);
-      } else if (right != null && right < 50.0) {
-        _rightManualOverride = false;
-        _setCamMode(CamMode.right);
+      final bool objectNearby =
+          (left != null && left < 50.0) || (right != null && right < 50.0);
+
+      if (objectNearby) {
+        _blindSpotObjectLastSeenAt = DateTime.now();
+        if (left != null && left < 50.0) {
+          _leftManualOverride = false;
+          _setCamMode(CamMode.left);
+        } else if (right != null && right < 50.0) {
+          _rightManualOverride = false;
+          _setCamMode(CamMode.right);
+        }
       } else {
+        // Object cleared — keep cam open for 5 more seconds
         final bool leftClear = left == null || left > 60.0;
         final bool rightClear = right == null || right > 60.0;
-        if (leftClear &&
-            rightClear &&
-            ((_camMode == CamMode.left && !_leftManualOverride) ||
-                (_camMode == CamMode.right && !_rightManualOverride))) {
-          _setCamMode(CamMode.driverMonitoring);
+        final bool isAutoSideCam =
+            (_camMode == CamMode.left && !_leftManualOverride) ||
+            (_camMode == CamMode.right && !_rightManualOverride);
+        if (leftClear && rightClear && isAutoSideCam) {
+          final bool lingerExpired =
+              _blindSpotObjectLastSeenAt == null ||
+              DateTime.now()
+                      .difference(_blindSpotObjectLastSeenAt!)
+                      .inSeconds >=
+                  _kBlindSpotLingerSec;
+          if (lingerExpired) {
+            _blindSpotObjectLastSeenAt = null;
+            _setCamMode(CamMode.driverMonitoring);
+          }
         }
       }
     }
@@ -4957,7 +4935,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
             _appVersion.isNotEmpty ? _appVersion : 'MONITORING',
             style: const TextStyle(
               color: Colors.white,
-              fontSize: 13,
+              fontSize: 10,
               fontWeight: FontWeight.w700,
               letterSpacing: 0.6,
             ),
