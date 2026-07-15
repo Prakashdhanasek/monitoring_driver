@@ -8,8 +8,8 @@ import 'package:ffmpeg_kit_flutter_new_min_gpl/return_code.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:path/path.dart' as p;
 
-/// Duration of each video chunk in seconds (1 minute).
-const int _kChunkDurationSeconds = 60;
+/// Duration of each video chunk in seconds (5 minutes).
+const int _kChunkDurationSeconds = 300;
 
 class FFmpegVideoRecorderService {
   bool _isRecording = false;
@@ -120,11 +120,13 @@ class FFmpegVideoRecorderService {
     final String rtspOpt =
         _streamUrl!.startsWith('rtsp') ? '-rtsp_transport tcp ' : '';
 
-    // KEY FIX: -movflags frag_keyframe+empty_moov writes metadata throughout
-    // the file (not just at the end), so the MP4 is ALWAYS playable even if
-    // FFmpeg is cancelled/killed mid-recording.
+    // CCTV-style timestamp overlay using Android system font
+    final String drawtextFilter =
+        '-vf "drawtext=fontfile=/system/fonts/Roboto-Regular.ttf:text=\'%{localtime\\\\:%Y-%m-%d %H\\\\:%M\\\\:%S}\':fontcolor=white:fontsize=24:box=1:boxcolor=black@0.5:boxborderw=5:x=(w-text_w)-10:y=10"';
+
     final String ffmpegCommand =
-        '-y ${rtspOpt}-i $_streamUrl '
+        '-y $rtspOpt -use_wallclock_as_timestamps 1 -i $_streamUrl '
+        '$drawtextFilter '
         '-c:v libx264 -r 15 -g 30 -preset ultrafast '
         '-profile:v baseline -pix_fmt yuv420p '
         '-movflags frag_keyframe+empty_moov '
