@@ -9,7 +9,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:path/path.dart' as p;
 
 /// Duration of each video chunk in seconds (5 minutes).
-const int _kChunkDurationSeconds = 300;
+const int _kChunkDurationSeconds = 120;
 
 class FFmpegVideoRecorderService {
   bool _isRecording = false;
@@ -147,30 +147,11 @@ class FFmpegVideoRecorderService {
         ? '-rtsp_transport tcp '
         : '';
 
-    // Find a valid font path for the timestamp overlay
-    String? fontPath;
-    final possibleFonts = [
-      '/system/fonts/Roboto-Regular.ttf',
-      '/system/fonts/DroidSans.ttf',
-      '/system/fonts/NotoSans-Regular.ttf',
-    ];
-    for (final path in possibleFonts) {
-      if (File(path).existsSync()) {
-        fontPath = path;
-        break;
-      }
-    }
-
-    // Use fps=15 to force FFmpeg to duplicate frames and maintain real-time duration.
-    // If a font is found, combine it with drawtext for the CCTV timestamp.
-    String filterOpt = '-vf "fps=15" ';
-    if (fontPath != null) {
-      filterOpt = '-vf "fps=15,drawtext=fontfile=$fontPath:text=\\\'%{localtime\\\\\\\\:%Y-%m-%d %H\\\\\\\\:%M\\\\\\\\:%S}\\\':fontcolor=white:fontsize=24:box=1:boxcolor=black@0.5:boxborderw=5:x=(w-text_w)-10:y=10" ';
-    }
-
+    // NOTE: drawtext filter requires full-gpl build. min_gpl does NOT support it.
+    // Using fps=15 only to maintain consistent frame rate from MJPEG stream.
     final String ffmpegCommand =
         '-y $rtspOpt -use_wallclock_as_timestamps 1 -i $_streamUrl '
-        '$filterOpt '
+        '-vf "fps=15" '
         '-c:v libx264 -preset ultrafast '
         '-profile:v baseline -pix_fmt yuv420p '
         '-movflags frag_keyframe+empty_moov '

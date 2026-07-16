@@ -207,6 +207,8 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   DateTime? _seatbeltPhaseStart; // start of current beep/silence phase
   static const int _kSeatbeltBeepDuration = 30; // seconds
   static const int _kSeatbeltSilenceDuration = 60; // seconds
+  static const int _kSeatbeltGraceSeconds = 10; // grace period after trip start
+  DateTime? _monitoringStartedAt; // when monitoring phase began
 
   // ESP cam detection alert (person/vehicle detected on front/rear cam)
   String? _camDetectionAlert;
@@ -294,7 +296,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   static const double _kHarshMagnitude = 7.5;
 
   // Ignore events below this speed (parked / crawling → GPS jitter noise).
-  static const double _kMinHarshSpeedKmh = 5.0;
+  static const double _kMinHarshSpeedKmh = 80.0;
 
   // How much forward speed must change to classify accel vs brake (m/s).
   static const double _kSpeedDeltaMs = 0.8;
@@ -435,7 +437,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       try {
         final res = await http
             .get(Uri.parse('http://$ip:$sensorPort/sensor'))
-            .timeout(const Duration(seconds: 2));
+            .timeout(const Duration(seconds: 3));
         if (res.statusCode == 200) {
           final data = jsonDecode(res.body) as Map<String, dynamic>;
           if (data.containsKey('distance_cm')) {
@@ -449,49 +451,31 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       return false;
     }
 
-    /// Quick TCP probe for video port — used only for cams without sensor server.
-    Future<bool> _pingVideo(String? ip, int videoPort, String tag) async {
-      if (ip == null || ip.isEmpty) return false;
-      try {
-        final socket = await Socket.connect(
-          ip,
-          videoPort,
-        ).timeout(const Duration(seconds: 2));
-        await socket.close();
-        debugPrint('[CamPing] $tag → OK ($ip:$videoPort)');
-        return true;
-      } catch (e) {
-        debugPrint('[CamPing] $tag → FAIL ($ip:$videoPort): $e');
-      }
-      return false;
-    }
-
-    // Rear host from stream URL (null when not assigned yet).
-    final rearHost = _esp32StreamUrl.isEmpty
-        ? null
-        : Uri.parse(_esp32StreamUrl).host;
-
     // Left/Right: validate via sensor endpoint (proper JSON check).
-    // Front/Rear: TCP probe on video port (they have no sensor server).
     final results = await Future.wait([
       _pingSensor(_leftCamIp, 87, 'LEFT'),
       _pingSensor(_rightCamIp, 81, 'RIGHT'),
-      _pingVideo(_frontCamIp, 84, 'FRONT'),
-      _pingVideo(rearHost, 82, 'REAR'),
     ]);
+
+    // Front/Rear: Do NOT ping video port — ESP32-CAM supports only ONE client.
+    // Pinging port 84/82 steals the connection from FFmpeg recorder / stream overlay,
+    // causing recording failures and intermittent red status.
+    // Instead: mark as connected if IP was discovered and stream URL is set.
+    final frontConnected = _frontCamIp != null && _frontCamIp!.isNotEmpty;
+    final rearConnected = _esp32StreamUrl.isNotEmpty;
 
     final changed =
         results[0] != _leftCamConnected ||
         results[1] != _rightCamConnected ||
-        results[2] != _frontCamConnected ||
-        results[3] != _rearCamConnected;
+        frontConnected != _frontCamConnected ||
+        rearConnected != _rearCamConnected;
 
     if (changed && mounted) {
       setState(() {
         _leftCamConnected = results[0];
         _rightCamConnected = results[1];
-        _frontCamConnected = results[2];
-        _rearCamConnected = results[3];
+        _frontCamConnected = frontConnected;
+        _rearCamConnected = rearConnected;
       });
     }
   }
@@ -987,7 +971,9 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
         _isConnectedToEsp32 = cameraReachable;
         _esp32StreamUrl = streamUrl;
       });
-      if (cameraReachable && _phase == Phase.monitoring && _camMode == CamMode.driverMonitoring) {
+      if (cameraReachable &&
+          _phase == Phase.monitoring &&
+          _camMode == CamMode.driverMonitoring) {
         _ffmpegRecorderService.startRecording(streamUrl);
       }
 
@@ -1012,28 +998,31 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       '[Flow] Online. Starting HTTP background video upload... (vehicleId: $effectiveVehicleId)',
     );
     try {
-      final int uploadedCount = await _httpVideoUploadService.uploadPendingFiles(
+      final int
+      uploadedCount = await _httpVideoUploadService.uploadPendingFiles(
         uploadUrl:
             'https://proximity-driver-api.prod-app.in/api/video-recordings/upload',
         vehicleId: effectiveVehicleId,
         deviceTabletId: deviceId,
-        driverId: (_driverId == '—' || _driverId == '-' || _driverId.isEmpty) ? null : _driverId,
+        driverId: (_driverId == '—' || _driverId == '-' || _driverId.isEmpty)
+            ? null
+            : _driverId,
         tripId: _tripId,
         cameraType: 'FrontCam',
       );
 
-      if (uploadedCount > 0 && mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(
-              'API Upload Success: $uploadedCount video(s) sent.',
-              style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
-            ),
-            backgroundColor: Colors.green,
-            duration: const Duration(seconds: 4),
-          ),
-        );
-      }
+      // if (uploadedCount > 0 && mounted) {
+      //   ScaffoldMessenger.of(context).showSnackBar(
+      //     SnackBar(
+      //       content: Text(
+      //         'API Upload Success: $uploadedCount video(s) sent.',
+      //         style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+      //       ),
+      //       backgroundColor: Colors.green,
+      //       duration: const Duration(seconds: 4),
+      //     ),
+      //   );
+      // }
     } catch (e) {
       debugPrint('[Flow] Video upload error: $e');
     }
@@ -1506,9 +1495,11 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
         if (apiName != null && apiName.isNotEmpty) {
           driverName = apiName;
         }
-        final assignedVehiclesList = driver['assignedVehicles'] as List<dynamic>?;
+        final assignedVehiclesList =
+            driver['assignedVehicles'] as List<dynamic>?;
         if (assignedVehiclesList != null && assignedVehiclesList.isNotEmpty) {
-          final firstVehicle = assignedVehiclesList.first as Map<String, dynamic>;
+          final firstVehicle =
+              assignedVehiclesList.first as Map<String, dynamic>;
           _vehicleId = firstVehicle['vehicleId'] as String?;
           _vehicleRegNo = firstVehicle['vehicleRegistrationNumber'] as String?;
         } else {
@@ -1589,6 +1580,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
                   _state.resetCalibration();
                   _state.authStatus = AuthStatus.authenticated;
                   _phase = Phase.monitoring;
+                  _monitoringStartedAt = DateTime.now();
                   _sendTripStart();
                   _breakAlertTimer?.cancel();
                   _breakAlertTimer = Timer.periodic(_kBreakAlertInterval, (_) {
@@ -1624,6 +1616,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
         _state.resetCalibration();
         _state.authStatus = AuthStatus.authenticated;
         _phase = Phase.monitoring;
+        _monitoringStartedAt = DateTime.now();
         _sendTripStart();
         // Restart break alert timer for the new trip.
         _breakAlertTimer?.cancel();
@@ -2216,9 +2209,15 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     }
 
     // ── SEATBELT CYCLIC ALERT ──────────────────────────────────────
+    // Grace period: skip seatbelt alert for first 10 seconds after trip start
+    final bool seatbeltGraceActive =
+        _monitoringStartedAt != null &&
+        now.difference(_monitoringStartedAt!).inSeconds <
+            _kSeatbeltGraceSeconds;
     if (!_state.seatbeltBuckled &&
         _phase == Phase.monitoring &&
-        !_tripCompleted) {
+        !_tripCompleted &&
+        !seatbeltGraceActive) {
       // Start cycle if not already started
       if (_seatbeltAlertStart == null) {
         _seatbeltAlertStart = now;
@@ -4080,26 +4079,33 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   // ── VERIFYING ──
   Widget _verifyingOverlay() {
     if (!_initializing && !_authEngine.isEnrolled && !_isRefreshingDrivers) {
+      final bool noInternet = !_isOnline;
       return Container(
         color: Colors.black.withValues(alpha: 0.85),
-        child: const Center(
+        child: Center(
           child: Column(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              Icon(Icons.people_outlined, color: Colors.redAccent, size: 64),
-              SizedBox(height: 24),
+              Icon(
+                noInternet ? Icons.wifi_off_rounded : Icons.people_outlined,
+                color: noInternet ? Colors.orangeAccent : Colors.redAccent,
+                size: 64,
+              ),
+              const SizedBox(height: 24),
               Text(
-                'No Drivers Assigned',
-                style: TextStyle(
+                noInternet ? 'No Internet Connected' : 'No Drivers Assigned',
+                style: const TextStyle(
                   color: Colors.white,
                   fontSize: 20,
                   fontWeight: FontWeight.w600,
                 ),
               ),
-              SizedBox(height: 8),
+              const SizedBox(height: 8),
               Text(
-                'No registered/authorized drivers found for this device.',
-                style: TextStyle(color: Colors.white70, fontSize: 14),
+                noInternet
+                    ? 'Please connect to the internet to fetch driver data.'
+                    : 'No registered/authorized drivers found for this device.',
+                style: const TextStyle(color: Colors.white70, fontSize: 14),
                 textAlign: TextAlign.center,
               ),
             ],
@@ -4595,7 +4601,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       ),
       child: Row(
         children: [
-          // ── L/R/F/B cam status (fills remaining space) ──
+          // ── L/R/F/B cam status ──
           camDot('L', _leftCamConnected),
           const SizedBox(width: 4),
           camDot('R', _rightCamConnected),
@@ -4818,31 +4824,31 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     final remaining = (_kTripEndSeconds - elapsed).clamp(0, _kTripEndSeconds);
     return Container(
       margin: const EdgeInsets.fromLTRB(12, 0, 12, 0),
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
       decoration: BoxDecoration(
         color: const Color(0xFF111827).withValues(alpha: 0.86),
-        borderRadius: BorderRadius.circular(14),
+        borderRadius: BorderRadius.circular(10),
       ),
       child: Row(
         children: [
           Container(
-            width: 46,
-            height: 46,
+            width: 34,
+            height: 34,
             alignment: Alignment.center,
             decoration: BoxDecoration(
               shape: BoxShape.circle,
-              border: Border.all(color: const Color(0xFFF59E0B), width: 3),
+              border: Border.all(color: const Color(0xFFF59E0B), width: 2),
             ),
             child: Text(
               '$remaining',
               style: const TextStyle(
                 color: Colors.white,
-                fontSize: 18,
+                fontSize: 14,
                 fontWeight: FontWeight.w700,
               ),
             ),
           ),
-          const SizedBox(width: 12),
+          const SizedBox(width: 10),
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -4851,7 +4857,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
                   'No driver detected',
                   style: TextStyle(
                     color: Colors.white,
-                    fontSize: 15,
+                    fontSize: 12,
                     fontWeight: FontWeight.w700,
                   ),
                 ),
@@ -4859,7 +4865,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
                   'Ending Trip $_tripNumber in ${remaining}s',
                   style: const TextStyle(
                     color: Color(0xFFFCD34D),
-                    fontSize: 13,
+                    fontSize: 11,
                   ),
                 ),
               ],
@@ -4876,51 +4882,51 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     final remaining = (30 - elapsed).clamp(0, 30);
     return Container(
       margin: const EdgeInsets.fromLTRB(12, 0, 12, 8),
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
       decoration: BoxDecoration(
         color: const Color(0xFF7F1D1D).withValues(alpha: 0.95),
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: const Color(0xFFEF4444), width: 1.5),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: const Color(0xFFEF4444), width: 1),
       ),
       child: Row(
         children: [
           Container(
-            width: 46,
-            height: 46,
+            width: 34,
+            height: 34,
             alignment: Alignment.center,
             decoration: BoxDecoration(
               shape: BoxShape.circle,
-              border: Border.all(color: const Color(0xFFEF4444), width: 3),
+              border: Border.all(color: const Color(0xFFEF4444), width: 2),
             ),
             child: Text(
               '$remaining',
               style: const TextStyle(
                 color: Colors.white,
-                fontSize: 18,
+                fontSize: 14,
                 fontWeight: FontWeight.w800,
               ),
             ),
           ),
-          const SizedBox(width: 16),
+          const SizedBox(width: 10),
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 const Text(
-                  'UNAUTHORIZED DRIVER DETECTED',
+                  'UNAUTHORIZED DRIVER',
                   style: TextStyle(
                     color: Color(0xFFFCA5A5),
-                    fontSize: 12,
+                    fontSize: 10,
                     fontWeight: FontWeight.w800,
                     letterSpacing: 0.5,
                   ),
                 ),
-                const SizedBox(height: 2),
+                const SizedBox(height: 1),
                 Text(
                   'Ending Trip $_tripNumber in ${remaining}s',
                   style: const TextStyle(
                     color: Colors.white,
-                    fontSize: 14,
+                    fontSize: 11,
                     fontWeight: FontWeight.w700,
                   ),
                 ),
@@ -4932,53 +4938,160 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     );
   }
 
-  // Top info bar (driving_hud_view style): live dot + calibration + trip.
+  // Top info bar (driving_hud_view style): version + net/esp icons + trip.
   Widget _monitorStatusBar() {
     final calText = _state.calibrated
         ? 'CAL ✓'
         : 'Calibrating ${_state.calibrationFrame}/${MonitoringEngine.kCalibrationFrames}';
     final calColor = _state.calibrated ? Colors.greenAccent : Colors.amber;
+    final allCamConnected =
+        _leftCamConnected &&
+        _rightCamConnected &&
+        _frontCamConnected &&
+        _rearCamConnected;
 
     return Container(
       margin: const EdgeInsets.all(12),
-      padding: const EdgeInsets.fromLTRB(14, 10, 14, 10),
+      padding: const EdgeInsets.fromLTRB(14, 8, 14, 8),
       decoration: BoxDecoration(
         color: Colors.black.withValues(alpha: 0.55),
         borderRadius: BorderRadius.circular(14),
       ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          // Top row: green dot + version + cal + trip
+          Row(
+            children: [
+              Container(
+                width: 9,
+                height: 9,
+                decoration: const BoxDecoration(
+                  shape: BoxShape.circle,
+                  color: Color(0xFF4ADE80),
+                ),
+              ),
+              const SizedBox(width: 8),
+              Text(
+                _appVersion.isNotEmpty ? _appVersion : 'MONITORING',
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 9,
+                  fontWeight: FontWeight.w700,
+                  letterSpacing: 0.6,
+                ),
+              ),
+              const SizedBox(width: 10),
+              Text(
+                calText,
+                style: TextStyle(
+                  color: calColor,
+                  fontSize: 11,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+              const Spacer(),
+              Text(
+                'Trip $_tripNumber · $_driverName',
+                style: const TextStyle(color: Colors.white, fontSize: 11),
+              ),
+            ],
+          ),
+          const SizedBox(height: 6),
+          // Bottom row: net + camera icons
+          Row(
+            children: [
+              Icon(
+                _isOnline
+                    ? Icons.signal_cellular_alt_rounded
+                    : Icons.signal_cellular_off_rounded,
+                color: _isOnline ? const Color(0xFF22C55E) : Colors.white,
+                size: 15,
+              ),
+              const SizedBox(width: 8),
+              Icon(
+                allCamConnected ? Icons.wifi_rounded : Icons.wifi_off_rounded,
+                color: allCamConnected ? const Color(0xFF22C55E) : Colors.white,
+                size: 15,
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// NET + ESP status chips row — shown above the version banner.
+  Widget _networkStatusRow() {
+    final allCamConnected =
+        _leftCamConnected &&
+        _rightCamConnected &&
+        _frontCamConnected &&
+        _rearCamConnected;
+
+    Widget chip({
+      required IconData icon,
+      required String label,
+      required bool connected,
+      required Color activeColor,
+    }) {
+      final color = connected ? activeColor : const Color(0xFFEF4444);
+      return Container(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
+        decoration: BoxDecoration(
+          color: connected ? activeColor : const Color(0xFFEF4444),
+          borderRadius: BorderRadius.circular(6),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon, color: Colors.white, size: 12),
+            const SizedBox(width: 4),
+            Text(
+              label,
+              style: const TextStyle(
+                color: Colors.white,
+                fontSize: 10,
+                fontWeight: FontWeight.w800,
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+
+    return Container(
+      margin: const EdgeInsets.fromLTRB(12, 12, 12, 4),
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+      decoration: BoxDecoration(
+        color: Colors.black.withValues(alpha: 0.55),
+        borderRadius: BorderRadius.circular(10),
+      ),
       child: Row(
         children: [
-          Container(
-            width: 9,
-            height: 9,
-            decoration: const BoxDecoration(
-              shape: BoxShape.circle,
-              color: Color(0xFF4ADE80),
+          Expanded(
+            child: chip(
+              icon: _isOnline
+                  ? Icons.signal_cellular_alt_rounded
+                  : Icons.signal_cellular_off_rounded,
+              label: _isOnline ? 'Internet Connected' : 'Internet Disconnected',
+              connected: _isOnline,
+              activeColor: const Color(0xFF3B82F6),
             ),
           ),
-          const SizedBox(width: 8),
-          Text(
-            _appVersion.isNotEmpty ? _appVersion : 'MONITORING',
-            style: const TextStyle(
-              color: Colors.white,
-              fontSize: 10,
-              fontWeight: FontWeight.w700,
-              letterSpacing: 0.6,
+          const SizedBox(width: 6),
+          Expanded(
+            child: chip(
+              icon: allCamConnected
+                  ? Icons.wifi_rounded
+                  : Icons.wifi_off_rounded,
+              label: allCamConnected
+                  ? 'Cameras Connected'
+                  : 'Cameras Disconnected',
+              connected: allCamConnected,
+              activeColor: const Color(0xFF22C55E),
             ),
-          ),
-          const SizedBox(width: 10),
-          Text(
-            calText,
-            style: TextStyle(
-              color: calColor,
-              fontSize: 12,
-              fontWeight: FontWeight.w700,
-            ),
-          ),
-          const Spacer(),
-          Text(
-            'Trip $_tripNumber · $_driverName',
-            style: const TextStyle(color: Colors.white70, fontSize: 12),
           ),
         ],
       ),
