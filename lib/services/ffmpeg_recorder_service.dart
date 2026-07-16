@@ -147,8 +147,10 @@ class FFmpegVideoRecorderService {
         ? '-rtsp_transport tcp '
         : '';
 
-    // NOTE: drawtext filter requires full-gpl build. min_gpl does NOT support it.
-    // Using fps=15 only to maintain consistent frame rate from MJPEG stream.
+    // Use fps=15 to force FFmpeg to duplicate frames and maintain real-time duration.
+    // Timestamp overlay is removed to prevent FFmpeg crashes.
+    final String filterOpt = '-vf "fps=15" ';
+
     final String ffmpegCommand =
         '-y $rtspOpt -use_wallclock_as_timestamps 1 -i $_streamUrl '
         '-vf "fps=15" '
