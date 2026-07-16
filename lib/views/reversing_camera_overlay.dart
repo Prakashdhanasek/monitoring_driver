@@ -400,39 +400,39 @@ class _ReversingCameraOverlayState extends State<ReversingCameraOverlay>
         ),
 
         // Stream Status pill
-        Container(
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-          decoration: BoxDecoration(
-            color: Colors.black54,
-            borderRadius: BorderRadius.circular(20),
-            border: Border.all(
-              color: _isLive ? Colors.greenAccent : Colors.amberAccent,
-              width: 1,
-            ),
-          ),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Container(
-                width: 8,
-                height: 8,
-                decoration: BoxDecoration(
-                  color: _isLive ? Colors.greenAccent : Colors.amberAccent,
-                  shape: BoxShape.circle,
-                ),
-              ),
-              const SizedBox(width: 6),
-              Text(
-                _isLive ? 'HTTP LIVE' : 'CONNECTING',
-                style: const TextStyle(
-                  color: Colors.white,
-                  fontSize: 10,
-                  fontWeight: FontWeight.bold,
-                ),
-              ),
-            ],
-          ),
-        ),
+        // Container(
+        //   padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+        //   decoration: BoxDecoration(
+        //     color: Colors.black54,
+        //     borderRadius: BorderRadius.circular(20),
+        //     border: Border.all(
+        //       color: _isLive ? Colors.greenAccent : Colors.amberAccent,
+        //       width: 1,
+        //     ),
+        //   ),
+        //   child: Row(
+        //     mainAxisSize: MainAxisSize.min,
+        //     children: [
+        //       Container(
+        //         width: 8,
+        //         height: 8,
+        //         decoration: BoxDecoration(
+        //           color: _isLive ? Colors.greenAccent : Colors.amberAccent,
+        //           shape: BoxShape.circle,
+        //         ),
+        //       ),
+        //       const SizedBox(width: 6),
+        //       // Text(
+        //       //   _isLive ? 'HTTP LIVE' : 'CONNECTING',
+        //       //   style: const TextStyle(
+        //       //     color: Colors.white,
+        //       //     fontSize: 10,
+        //       //     fontWeight: FontWeight.bold,
+        //       //   ),
+        //       // ),
+        //     ],
+        //   ),
+        // ),
       ],
     );
   }

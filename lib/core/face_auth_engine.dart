@@ -184,7 +184,13 @@ class FaceAuthEngine {
       'threshold=$kAuthThreshold',
     );
 
-    if (minDist < kAuthThreshold) {
+    // Use a looser threshold once authenticated to prevent false rejections
+    // due to lighting changes or slight head movements during the trip.
+    final double effectiveThreshold = (state.authStatus == AuthStatus.authenticated)
+        ? kAuthThreshold + 0.25 // e.g., 0.95 + 0.25 = 1.20
+        : kAuthThreshold;
+
+    if (minDist < effectiveThreshold) {
       _consecutiveMatch++;
       _consecutiveMiss = 0;
       lastMatchedLabel = bestLabel;

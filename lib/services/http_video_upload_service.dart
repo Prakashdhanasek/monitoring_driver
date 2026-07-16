@@ -74,7 +74,7 @@ class HttpVideoUploadService {
         }
         
         final lastModified = await file.lastModified();
-        request.fields['OccurredDateTime'] = lastModified.toUtc().toIso8601String();
+        request.fields['OccurredDateTime'] = "";
 
         // Print request details for debugging
         debugPrint('==================================================');
