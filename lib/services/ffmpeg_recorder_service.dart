@@ -147,26 +147,9 @@ class FFmpegVideoRecorderService {
         ? '-rtsp_transport tcp '
         : '';
 
-    // Find a valid font path for the timestamp overlay
-    String? fontPath;
-    final possibleFonts = [
-      '/system/fonts/Roboto-Regular.ttf',
-      '/system/fonts/DroidSans.ttf',
-      '/system/fonts/NotoSans-Regular.ttf',
-    ];
-    for (final path in possibleFonts) {
-      if (File(path).existsSync()) {
-        fontPath = path;
-        break;
-      }
-    }
-
     // Use fps=15 to force FFmpeg to duplicate frames and maintain real-time duration.
-    // If a font is found, combine it with drawtext for the CCTV timestamp.
-    String filterOpt = '-vf "fps=15" ';
-    if (fontPath != null) {
-      filterOpt = '-vf "fps=15,drawtext=fontfile=$fontPath:text=\\\'%{localtime\\\\\\\\:%Y-%m-%d %H\\\\\\\\:%M\\\\\\\\:%S}\\\':fontcolor=white:fontsize=24:box=1:boxcolor=black@0.5:boxborderw=5:x=(w-text_w)-10:y=10" ';
-    }
+    // Timestamp overlay is removed to prevent FFmpeg crashes.
+    final String filterOpt = '-vf "fps=15" ';
 
     final String ffmpegCommand =
         '-y $rtspOpt -use_wallclock_as_timestamps 1 -i $_streamUrl '

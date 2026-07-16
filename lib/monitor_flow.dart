@@ -4157,12 +4157,24 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
                   ),
                 ),
                 const SizedBox(height: 32),
-
-                // High-Tech Scanner scope in the center
-                SizedBox(
-                  width: 260,
-                  height: 260,
-                  child: Stack(
+                // Loader shown during initialization
+                if (_initializing)
+                  const SizedBox(
+                    width: 260,
+                    height: 260,
+                    child: Center(
+                      child: CircularProgressIndicator(
+                        color: Color(0xFF3B82F6),
+                        strokeWidth: 3,
+                      ),
+                    ),
+                  )
+                // High-Tech Scanner scope in the center (only during verify/monitor and NOT initializing)
+                else if (_phase == Phase.verifying || _phase == Phase.monitoring)
+                  SizedBox(
+                    width: 260,
+                    height: 260,
+                    child: Stack(
                     clipBehavior: Clip.none,
                     children: [
                       Container(
