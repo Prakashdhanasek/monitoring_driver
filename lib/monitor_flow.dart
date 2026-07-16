@@ -152,6 +152,8 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   bool _isPollingBlindSpot = false;
   DateTime? _blindSpotObjectLastSeenAt; // last time object was < 50cm
   static const int _kBlindSpotLingerSec = 5; // keep cam open 5s after clear
+  CamMode?
+  _camModeBeforeBlindSpot; // cam mode before sensor auto-opened side cam
 
   // ESP32 camera connection status
   bool _rearCamConnected = false;
@@ -290,26 +292,27 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   double _boundaryBeyondM = 0; // how far past the limit, in meters
 
   // ── Harsh driving (accelerometer magnitude + GPS classification) ──
+  // DISABLED: Harsh driving detection commented out
   StreamSubscription<UserAccelerometerEvent>? _accelSub;
 
-  // Force magnitude (m/s²) above which we treat it as a candidate harsh event.
-  static const double _kHarshMagnitude = 7.5;
+  // // Force magnitude (m/s²) above which we treat it as a candidate harsh event.
+  // static const double _kHarshMagnitude = 7.5;
 
-  // Ignore events below this speed (parked / crawling → GPS jitter noise).
-  static const double _kMinHarshSpeedKmh = 80.0;
+  // // Ignore events below this speed (parked / crawling → GPS jitter noise).
+  // static const double _kMinHarshSpeedKmh = 80.0;
 
-  // How much forward speed must change to classify accel vs brake (m/s).
-  static const double _kSpeedDeltaMs = 0.8;
+  // // How much forward speed must change to classify accel vs brake (m/s).
+  // static const double _kSpeedDeltaMs = 0.8;
 
-  // Local debounce so one physical event isn't detected dozens of times.
-  DateTime? _lastHarshAt;
-  static const Duration _kHarshDebounce = Duration(seconds: 2);
+  // // Local debounce so one physical event isn't detected dozens of times.
+  // DateTime? _lastHarshAt;
+  // static const Duration _kHarshDebounce = Duration(seconds: 2);
 
-  // Short rolling history of (timestamp, speed-in-m/s) for classification.
-  final List<MapEntry<DateTime, double>> _speedHistory = [];
-  // ── Harsh driving dedicated cooldown ──
-  final Map<String, DateTime> _lastHarshReportAt = {};
-  static const int _kHarshCooldownSeconds = 15;
+  // // Short rolling history of (timestamp, speed-in-m/s) for classification.
+  // final List<MapEntry<DateTime, double>> _speedHistory = [];
+  // // ── Harsh driving dedicated cooldown ──
+  // final Map<String, DateTime> _lastHarshReportAt = {};
+  // static const int _kHarshCooldownSeconds = 15;
   // Set when a harsh event fires; drives the banner via _getMonitorBannerKey.
   String? _harshBannerText; // e.g. 'HARSH BRAKING'
   DateTime? _harshEventAt;
@@ -373,7 +376,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       _triggerBreakAlert();
     });
 
-    _startHarshDetection();
+    // _startHarshDetection();
   }
 
   Future<void> _loadAppVersion() async {
@@ -2015,10 +2018,10 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       debugPrint('[BreakAlert] SKIP: distracted');
       return;
     }
-    if (_state.vehicleSpeed > _kSpeedLimitKmh) {
-      debugPrint('[BreakAlert] SKIP: overspeed');
-      return;
-    }
+    // if (_state.vehicleSpeed > _kSpeedLimitKmh) {
+    //   debugPrint('[BreakAlert] SKIP: overspeed');
+    //   return;
+    // }
     if (_state.authStatus == AuthStatus.unauthorized) {
       debugPrint('[BreakAlert] SKIP: unauthorized');
       return;
@@ -2059,7 +2062,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
           _state.drowsinessLevel == DrowsinessLevel.drowsy ||
           _state.drowsinessLevel == DrowsinessLevel.asleep ||
           _state.distractionStatus == DistractionStatus.distracted ||
-          _state.vehicleSpeed > _kSpeedLimitKmh ||
+          // _state.vehicleSpeed > _kSpeedLimitKmh ||
           _state.authStatus == AuthStatus.unauthorized;
       if (anyAlertActive) {
         WidgetsBinding.instance.addPostFrameCallback(
@@ -3146,99 +3149,97 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     }
   }
 
-  void _startHarshDetection() {
-    _accelSub =
-        userAccelerometerEventStream(
-          samplingPeriod:
-              SensorInterval.gameInterval, // ~20ms, responsive but not extreme
-        ).listen(
-          _onAccelerometer,
-          onError: (e) {
-            debugPrint('[Harsh] accelerometer error: $e');
-          },
-        );
-  }
+  // void _startHarshDetection() {
+  //   _accelSub =
+  //       userAccelerometerEventStream(
+  //         samplingPeriod:
+  //             SensorInterval.gameInterval, // ~20ms, responsive but not extreme
+  //       ).listen(
+  //         _onAccelerometer,
+  //         onError: (e) {
+  //           debugPrint('[Harsh] accelerometer error: $e');
+  //         },
+  //       );
+  // }
 
-  void _onAccelerometer(UserAccelerometerEvent event) {
-    final now = DateTime.now();
+  // void _onAccelerometer(UserAccelerometerEvent event) {
+  //   final now = DateTime.now();
 
-    // Only monitor while actually driving-monitoring, not during verify/details.
-    if (_phase != Phase.monitoring || _tripCompleted) return;
+  //   // Only monitor while actually driving-monitoring, not during verify/details.
+  //   if (_phase != Phase.monitoring || _tripCompleted) return;
 
-    final speedKmh = _state.vehicleSpeed;
-    final speedMs = speedKmh / 3.6;
+  //   final speedKmh = _state.vehicleSpeed;
+  //   final speedMs = speedKmh / 3.6;
 
-    // Keep a rolling ~2.5s speed history (sampled here, throttled to 250ms).
-    if (_speedHistory.isEmpty ||
-        now.difference(_speedHistory.last.key).inMilliseconds >= 250) {
-      _speedHistory.add(MapEntry(now, speedMs));
-      _speedHistory.removeWhere(
-        (e) => now.difference(e.key) > const Duration(milliseconds: 2500),
-      );
-    }
+  //   // Keep a rolling ~2.5s speed history (sampled here, throttled to 250ms).
+  //   if (_speedHistory.isEmpty ||
+  //       now.difference(_speedHistory.last.key).inMilliseconds >= 250) {
+  //     _speedHistory.add(MapEntry(now, speedMs));
+  //     _speedHistory.removeWhere(
+  //       (e) => now.difference(e.key) > const Duration(milliseconds: 2500),
+  //     );
+  //   }
 
-    // 1) Magnitude — orientation-independent total force.
-    final magnitude = sqrt(
-      event.x * event.x + event.y * event.y + event.z * event.z,
-    );
-    if (magnitude < _kHarshMagnitude) return;
+  //   // 1) Magnitude — orientation-independent total force.
+  //   final magnitude = sqrt(
+  //     event.x * event.x + event.y * event.y + event.z * event.z,
+  //   );
+  //   if (magnitude < _kHarshMagnitude) return;
 
-    // 2) Guards: minimum speed + local debounce.
-    if (speedKmh < _kMinHarshSpeedKmh) return;
-    if (_lastHarshAt != null &&
-        now.difference(_lastHarshAt!) < _kHarshDebounce) {
-      return;
-    }
+  //   // 2) Guards: minimum speed + local debounce.
+  //   if (speedKmh < _kMinHarshSpeedKmh) return;
+  //   if (_lastHarshAt != null &&
+  //       now.difference(_lastHarshAt!) < _kHarshDebounce) {
+  //     return;
+  //   }
 
-    // 3) Classify using GPS speed change over the last ~1–2s.
-    final past = _speedHistory.firstWhere(
-      (e) => now.difference(e.key).inMilliseconds >= 800,
-      orElse: () => _speedHistory.isNotEmpty
-          ? _speedHistory.first
-          : MapEntry(now, speedMs),
-    );
-    final delta = speedMs - past.value; // + = speeding up, − = slowing down
+  //   // 3) Classify using GPS speed change over the last ~1–2s.
+  //   final past = _speedHistory.firstWhere(
+  //     (e) => now.difference(e.key).inMilliseconds >= 800,
+  //     orElse: () => _speedHistory.isNotEmpty
+  //         ? _speedHistory.first
+  //         : MapEntry(now, speedMs),
+  //   );
+  //   final delta = speedMs - past.value; // + = speeding up, − = slowing down
 
-    debugPrint(
-      '[Harsh] mag=${magnitude.toStringAsFixed(2)} m/s² | '
-      'speed=${speedKmh.toStringAsFixed(1)} km/h | '
-      'Δspeed=${delta.toStringAsFixed(2)} m/s',
-    );
+  //   debugPrint(
+  //     '[Harsh] mag=${magnitude.toStringAsFixed(2)} m/s² | '
+  //     'speed=${speedKmh.toStringAsFixed(1)} km/h | '
+  //     'Δspeed=${delta.toStringAsFixed(2)} m/s',
+  //   );
 
-    if (delta >= _kSpeedDeltaMs) {
-      _lastHarshAt = now;
-      if (_harshCooldown('HarshAcceleration')) {
-        _harshBannerText = ' HARSH ACCELERATION';
-        _harshEventAt = now;
-        _reportIncident('Harsh Acceleration', 'Medium', 0.9);
-        _tts.speak(AlertMessages.harshAcceleration(_tts.currentLang));
-      }
-    } else if (delta <= -_kSpeedDeltaMs) {
-      _lastHarshAt = now;
-      if (_harshCooldown('HarshBraking')) {
-        _harshBannerText = 'HARSH BRAKING';
-        _harshEventAt = now;
-        _reportIncident('Harsh Braking', 'High', 0.9);
-        _tts.speak(AlertMessages.harshBraking(_tts.currentLang));
-      }
-    }
-    // else: strong force but speed barely changed → likely a turn or pothole.
-    // Intentionally ignored. (Set _lastHarshAt here too if you want to debounce
-    // these as well.)
-  }
+  //   if (delta >= _kSpeedDeltaMs) {
+  //     _lastHarshAt = now;
+  //     if (_harshCooldown('HarshAcceleration')) {
+  //       _harshBannerText = ' HARSH ACCELERATION';
+  //       _harshEventAt = now;
+  //       _reportIncident('Harsh Acceleration', 'Medium', 0.9);
+  //       _tts.speak(AlertMessages.harshAcceleration(_tts.currentLang));
+  //     }
+  //   } else if (delta <= -_kSpeedDeltaMs) {
+  //     _lastHarshAt = now;
+  //     if (_harshCooldown('HarshBraking')) {
+  //       _harshBannerText = 'HARSH BRAKING';
+  //       _harshEventAt = now;
+  //       _reportIncident('Harsh Braking', 'High', 0.9);
+  //       _tts.speak(AlertMessages.harshBraking(_tts.currentLang));
+  //     }
+  //   }
+  //   // else: strong force but speed barely changed → likely a turn or pothole.
+  //   // Intentionally ignored.
+  // }
 
-  /// Debounce for harsh-driving reports. Returns true at most once every
-  /// [_kHarshCooldownSeconds] per [key] ('HarshAcceleration' / 'HarshBraking').
-  bool _harshCooldown(String key) {
-    final now = DateTime.now();
-    final last = _lastHarshReportAt[key];
-    if (last == null ||
-        now.difference(last).inSeconds >= _kHarshCooldownSeconds) {
-      _lastHarshReportAt[key] = now;
-      return true;
-    }
-    return false;
-  }
+  // /// Debounce for harsh-driving reports.
+  // bool _harshCooldown(String key) {
+  //   final now = DateTime.now();
+  //   final last = _lastHarshReportAt[key];
+  //   if (last == null ||
+  //       now.difference(last).inSeconds >= _kHarshCooldownSeconds) {
+  //     _lastHarshReportAt[key] = now;
+  //     return true;
+  //   }
+  //   return false;
+  // }
 
   // ─────────────────────────────────────────────────────────
   // UI
@@ -4028,9 +4029,16 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       if (objectNearby) {
         _blindSpotObjectLastSeenAt = DateTime.now();
         if (left != null && left < 50.0) {
+          // Save current mode before switching (only if not already in auto-side-cam)
+          if (_camMode != CamMode.left && _camMode != CamMode.right) {
+            _camModeBeforeBlindSpot = _camMode;
+          }
           _leftManualOverride = false;
           _setCamMode(CamMode.left);
         } else if (right != null && right < 50.0) {
+          if (_camMode != CamMode.left && _camMode != CamMode.right) {
+            _camModeBeforeBlindSpot = _camMode;
+          }
           _rightManualOverride = false;
           _setCamMode(CamMode.right);
         }
@@ -4050,7 +4058,11 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
                   _kBlindSpotLingerSec;
           if (lingerExpired) {
             _blindSpotObjectLastSeenAt = null;
-            _setCamMode(CamMode.driverMonitoring);
+            // Restore previous cam mode (front/rear/driver) instead of always going to driverMonitoring
+            final restoreTo =
+                _camModeBeforeBlindSpot ?? CamMode.driverMonitoring;
+            _camModeBeforeBlindSpot = null;
+            _setCamMode(restoreTo);
           }
         }
       }
@@ -4176,93 +4188,94 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
                     ),
                   )
                 // High-Tech Scanner scope in the center (only during verify/monitor and NOT initializing)
-                else if (_phase == Phase.verifying || _phase == Phase.monitoring)
+                else if (_phase == Phase.verifying ||
+                    _phase == Phase.monitoring)
                   SizedBox(
                     width: 260,
                     height: 260,
                     child: Stack(
-                    clipBehavior: Clip.none,
-                    children: [
-                      Container(
-                        width: 260,
-                        height: 260,
-                        decoration: BoxDecoration(
-                          color: Colors.black.withValues(alpha: 0.15),
-                          borderRadius: BorderRadius.circular(20),
-                          border: Border.all(
-                            color: themeColor.withValues(alpha: 0.3),
-                            width: 1,
+                      clipBehavior: Clip.none,
+                      children: [
+                        Container(
+                          width: 260,
+                          height: 260,
+                          decoration: BoxDecoration(
+                            color: Colors.black.withValues(alpha: 0.15),
+                            borderRadius: BorderRadius.circular(20),
+                            border: Border.all(
+                              color: themeColor.withValues(alpha: 0.3),
+                              width: 1,
+                            ),
+                          ),
+                          child: ClipRRect(
+                            borderRadius: BorderRadius.circular(20),
+                            child: Stack(
+                              children: [_FaceScannerLine(color: themeColor)],
+                            ),
                           ),
                         ),
-                        child: ClipRRect(
-                          borderRadius: BorderRadius.circular(20),
-                          child: Stack(
-                            children: [_FaceScannerLine(color: themeColor)],
+                        // Left-Top Corner
+                        Positioned(
+                          left: -4,
+                          top: -4,
+                          child: _ScannerCorner(
+                            isTop: true,
+                            isLeft: true,
+                            color: themeColor,
                           ),
                         ),
-                      ),
-                      // Left-Top Corner
-                      Positioned(
-                        left: -4,
-                        top: -4,
-                        child: _ScannerCorner(
-                          isTop: true,
-                          isLeft: true,
-                          color: themeColor,
+                        // Right-Top Corner
+                        Positioned(
+                          right: -4,
+                          top: -4,
+                          child: _ScannerCorner(
+                            isTop: true,
+                            isLeft: false,
+                            color: themeColor,
+                          ),
                         ),
-                      ),
-                      // Right-Top Corner
-                      Positioned(
-                        right: -4,
-                        top: -4,
-                        child: _ScannerCorner(
-                          isTop: true,
-                          isLeft: false,
-                          color: themeColor,
+                        // Left-Bottom Corner
+                        Positioned(
+                          left: -4,
+                          bottom: -4,
+                          child: _ScannerCorner(
+                            isTop: false,
+                            isLeft: true,
+                            color: themeColor,
+                          ),
                         ),
-                      ),
-                      // Left-Bottom Corner
-                      Positioned(
-                        left: -4,
-                        bottom: -4,
-                        child: _ScannerCorner(
-                          isTop: false,
-                          isLeft: true,
-                          color: themeColor,
+                        // Right-Bottom Corner
+                        Positioned(
+                          right: -4,
+                          bottom: -4,
+                          child: _ScannerCorner(
+                            isTop: false,
+                            isLeft: false,
+                            color: themeColor,
+                          ),
                         ),
-                      ),
-                      // Right-Bottom Corner
-                      Positioned(
-                        right: -4,
-                        bottom: -4,
-                        child: _ScannerCorner(
-                          isTop: false,
-                          isLeft: false,
-                          color: themeColor,
-                        ),
-                      ),
 
-                      // Small circular progress spinner or error icon at the center
-                      Align(
-                        alignment: Alignment.center,
-                        child: SizedBox(
-                          width: 54,
-                          height: 54,
-                          child: isUnverified
-                              ? const Icon(
-                                  Icons.error_outline,
-                                  color: Colors.redAccent,
-                                  size: 54,
-                                )
-                              : CircularProgressIndicator(
-                                  strokeWidth: 3,
-                                  color: themeColor,
-                                ),
+                        // Small circular progress spinner or error icon at the center
+                        Align(
+                          alignment: Alignment.center,
+                          child: SizedBox(
+                            width: 54,
+                            height: 54,
+                            child: isUnverified
+                                ? const Icon(
+                                    Icons.error_outline,
+                                    color: Colors.redAccent,
+                                    size: 54,
+                                  )
+                                : CircularProgressIndicator(
+                                    strokeWidth: 3,
+                                    color: themeColor,
+                                  ),
+                          ),
                         ),
-                      ),
-                    ],
+                      ],
+                    ),
                   ),
-                ),
 
                 // Centered feedback card below scanner (only when a face is detected)
                 if (_state.faceCount > 0 &&
@@ -5015,9 +5028,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
           Row(
             children: [
               Icon(
-                _isOnline
-                    ? Icons.signal_cellular_alt_rounded
-                    : Icons.signal_cellular_off_rounded,
+                _isOnline ? Icons.language_rounded : Icons.language_rounded,
                 color: _isOnline ? const Color(0xFF22C55E) : Colors.white,
                 size: 15,
               ),
@@ -5084,9 +5095,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
         children: [
           Expanded(
             child: chip(
-              icon: _isOnline
-                  ? Icons.signal_cellular_alt_rounded
-                  : Icons.signal_cellular_off_rounded,
+              icon: _isOnline ? Icons.language_rounded : Icons.language_rounded,
               label: _isOnline ? 'Internet Connected' : 'Internet Disconnected',
               connected: _isOnline,
               activeColor: const Color(0xFF3B82F6),
