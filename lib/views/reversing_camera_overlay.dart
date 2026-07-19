@@ -190,16 +190,16 @@ class _ReversingCameraOverlayState extends State<ReversingCameraOverlay>
           ),
 
           // Bottom telemetry bar
-          Positioned(
-            bottom: 24,
-            left: 16,
-            right: 16,
-            child: FittedBox(
-              fit: BoxFit.scaleDown,
-              alignment: Alignment.center,
-              child: _buildBottomTelemetry(),
-            ),
-          ),
+          // Positioned(
+          //   bottom: 24,
+          //   left: 16,
+          //   right: 16,
+          //   child: FittedBox(
+          //     fit: BoxFit.scaleDown,
+          //     alignment: Alignment.center,
+          //     child: _buildBottomTelemetry(),
+          //   ),
+          // ),
         ],
       ),
     );
@@ -400,81 +400,81 @@ class _ReversingCameraOverlayState extends State<ReversingCameraOverlay>
         ),
 
         // Stream Status pill
-        Container(
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-          decoration: BoxDecoration(
-            color: Colors.black54,
-            borderRadius: BorderRadius.circular(20),
-            border: Border.all(
-              color: _isLive ? Colors.greenAccent : Colors.amberAccent,
-              width: 1,
-            ),
-          ),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Container(
-                width: 8,
-                height: 8,
-                decoration: BoxDecoration(
-                  color: _isLive ? Colors.greenAccent : Colors.amberAccent,
-                  shape: BoxShape.circle,
-                ),
-              ),
-              const SizedBox(width: 6),
-              Text(
-                _isLive ? 'HTTP LIVE' : 'CONNECTING',
-                style: const TextStyle(
-                  color: Colors.white,
-                  fontSize: 10,
-                  fontWeight: FontWeight.bold,
-                ),
-              ),
-            ],
-          ),
-        ),
+        // Container(
+        //   padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+        //   decoration: BoxDecoration(
+        //     color: Colors.black54,
+        //     borderRadius: BorderRadius.circular(20),
+        //     border: Border.all(
+        //       color: _isLive ? Colors.greenAccent : Colors.amberAccent,
+        //       width: 1,
+        //     ),
+        //   ),
+        //   child: Row(
+        //     mainAxisSize: MainAxisSize.min,
+        //     children: [
+        //       Container(
+        //         width: 8,
+        //         height: 8,
+        //         decoration: BoxDecoration(
+        //           color: _isLive ? Colors.greenAccent : Colors.amberAccent,
+        //           shape: BoxShape.circle,
+        //         ),
+        //       ),
+        //       const SizedBox(width: 6),
+        //       // Text(
+        //       //   _isLive ? 'HTTP LIVE' : 'CONNECTING',
+        //       //   style: const TextStyle(
+        //       //     color: Colors.white,
+        //       //     fontSize: 10,
+        //       //     fontWeight: FontWeight.bold,
+        //       //   ),
+        //       // ),
+        //     ],
+        //   ),
+        // ),
       ],
     );
   }
 
-  Widget _buildBottomTelemetry() {
-    return Container(
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: Colors.black87,
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: Colors.white10, width: 1),
-      ),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceAround,
-        children: [
-          _buildTelemetryItem(
-            icon: Icons.speed_rounded,
-            title: 'SPEED',
-            value: '${widget.speed.toStringAsFixed(1)} km/h',
-          ),
-          Container(width: 1, height: 24, color: Colors.white24),
-          _buildTelemetryItem(
-            icon: Icons.location_on_rounded,
-            title: 'GPS LAT',
-            value: widget.latitude.toStringAsFixed(4),
-          ),
-          Container(width: 1, height: 24, color: Colors.white24),
-          _buildTelemetryItem(
-            icon: Icons.location_on_rounded,
-            title: 'GPS LNG',
-            value: widget.longitude.toStringAsFixed(4),
-          ),
-          Container(width: 1, height: 24, color: Colors.white24),
-          _buildTelemetryItem(
-            icon: Icons.access_time_rounded,
-            title: 'SYSTEM TIME',
-            value: _formatTime(_currentTime),
-          ),
-        ],
-      ),
-    );
-  }
+  // Widget _buildBottomTelemetry() {
+  //   return Container(
+  //     padding: const EdgeInsets.all(16),
+  //     decoration: BoxDecoration(
+  //       color: Colors.black87,
+  //       borderRadius: BorderRadius.circular(12),
+  //       border: Border.all(color: Colors.white10, width: 1),
+  //     ),
+  //     child: Row(
+  //       mainAxisAlignment: MainAxisAlignment.spaceAround,
+  //       children: [
+  //         _buildTelemetryItem(
+  //           icon: Icons.speed_rounded,
+  //           title: 'SPEED',
+  //           value: '${widget.speed.toStringAsFixed(1)} km/h',
+  //         ),
+  //         Container(width: 1, height: 24, color: Colors.white24),
+  //         _buildTelemetryItem(
+  //           icon: Icons.location_on_rounded,
+  //           title: 'GPS LAT',
+  //           value: widget.latitude.toStringAsFixed(4),
+  //         ),
+  //         Container(width: 1, height: 24, color: Colors.white24),
+  //         _buildTelemetryItem(
+  //           icon: Icons.location_on_rounded,
+  //           title: 'GPS LNG',
+  //           value: widget.longitude.toStringAsFixed(4),
+  //         ),
+  //         Container(width: 1, height: 24, color: Colors.white24),
+  //         _buildTelemetryItem(
+  //           icon: Icons.access_time_rounded,
+  //           title: 'SYSTEM TIME',
+  //           value: _formatTime(_currentTime),
+  //         ),
+  //       ],
+  //     ),
+  //   );
+  // }
 
   String _formatTime(DateTime dt) {
     final String hour = dt.hour.toString().padLeft(2, '0');

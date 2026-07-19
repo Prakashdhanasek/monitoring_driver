@@ -3,6 +3,7 @@ package com.example.monitoring_driver
 import android.app.PendingIntent
 import android.app.admin.DevicePolicyManager
 import android.app.admin.WifiSsidPolicy
+import android.bluetooth.BluetoothManager
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
@@ -13,6 +14,7 @@ import android.net.NetworkCapabilities
 import android.net.NetworkRequest
 import android.net.wifi.WifiManager
 import android.os.Build
+import android.os.UserManager
 import android.telephony.TelephonyManager
 import android.util.Log
 import io.flutter.embedding.android.FlutterActivity
@@ -353,6 +355,12 @@ class MainActivity : FlutterActivity() {
                     val mainComp = ComponentName(packageName, "${packageName}.MainActivity")
                     dpm.addPersistentPreferredActivity(admin, homeFilter, mainComp)
                 } catch (_: Throwable) {}
+
+                // Disable the lock screen so the app is visible immediately
+                // after every reboot (no swipe/PIN needed).
+                try {
+                    dpm.setKeyguardDisabled(admin, true)
+                } catch (_: Throwable) {}
             }
 
             startLockTask()
@@ -361,9 +369,11 @@ class MainActivity : FlutterActivity() {
 
         // ─────────────────────────────────────────────────────────
         // On app launch: DO NOT auto-enable / connect Wi-Fi anymore.
-        // Instead, turn ON mobile data automatically (device owner only).
+        // Instead, turn ON mobile data automatically (device owner only),
+        // and turn ON Bluetooth for the alert speaker.
         // ─────────────────────────────────────────────────────────
         enableMobileData()
+        enableBluetooth()
     }
 
     // ───────────────────────────────────────────────
@@ -379,6 +389,39 @@ class MainActivity : FlutterActivity() {
             if (dpm.isDeviceOwnerApp(packageName)) {
                 dpm.setGlobalSetting(admin, "mobile_data", "1")
             }
+        } catch (_: Throwable) {
+        }
+    }
+
+    // ───────────────────────────────────────────────
+    // Turn ON Bluetooth. On Android 13+ adapter.enable() is blocked for normal
+    // apps, but a DEVICE OWNER can still enable it. We first clear any
+    // DISALLOW_BLUETOOTH restriction, then call enable(). Runs on every app
+    // launch (via startKiosk in onResume), so the alert speaker reconnects
+    // automatically. Wrapped in try/catch so it never crashes the app.
+    // ───────────────────────────────────────────────
+    private fun enableBluetooth() {
+        try {
+            val bm = getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
+            val adapter = bm.adapter ?: return
+            if (adapter.isEnabled) return
+
+            val dpm = getSystemService(Context.DEVICE_POLICY_SERVICE) as DevicePolicyManager
+            val admin = ComponentName(this, KioskAdminReceiver::class.java)
+
+            // Device-owner path: clear any restriction that blocks Bluetooth.
+            if (dpm.isDeviceOwnerApp(packageName)) {
+                try {
+                    dpm.clearUserRestriction(admin, UserManager.DISALLOW_BLUETOOTH)
+                } catch (_: Throwable) {}
+            }
+
+            // enable() is deprecated and a no-op for normal apps on Android 13+,
+            // but still works for a device owner. Safe to call on all versions.
+            @Suppress("DEPRECATION")
+            try {
+                adapter.enable()
+            } catch (_: Throwable) {}
         } catch (_: Throwable) {
         }
     }

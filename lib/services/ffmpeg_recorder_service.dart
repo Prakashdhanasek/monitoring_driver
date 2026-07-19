@@ -8,8 +8,8 @@ import 'package:ffmpeg_kit_flutter_new_min_gpl/return_code.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:path/path.dart' as p;
 
-/// Duration of each video chunk in seconds (1 minute).
-const int _kChunkDurationSeconds = 60;
+/// Duration of each video chunk in seconds (5 minutes).
+const int _kChunkDurationSeconds = 300;
 
 class FFmpegVideoRecorderService {
   bool _isRecording = false;
@@ -42,6 +42,22 @@ class FFmpegVideoRecorderService {
       return;
     }
 
+    // TCP pre-check: verify the stream host is reachable before launching FFmpeg.
+    // Prevents _isRecording getting stuck true when cam is offline.
+    try {
+      final uri = Uri.parse(streamUrl);
+      final socket = await Socket.connect(
+        uri.host,
+        uri.port,
+      ).timeout(const Duration(seconds: 3));
+      await socket.close();
+    } catch (e) {
+      debugPrint(
+        '[FFmpegRecorder] ⚠ Stream unreachable ($streamUrl): $e — will retry later.',
+      );
+      return;
+    }
+
     _streamUrl = streamUrl;
     _chunkIndex = 0;
     _sessionTimestamp = DateTime.now().millisecondsSinceEpoch.toString();
@@ -50,9 +66,13 @@ class FFmpegVideoRecorderService {
     debugPrint('══════════════════════════════════════════════════');
     debugPrint('[FFmpegRecorder] ▶ CONTINUOUS RECORDING STARTED');
     debugPrint('[FFmpegRecorder]   Session  : $_sessionTimestamp');
-    debugPrint('[FFmpegRecorder]   Chunk    : ${_kChunkDurationSeconds}s (${_kChunkDurationSeconds ~/ 60} min)');
+    debugPrint(
+      '[FFmpegRecorder]   Chunk    : ${_kChunkDurationSeconds}s (${_kChunkDurationSeconds ~/ 60} min)',
+    );
     debugPrint('[FFmpegRecorder]   Stream   : $streamUrl');
-    debugPrint('[FFmpegRecorder]   Storage  : /Download/monitoring_driver/esp32_videos/');
+    debugPrint(
+      '[FFmpegRecorder]   Storage  : /Download/monitoring_driver/esp32_videos/',
+    );
     debugPrint('══════════════════════════════════════════════════');
 
     // Start the first chunk immediately.
@@ -88,14 +108,18 @@ class FFmpegVideoRecorderService {
       final rawPath = await _buildRawOutputPath(savedIndex);
       final rawFile = File(rawPath);
       if (await rawFile.exists() && await rawFile.length() > 0) {
-        debugPrint('[FFmpegRecorder] Fixing & saving partial chunk $savedIndex...');
+        debugPrint(
+          '[FFmpegRecorder] Fixing & saving partial chunk $savedIndex...',
+        );
         final fixedPath = await _remuxToPlayableMp4(rawPath, savedIndex);
         if (fixedPath != null) {
           await _saveToPhoneStorage(fixedPath);
           await _moveToQueue(fixedPath);
         }
         // Clean up raw fragmented file.
-        try { await rawFile.delete(); } catch (_) {}
+        try {
+          await rawFile.delete();
+        } catch (_) {}
       }
     }
 
@@ -115,17 +139,22 @@ class FFmpegVideoRecorderService {
     if (_streamUrl == null) return;
 
     final outputFile = await _buildRawOutputPath(chunkIdx);
-    debugPrint('[FFmpegRecorder] 🎬 CHUNK $chunkIdx STARTED → ${p.basename(outputFile)}');
+    debugPrint(
+      '[FFmpegRecorder] 🎬 CHUNK $chunkIdx STARTED → ${p.basename(outputFile)}',
+    );
 
-    final String rtspOpt =
-        _streamUrl!.startsWith('rtsp') ? '-rtsp_transport tcp ' : '';
+    final String rtspOpt = _streamUrl!.startsWith('rtsp')
+        ? '-rtsp_transport tcp '
+        : '';
 
-    // KEY FIX: -movflags frag_keyframe+empty_moov writes metadata throughout
-    // the file (not just at the end), so the MP4 is ALWAYS playable even if
-    // FFmpeg is cancelled/killed mid-recording.
+    // Use fps=15 to force FFmpeg to duplicate frames and maintain real-time duration.
+    // Timestamp overlay is removed to prevent FFmpeg crashes.
+    final String filterOpt = '-vf "fps=15" ';
+
     final String ffmpegCommand =
-        '-y ${rtspOpt}-i $_streamUrl '
-        '-c:v libx264 -r 15 -g 30 -preset ultrafast '
+        '-y $rtspOpt -use_wallclock_as_timestamps 1 -i $_streamUrl '
+        '$filterOpt '
+        '-c:v libx264 -preset ultrafast '
         '-profile:v baseline -pix_fmt yuv420p '
         '-movflags frag_keyframe+empty_moov '
         '-t ${_kChunkDurationSeconds + 5} '
@@ -136,7 +165,9 @@ class FFmpegVideoRecorderService {
       (session) async {
         final state = await session.getState();
         final returnCode = await session.getReturnCode();
-        debugPrint('[FFmpegRecorder] Chunk $chunkIdx session ended — State: $state, RC: $returnCode');
+        debugPrint(
+          '[FFmpegRecorder] Chunk $chunkIdx session ended — State: $state, RC: $returnCode',
+        );
 
         // If FFmpeg finished on its own (natural end), remux + save.
         if (_isRecording && _chunkIndex == chunkIdx) {
@@ -147,7 +178,18 @@ class FFmpegVideoRecorderService {
               await _saveToPhoneStorage(fixedPath);
               await _moveToQueue(fixedPath);
             }
-            try { await file.delete(); } catch (_) {}
+            try {
+              await file.delete();
+            } catch (_) {}
+          } else {
+            // FFmpeg failed (stream unreachable) — reset so retry works.
+            debugPrint(
+              '[FFmpegRecorder] ⚠ Chunk $chunkIdx empty — resetting for retry.',
+            );
+            _isRecording = false;
+            _chunkRotationTimer?.cancel();
+            _chunkRotationTimer = null;
+            _activeSession = null;
           }
         }
       },
@@ -157,7 +199,8 @@ class FFmpegVideoRecorderService {
       },
       (stats) {
         debugPrint(
-            '[FFmpeg Stats] Frame: ${stats.getVideoFrameNumber()}, Speed: ${stats.getSpeed()}x, Size: ${stats.getSize()} bytes');
+          '[FFmpeg Stats] Frame: ${stats.getVideoFrameNumber()}, Speed: ${stats.getSpeed()}x, Size: ${stats.getSize()} bytes',
+        );
       },
     );
   }
@@ -172,7 +215,9 @@ class FFmpegVideoRecorderService {
 
     // ── Step 1: Start the NEXT chunk immediately (zero-gap) ──
     _chunkIndex++;
-    debugPrint('[FFmpegRecorder] 🔄 ROTATING: chunk $completedIndex → $_chunkIndex (zero-gap)');
+    debugPrint(
+      '[FFmpegRecorder] 🔄 ROTATING: chunk $completedIndex → $_chunkIndex (zero-gap)',
+    );
     await _startNewChunk(_chunkIndex);
 
     // ── Step 2: Now stop the OLD session (new one is already capturing) ──
@@ -192,7 +237,9 @@ class FFmpegVideoRecorderService {
     if (await file.exists() && await file.length() > 0) {
       final sizeKB = (await file.length()) ~/ 1024;
       final sizeMB = (sizeKB / 1024).toStringAsFixed(1);
-      debugPrint('[FFmpegRecorder] ✅ CHUNK $completedIndex COMPLETE — $sizeMB MB (raw)');
+      debugPrint(
+        '[FFmpegRecorder] ✅ CHUNK $completedIndex COMPLETE — $sizeMB MB (raw)',
+      );
 
       final fixedPath = await _remuxToPlayableMp4(rawFile, completedIndex);
       if (fixedPath != null) {
@@ -201,9 +248,13 @@ class FFmpegVideoRecorderService {
       }
 
       // Clean up raw fragmented file.
-      try { await file.delete(); } catch (_) {}
+      try {
+        await file.delete();
+      } catch (_) {}
     } else {
-      debugPrint('[FFmpegRecorder] ⚠ Chunk $completedIndex is empty — skipped.');
+      debugPrint(
+        '[FFmpegRecorder] ⚠ Chunk $completedIndex is empty — skipped.',
+      );
     }
   }
 
@@ -226,7 +277,9 @@ class FFmpegVideoRecorderService {
     final String remuxCommand =
         '-y -i "$rawPath" -c copy -movflags +faststart "$fixedPath"';
 
-    debugPrint('[FFmpegRecorder] 🔧 Remuxing chunk $chunkIdx to playable MP4...');
+    debugPrint(
+      '[FFmpegRecorder] 🔧 Remuxing chunk $chunkIdx to playable MP4...',
+    );
 
     final session = await FFmpegKit.execute(remuxCommand);
     final returnCode = await session.getReturnCode();
@@ -235,12 +288,16 @@ class FFmpegVideoRecorderService {
       final fixedFile = File(fixedPath);
       if (await fixedFile.exists() && await fixedFile.length() > 0) {
         final sizeKB = (await fixedFile.length()) ~/ 1024;
-        debugPrint('[FFmpegRecorder] 🔧 Remux OK → $fixedName (${sizeKB} KB) — PLAYABLE ✓');
+        debugPrint(
+          '[FFmpegRecorder] 🔧 Remux OK → $fixedName (${sizeKB} KB) — PLAYABLE ✓',
+        );
         return fixedPath;
       }
     }
 
-    debugPrint('[FFmpegRecorder] ⚠ Remux failed for chunk $chunkIdx (RC: $returnCode)');
+    debugPrint(
+      '[FFmpegRecorder] ⚠ Remux failed for chunk $chunkIdx (RC: $returnCode)',
+    );
     // Fallback: copy raw file directly (fragmented MP4 still plays on most modern players).
     try {
       await File(rawPath).copy(fixedPath);
@@ -268,7 +325,9 @@ class FFmpegVideoRecorderService {
     return p.join(segmentsDir.path, fileName);
   }
 
-  static const _deviceChannel = MethodChannel('com.proximity.driver/device_info');
+  static const _deviceChannel = MethodChannel(
+    'com.proximity.driver/device_info',
+  );
 
   Future<void> _scanFileWithScanner(String filePath) async {
     try {
@@ -292,9 +351,11 @@ class FFmpegVideoRecorderService {
       final savedPath = p.join(videosDir.path, fileName);
       await File(filePath).copy(savedPath);
       final sizeKB = (await File(savedPath).length()) ~/ 1024;
-      debugPrint('[FFmpegRecorder] 💾 SAVED TO PHONE: $fileName (${sizeKB} KB)');
+      debugPrint(
+        '[FFmpegRecorder] 💾 SAVED TO PHONE: $fileName (${sizeKB} KB)',
+      );
       debugPrint('[FFmpegRecorder]    Path: ${videosDir.path}/$fileName');
-      
+
       // Notify Android MediaStore to scan the newly copied file
       await _scanFileWithScanner(savedPath);
     } catch (e) {
@@ -322,8 +383,9 @@ class FFmpegVideoRecorderService {
 
   Future<Directory> _getVisibleDirectory() async {
     if (Platform.isAndroid) {
-      final downloadDir =
-          Directory('/storage/emulated/0/Download/monitoring_driver');
+      final downloadDir = Directory(
+        '/storage/emulated/0/Download/monitoring_driver',
+      );
       if (!await downloadDir.exists()) {
         try {
           await downloadDir.create(recursive: true);

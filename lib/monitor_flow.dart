@@ -5,6 +5,7 @@ import 'package:android_intent_plus/android_intent.dart';
 import 'package:camera/camera.dart';
 import 'package:device_info_plus/device_info_plus.dart';
 import 'package:flutter/material.dart';
+import 'package:package_info_plus/package_info_plus.dart';
 import 'package:flutter/services.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:google_mlkit_face_detection/google_mlkit_face_detection.dart';
@@ -149,6 +150,8 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   DateTime? _lastSideCamScanAt; // throttle scanner to once per 60 s
   Timer? _blindSpotTimer;
   bool _isPollingBlindSpot = false;
+  DateTime? _blindSpotObjectLastSeenAt; // last time object was < 50cm
+  static const int _kBlindSpotLingerSec = 5; // keep cam open 5s after clear
 
   // ESP32 camera connection status
   bool _rearCamConnected = false;
@@ -162,7 +165,8 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   bool _camReady = false;
   bool _busy = false;
   bool _streaming = false;
-  bool _updatingApp = false; // true while OTA dialog is open → blocks frame processing
+  bool _updatingApp =
+      false; // true while OTA dialog is open → blocks frame processing
   int _frame = 0;
   bool _isRefreshingDrivers = false;
   DateTime? _lastAuthAttemptAt;
@@ -170,7 +174,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   DateTime? _lastDriversRefreshAt;
 
   // Verified driver
-  String _driverName = 'Driver';
+  String _driverName = '';
   String _driverId = '—';
   String? _vehicleId;
   String? _vehicleRegNo;
@@ -212,6 +216,9 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   // Still face image captured at the moment of successful verification.
   Uint8List? _capturedFace;
 
+  // App version string (fetched from PackageInfo on init)
+  String _appVersion = '';
+
   // Latest camera frame as JPEG — updated every object detection frame.
   // Used for incident snapshots so the correct detection-time image is uploaded.
   Uint8List? _latestFrameJpeg;
@@ -242,7 +249,6 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   // // Timer? _cableBannerTimer;
   // DateTime? _lastCableReportAt;
 
-  // ── Screenshot flash (alert varumbol screenshot effect) ──
   bool _flashScreenshot = false;
   DateTime? _lastFlashAt;
 
@@ -255,14 +261,24 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   Map<String, String>? _currentBreakMsg;
   Timer? _breakAlertTimer;
   Timer? _breakAlertDismissTimer;
-  static const Duration _kBreakAlertInterval = Duration(seconds: 20);
+  static const Duration _kBreakAlertInterval = Duration(hours: 1);
   static const Duration _kBreakAlertDisplayDuration = Duration(seconds: 12);
   static const List<Map<String, String>> _kBreakMessages = [
-    {'emoji': '☕', 'title': 'Time for a Break!', 'sub': 'Pull over safely and rest for a few minutes.'},
-    {'emoji': '💧', 'title': 'Stay Hydrated!', 'sub': 'Drink some water to stay alert and focused.'},
-    {'emoji': '👀', 'title': 'Rest Your Eyes', 'sub': 'Blink often and glance at distant objects.'},
-    {'emoji': '🧘', 'title': 'Stretch a Little', 'sub': 'A short walk can refresh your body and mind.'},
-    {'emoji': '🌬️', 'title': 'Take a Deep Breath', 'sub': 'Breathe deeply to reduce stress and stay calm.'},
+    {
+      'emoji': '☕',
+      'title': 'Time for a Break!',
+      'sub': 'Pull over safely and rest for a few minutes.',
+    },
+    {
+      'emoji': '💧',
+      'title': 'Stay Hydrated!',
+      'sub': 'Drink some water to stay alert and focused.',
+    },
+    {
+      'emoji': '🌬️',
+      'title': 'Take a Deep Breath',
+      'sub': 'Breathe deeply to reduce stress and stay calm.',
+    },
   ];
 
   // ── Geofence / boundary violation ──
@@ -277,26 +293,26 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   // ── Harsh driving (accelerometer magnitude + GPS classification) ──
   StreamSubscription<UserAccelerometerEvent>? _accelSub;
 
-// Force magnitude (m/s²) above which we treat it as a candidate harsh event.
-  static const double _kHarshMagnitude = 3.5;
+  // Force magnitude (m/s²) above which we treat it as a candidate harsh event.
+  static const double _kHarshMagnitude = 7.5;
 
-// Ignore events below this speed (parked / crawling → GPS jitter noise).
+  // Ignore events below this speed (parked / crawling → GPS jitter noise).
   static const double _kMinHarshSpeedKmh = 5.0;
 
-// How much forward speed must change to classify accel vs brake (m/s).
+  // How much forward speed must change to classify accel vs brake (m/s).
   static const double _kSpeedDeltaMs = 0.8;
 
-// Local debounce so one physical event isn't detected dozens of times.
+  // Local debounce so one physical event isn't detected dozens of times.
   DateTime? _lastHarshAt;
   static const Duration _kHarshDebounce = Duration(seconds: 2);
 
-// Short rolling history of (timestamp, speed-in-m/s) for classification.
+  // Short rolling history of (timestamp, speed-in-m/s) for classification.
   final List<MapEntry<DateTime, double>> _speedHistory = [];
   // ── Harsh driving dedicated cooldown ──
   final Map<String, DateTime> _lastHarshReportAt = {};
   static const int _kHarshCooldownSeconds = 15;
   // Set when a harsh event fires; drives the banner via _getMonitorBannerKey.
-  String? _harshBannerText;   // e.g. 'HARSH BRAKING'
+  String? _harshBannerText; // e.g. 'HARSH BRAKING'
   DateTime? _harshEventAt;
 
   @override
@@ -306,6 +322,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     _monitoringEngine = MonitoringEngine(_state);
     _tts.init();
     WakelockPlus.enable();
+    _loadAppVersion();
     _init();
 
     _syncTimer = Timer.periodic(const Duration(seconds: 30), (_) {
@@ -360,6 +377,17 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     _startHarshDetection();
   }
 
+  Future<void> _loadAppVersion() async {
+    try {
+      final info = await PackageInfo.fromPlatform();
+      if (mounted) {
+        setState(() => _appVersion = 'v${info.version}+${info.buildNumber}');
+      }
+    } catch (e) {
+      debugPrint('[Flow] Error loading app version: $e');
+    }
+  }
+
   Future<void> _checkConnectivity() async {
     try {
       final result = await InternetAddress.lookup(
@@ -393,32 +421,50 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     // Front ESP32-CAM continuous recording check (restart recording if stopped)
     if (_frontCamConnected && _frontCamStreamUrl.isNotEmpty) {
       if (!_ffmpegRecorderService.isRecording &&
-          _camMode == CamMode.driverMonitoring) {
+          _camMode == CamMode.driverMonitoring &&
+          _phase == Phase.monitoring) {
         await _ffmpegRecorderService.startRecording(_frontCamStreamUrl);
       }
     }
   }
 
-  /// Checks TCP connectivity to each ESP32 camera's video port.
+  /// Checks actual connectivity to each ESP32 camera.
+  /// Left/Right: HTTP GET /sensor (validates JSON response).
+  /// Front/Rear: Quick TCP probe on video port (single attempt, 2s timeout).
   Future<void> _checkCamConnections() async {
-    Future<bool> _ping(String? ip, int port, String tag) async {
-      if (ip == null || ip.isEmpty) {
-        debugPrint('[CamPing] $tag → SKIP (no IP assigned)');
-        return false;
-      }
-      // 2 attempts, 3s each — ESP under load may not answer in 2s.
-      for (int attempt = 1; attempt <= 2; attempt++) {
-        try {
-          final socket = await Socket.connect(
-            ip,
-            port,
-          ).timeout(const Duration(seconds: 3));
-          await socket.close();
-          debugPrint('[CamPing] $tag → OK ($ip:$port)');
-          return true;
-        } catch (e) {
-          debugPrint('[CamPing] $tag → FAIL attempt $attempt ($ip:$port): $e');
+    /// Validates sensor endpoint — returns true only if it responds with distance_cm JSON.
+    Future<bool> _pingSensor(String? ip, int sensorPort, String tag) async {
+      if (ip == null || ip.isEmpty) return false;
+      try {
+        final res = await http
+            .get(Uri.parse('http://$ip:$sensorPort/sensor'))
+            .timeout(const Duration(seconds: 2));
+        if (res.statusCode == 200) {
+          final data = jsonDecode(res.body) as Map<String, dynamic>;
+          if (data.containsKey('distance_cm')) {
+            debugPrint('[CamPing] $tag → OK (sensor at $ip:$sensorPort)');
+            return true;
+          }
         }
+      } catch (e) {
+        debugPrint('[CamPing] $tag → FAIL ($ip:$sensorPort): $e');
+      }
+      return false;
+    }
+
+    /// Quick TCP probe for video port — used only for cams without sensor server.
+    Future<bool> _pingVideo(String? ip, int videoPort, String tag) async {
+      if (ip == null || ip.isEmpty) return false;
+      try {
+        final socket = await Socket.connect(
+          ip,
+          videoPort,
+        ).timeout(const Duration(seconds: 2));
+        await socket.close();
+        debugPrint('[CamPing] $tag → OK ($ip:$videoPort)');
+        return true;
+      } catch (e) {
+        debugPrint('[CamPing] $tag → FAIL ($ip:$videoPort): $e');
       }
       return false;
     }
@@ -428,22 +474,14 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
         ? null
         : Uri.parse(_esp32StreamUrl).host;
 
-    // Ping SENSOR ports (not video). ESP32-CAM allows only ONE client on the
-    // video port — pinging video steals the slot the overlay/recorder needs,
-    // causing the drops. Sensor server is separate, safe to poll.
+    // Left/Right: validate via sensor endpoint (proper JSON check).
+    // Front/Rear: TCP probe on video port (they have no sensor server).
     final results = await Future.wait([
-      _ping(_leftCamIp, 87, 'LEFT'), // left  sensor
-      _ping(_rightCamIp, 81, 'RIGHT'), // right sensor
-      _ping(_frontCamIp, 85, 'FRONT'), // front sensor
-      _ping(rearHost, 83, 'REAR'), // rear  sensor
+      _pingSensor(_leftCamIp, 87, 'LEFT'),
+      _pingSensor(_rightCamIp, 81, 'RIGHT'),
+      _pingVideo(_frontCamIp, 84, 'FRONT'),
+      _pingVideo(rearHost, 82, 'REAR'),
     ]);
-
-    // final results = await Future.wait([
-    //   _ping(_leftCamIp, 86, 'LEFT'),
-    //   _ping(_rightCamIp, 80, 'RIGHT'),
-    //   _ping(_frontCamIp, 84, 'FRONT'),
-    //   _ping(rearHost, 82, 'REAR'),
-    // ]);
 
     final changed =
         results[0] != _leftCamConnected ||
@@ -629,7 +667,10 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       _connectivityTimer = Timer.periodic(const Duration(seconds: 5), (_) {
         _checkConnectivity();
         _checkCamConnections();
-        if (_leftCamIp == null || _rightCamIp == null || _frontCamIp == null || _esp32StreamUrl.isEmpty) {
+        if (_leftCamIp == null ||
+            _rightCamIp == null ||
+            _frontCamIp == null ||
+            _esp32StreamUrl.isEmpty) {
           _resolveSideCamIps();
           if (_esp32StreamUrl.isEmpty) _autoDiscoverRearCam();
         }
@@ -950,7 +991,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
         _isConnectedToEsp32 = cameraReachable;
         _esp32StreamUrl = streamUrl;
       });
-      if (cameraReachable) {
+      if (cameraReachable && _phase == Phase.monitoring && _camMode == CamMode.driverMonitoring) {
         _ffmpegRecorderService.startRecording(streamUrl);
       }
 
@@ -964,22 +1005,39 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     if (!_isOnline) return;
     final deviceId = _settings.getDeviceId();
     if (deviceId == null || deviceId.isEmpty) return;
+
     if (_vehicleId == null || _vehicleId!.isEmpty) {
-      debugPrint('[Flow] No VehicleId available yet. Skipping video upload.');
+      // Do not upload videos before the trip has started and vehicle ID is known.
       return;
     }
+    final effectiveVehicleId = _vehicleId!;
 
-    debugPrint('[Flow] Online. Starting HTTP background video upload...');
+    debugPrint(
+      '[Flow] Online. Starting HTTP background video upload... (vehicleId: $effectiveVehicleId)',
+    );
     try {
-      await _httpVideoUploadService.uploadPendingFiles(
+      final int uploadedCount = await _httpVideoUploadService.uploadPendingFiles(
         uploadUrl:
             'https://proximity-driver-api.prod-app.in/api/video-recordings/upload',
-        vehicleId: _vehicleId!,
+        vehicleId: effectiveVehicleId,
         deviceTabletId: deviceId,
-        driverId: (_driverId == '—' || _driverId.isEmpty) ? null : _driverId,
+        driverId: (_driverId == '—' || _driverId == '-' || _driverId.isEmpty) ? null : _driverId,
         tripId: _tripId,
         cameraType: 'FrontCam',
       );
+
+      if (uploadedCount > 0 && mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              'API Upload Success: $uploadedCount video(s) sent.',
+              style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+            ),
+            backgroundColor: Colors.green,
+            duration: const Duration(seconds: 4),
+          ),
+        );
+      }
     } catch (e) {
       debugPrint('[Flow] Video upload error: $e');
     }
@@ -1283,7 +1341,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
               if (jpeg != null) {
                 _latestFrameJpeg = jpeg;
                 _recentFrames.add(jpeg);
-                if (_recentFrames.length > 15) {
+                if (_recentFrames.length > 30) {
                   _recentFrames.removeAt(0); // Maintain max 15 frames (~5s)
                 }
               }
@@ -1425,8 +1483,9 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       bool driverFromApi = false;
       final deviceId = _settings.getDeviceId();
       if (deviceId != null && deviceId.isNotEmpty) {
-        final liveDrivers =
-            await _driversService.fetchDriversFromApiOnly(deviceId);
+        final liveDrivers = await _driversService.fetchDriversFromApiOnly(
+          deviceId,
+        );
         if (liveDrivers != null) {
           driverFromApi = true;
           final match = liveDrivers.firstWhere(
@@ -1435,7 +1494,9 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
           );
           if (match.isNotEmpty) driver = match;
         } else {
-          debugPrint('[Flow] API unavailable — licence check skipped, using cache for other fields.');
+          debugPrint(
+            '[Flow] API unavailable — licence check skipped, using cache for other fields.',
+          );
         }
       }
       // Fall back to cache only for non-licence fields (name, language, vehicleId).
@@ -1449,8 +1510,15 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
         if (apiName != null && apiName.isNotEmpty) {
           driverName = apiName;
         }
-        _vehicleId = driver['assignedVehicleId'] as String?;
-        _vehicleRegNo = driver['vehicleRegistrationNumber'] as String?;
+        final assignedVehiclesList = driver['assignedVehicles'] as List<dynamic>?;
+        if (assignedVehiclesList != null && assignedVehiclesList.isNotEmpty) {
+          final firstVehicle = assignedVehiclesList.first as Map<String, dynamic>;
+          _vehicleId = firstVehicle['vehicleId'] as String?;
+          _vehicleRegNo = firstVehicle['vehicleRegistrationNumber'] as String?;
+        } else {
+          _vehicleId = driver['assignedVehicleId'] as String?;
+          _vehicleRegNo = driver['vehicleRegistrationNumber'] as String?;
+        }
 
         // Resolve preferred language from API response
         final String? langStr =
@@ -1473,7 +1541,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
         debugPrint(
           '[Flow] Setting voice alert language to: $preferred (from API: $langStr)',
         );
-       await _tts.setLanguage(preferred);
+        await _tts.setLanguage(preferred);
 
         // ── Licence expiry check (API data preferred; cache fallback) ────────
         final String? licenseNum = driver['licenseNumber'] as String?;
@@ -1523,6 +1591,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
                 if (_countdown <= 0) {
                   t.cancel();
                   _state.resetCalibration();
+                  _state.authStatus = AuthStatus.authenticated;
                   _phase = Phase.monitoring;
                   _sendTripStart();
                   _breakAlertTimer?.cancel();
@@ -1557,6 +1626,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
         t.cancel();
         // Start fresh calibration for the monitoring session.
         _state.resetCalibration();
+        _state.authStatus = AuthStatus.authenticated;
         _phase = Phase.monitoring;
         _sendTripStart();
         // Restart break alert timer for the new trip.
@@ -1713,8 +1783,18 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       final deviceId = _settings.getDeviceId();
       if (deviceId == null || deviceId.isEmpty) return;
 
-      // Ella alert-inum screenshot effect kaanikkuka.
+      // Ella alert-inum screenshot effect kaanikkuka (this happens every 30s locally).
       _showScreenshotFlash();
+
+      // Check 10-minute cooldown for API syncing
+      final now = DateTime.now();
+      final lastApiReport = _settings.getLastApiReportTime(eventType);
+      if (lastApiReport != null &&
+          now.difference(lastApiReport).inMinutes < 10) {
+        debugPrint('[Flow] API report throttled for 10 mins: $eventType');
+        return;
+      }
+      _settings.setLastApiReportTime(eventType, now);
 
       // Save the CURRENT camera frame directly as the incident snapshot.
       // This avoids the race condition where the evidence folder from the
@@ -1768,9 +1848,8 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
         return;
       }
 
-      final String? effectiveDriverId = (_state.authStatus == AuthStatus.unauthorized)
-          ? null
-          : _driverId;
+      final String? effectiveDriverId =
+          (_state.authStatus == AuthStatus.unauthorized) ? null : _driverId;
       final effectiveDriverName = (_state.authStatus == AuthStatus.unauthorized)
           ? 'Unknown Person'
           : _driverName;
@@ -1920,22 +1999,53 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
 
   void _triggerBreakAlert() {
     if (!mounted) return;
-    if (_phase != Phase.monitoring) { debugPrint('[BreakAlert] SKIP: not monitoring'); return; }
-    if (_tripCompleted) { debugPrint('[BreakAlert] SKIP: trip completed'); return; }
-    if (_camMode != CamMode.driverMonitoring) { debugPrint('[BreakAlert] SKIP: camera overlay active ($_camMode)'); return; }
-    if (_getMonitorBannerKey(_state.hasPhone, _state.hasCigarette) != null) { debugPrint('[BreakAlert] SKIP: active banner (${_getMonitorBannerKey(_state.hasPhone, _state.hasCigarette)})'); return; }
-    if (!_state.seatbeltBuckled) { debugPrint('[BreakAlert] SKIP: seatbelt unbuckled'); return; }
-    if (_state.drowsinessLevel == DrowsinessLevel.drowsy || _state.drowsinessLevel == DrowsinessLevel.asleep) { debugPrint('[BreakAlert] SKIP: drowsy/asleep'); return; }
-    if (_state.distractionStatus == DistractionStatus.distracted) { debugPrint('[BreakAlert] SKIP: distracted'); return; }
-    if (_state.vehicleSpeed > _kSpeedLimitKmh) { debugPrint('[BreakAlert] SKIP: overspeed'); return; }
-    if (_state.authStatus == AuthStatus.unauthorized) { debugPrint('[BreakAlert] SKIP: unauthorized'); return; }
-    if (_camDetectionAlert != null && _camDetectionAlertAt != null &&
-        DateTime.now().difference(_camDetectionAlertAt!).inSeconds < 3) { debugPrint('[BreakAlert] SKIP: cam detection alert'); return; }
+    if (_phase != Phase.monitoring) {
+      debugPrint('[BreakAlert] SKIP: not monitoring');
+      return;
+    }
+    if (_tripCompleted) {
+      debugPrint('[BreakAlert] SKIP: trip completed');
+      return;
+    }
+    if (_getMonitorBannerKey(_state.hasPhone, _state.hasCigarette) != null) {
+      debugPrint(
+        '[BreakAlert] SKIP: active banner (${_getMonitorBannerKey(_state.hasPhone, _state.hasCigarette)})',
+      );
+      return;
+    }
+    if (!_state.seatbeltBuckled && _activeBannerKey != null) {
+      debugPrint('[BreakAlert] SKIP: seatbelt banner');
+      return;
+    }
+    if (_state.drowsinessLevel == DrowsinessLevel.drowsy ||
+        _state.drowsinessLevel == DrowsinessLevel.asleep) {
+      debugPrint('[BreakAlert] SKIP: drowsy/asleep');
+      return;
+    }
+    if (_state.distractionStatus == DistractionStatus.distracted) {
+      debugPrint('[BreakAlert] SKIP: distracted');
+      return;
+    }
+    if (_state.vehicleSpeed > _kSpeedLimitKmh) {
+      debugPrint('[BreakAlert] SKIP: overspeed');
+      return;
+    }
+    if (_state.authStatus == AuthStatus.unauthorized) {
+      debugPrint('[BreakAlert] SKIP: unauthorized');
+      return;
+    }
+    if (_camDetectionAlert != null &&
+        _camDetectionAlertAt != null &&
+        DateTime.now().difference(_camDetectionAlertAt!).inSeconds < 3) {
+      debugPrint('[BreakAlert] SKIP: cam detection alert');
+      return;
+    }
 
     debugPrint('[BreakAlert] ✓ SHOWING alert index=$_breakAlertIndex');
 
     setState(() => _showBreakAlert = true);
-    _currentBreakMsg = _kBreakMessages[_breakAlertIndex % _kBreakMessages.length];
+    _currentBreakMsg =
+        _kBreakMessages[_breakAlertIndex % _kBreakMessages.length];
     // Speak in the driver's preferred language.
     _tts.speak(AlertMessages.breakReminder(_tts.currentLang, _breakAlertIndex));
     _breakAlertIndex++;
@@ -1972,7 +2082,9 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
           _state.vehicleSpeed > _kSpeedLimitKmh ||
           _state.authStatus == AuthStatus.unauthorized;
       if (anyAlertActive) {
-        WidgetsBinding.instance.addPostFrameCallback((_) => _dismissBreakAlert());
+        WidgetsBinding.instance.addPostFrameCallback(
+          (_) => _dismissBreakAlert(),
+        );
         return const SizedBox.shrink();
       }
     }
@@ -2026,7 +2138,8 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   bool _checkCooldown(String label) {
     final now = DateTime.now();
     final lastTime = _lastIncidentReportAt[label];
-    const int cooldownDuration = 30; // 30 seconds cooldown for incident REPORTING to server only
+    const int cooldownDuration =
+        30; // 30 seconds cooldown for UI flash and local sound
 
     if (lastTime == null) {
       _lastIncidentReportAt[label] = now;
@@ -2037,7 +2150,9 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     final elapsed = now.difference(lastTime).inSeconds;
     if (elapsed >= cooldownDuration) {
       _lastIncidentReportAt[label] = now;
-      debugPrint('[IncidentCooldown] Cooldown expired for $label ($elapsed s elapsed). Reporting allowed.');
+      debugPrint(
+        '[IncidentCooldown] Cooldown expired for $label ($elapsed s elapsed). Reporting allowed.',
+      );
       return true;
     }
 
@@ -2161,30 +2276,21 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     if (_state.drowsinessLevel == DrowsinessLevel.asleep) {
       loud = true;
 
-      if (_checkCooldown('Asleep')) {
+      // Use 'Drowsiness' for both asleep and drowsy so they share the 10 min API cooldown
+      if (_checkCooldown('Drowsiness')) {
         _reportIncident('Drowsiness', 'High', 1.0);
       }
-      if (_checkVoiceCooldown('Asleep', const Duration(seconds: 3))) {
-        _tts.speak(AlertMessages.drowsy(_tts.currentLang));
-      }
-    }
-    if (_state.drowsinessLevel == DrowsinessLevel.drowsy) {
+    } else if (_state.drowsinessLevel == DrowsinessLevel.drowsy) {
       soft = true;
 
       if (_checkCooldown('Drowsiness')) {
         _reportIncident('Drowsiness', 'Medium', 0.8);
-      }
-      if (_checkVoiceCooldown('Drowsiness', const Duration(seconds: 3))) {
-        _tts.speak(AlertMessages.drowsy(_tts.currentLang));
       }
     }
     if (_state.distractionStatus == DistractionStatus.distracted) {
       soft = true;
       if (_checkCooldown('Distraction')) {
         _reportIncident('Distraction', 'Medium', 0.8);
-      }
-      if (_checkVoiceCooldown('Distraction', const Duration(seconds: 3))) {
-        _tts.speak(AlertMessages.distraction(_tts.currentLang));
       }
     }
 
@@ -2220,23 +2326,6 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
 
         _reportIncident(eventType, 'High', obj.confidence);
       }
-
-      if (_checkVoiceCooldown(label, const Duration(seconds: 3))) {
-        String voice = '';
-        if (label == 'phone') {
-          voice = AlertMessages.phone(_tts.currentLang);
-        }
-        if (label == 'cigarette') {
-          voice = AlertMessages.cigarette(_tts.currentLang);
-        }
-        if (label == 'eating') {
-          voice = AlertMessages.eating(_tts.currentLang);
-        }
-        if (label == 'drinking') {
-          voice = AlertMessages.drinking(_tts.currentLang);
-        }
-        if (voice.isNotEmpty) _tts.speak(voice);
-      }
     }
 
     final currentBannerKey = _getMonitorBannerKey(phone, smoke);
@@ -2248,6 +2337,41 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     } else {
       _activeBannerKey = null;
       _activeBannerAt = null;
+    }
+
+    // --- Unified TTS Logic based on Banner Priority ---
+    if (currentBannerKey != null && currentBannerKey != 'harsh') {
+      int cooldownSeconds = 30;
+      if (currentBannerKey == 'asleep' || currentBannerKey == 'drowsy')
+        cooldownSeconds = 5;
+
+      if (_checkVoiceCooldown(
+        currentBannerKey,
+        Duration(seconds: cooldownSeconds),
+      )) {
+        String voice = '';
+        if (currentBannerKey == 'phone') {
+          voice = AlertMessages.phone(_tts.currentLang);
+        } else if (currentBannerKey == 'smoke') {
+          voice = AlertMessages.cigarette(_tts.currentLang);
+        } else if (currentBannerKey == 'eating') {
+          voice = AlertMessages.eating(_tts.currentLang);
+        } else if (currentBannerKey == 'drinking') {
+          voice = AlertMessages.drinking(_tts.currentLang);
+        } else if (currentBannerKey == 'multiple' ||
+            currentBannerKey == 'distracted') {
+          voice = AlertMessages.distraction(_tts.currentLang);
+        } else if (currentBannerKey == 'asleep' ||
+            currentBannerKey == 'drowsy') {
+          voice = AlertMessages.drowsy(_tts.currentLang);
+        } else if (currentBannerKey == 'unauthorized') {
+          voice = AlertMessages.unauthorized(_tts.currentLang);
+        }
+
+        if (voice.isNotEmpty) {
+          _tts.speak(voice);
+        }
+      }
     }
 
     // Remember current states for next-frame transition checks.
@@ -2296,12 +2420,20 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       _lastCamAlertSoundAt = now;
       _playAlert('audio/alert_loud.mp3');
 
-      // TTS for person specifically
+      // TTS for detected objects in driver's language
       if (labels.contains('person')) {
         _tts.speak(AlertMessages.personDetected(_tts.currentLang));
-      } else if (labels.contains('car') ||
-          labels.contains('truck') ||
-          labels.contains('bus')) {
+      } else if (labels.contains('vehicle')) {
+        _tts.speak(AlertMessages.vehicleDetected(_tts.currentLang));
+      } else if (labels.contains('motorcycle')) {
+        _tts.speak(AlertMessages.motorcycleDetected(_tts.currentLang));
+      } else if (labels.contains('bus')) {
+        _tts.speak(AlertMessages.busDetected(_tts.currentLang));
+      } else if (labels.contains('truck')) {
+        _tts.speak(AlertMessages.truckDetected(_tts.currentLang));
+      } else if (labels.contains('bicycle')) {
+        _tts.speak(AlertMessages.bicycleDetected(_tts.currentLang));
+      } else if (labels.contains('car')) {
         _tts.speak(AlertMessages.vehicleDetected(_tts.currentLang));
       }
     }
@@ -2545,8 +2677,18 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
 
   String _formatDate(DateTime date) {
     const months = [
-      'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
-      'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
+      'Jan',
+      'Feb',
+      'Mar',
+      'Apr',
+      'May',
+      'Jun',
+      'Jul',
+      'Aug',
+      'Sep',
+      'Oct',
+      'Nov',
+      'Dec',
     ];
     return '${date.day} ${months[date.month - 1]} ${date.year}';
   }
@@ -2568,7 +2710,9 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
             // Speak in driver's preferred language; dismiss when TTS finishes.
             // A 3-second minimum ensures the dialog is readable even for short phrases.
             Future.wait([
-              _tts.speakImmediately(AlertMessages.licenseExpired(_tts.currentLang)),
+              _tts.speakImmediately(
+                AlertMessages.licenseExpired(_tts.currentLang),
+              ),
               Future.delayed(const Duration(seconds: 3)),
             ]).then((_) {
               if (mounted) Navigator.of(context, rootNavigator: true).pop();
@@ -2580,8 +2724,13 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
             surfaceTintColor: Colors.transparent,
             elevation: 24,
             shadowColor: Colors.black54,
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-            insetPadding: const EdgeInsets.symmetric(horizontal: 52, vertical: 40),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(20),
+            ),
+            insetPadding: const EdgeInsets.symmetric(
+              horizontal: 52,
+              vertical: 40,
+            ),
             child: Container(
               decoration: BoxDecoration(
                 color: const Color(0xFF252839),
@@ -2635,7 +2784,10 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
                   const SizedBox(height: 16),
                   Container(
                     width: double.infinity,
-                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 14,
+                      vertical: 10,
+                    ),
                     decoration: BoxDecoration(
                       color: Colors.white.withOpacity(0.05),
                       borderRadius: BorderRadius.circular(10),
@@ -2646,7 +2798,11 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
                       children: [
                         Row(
                           children: [
-                            const Icon(Icons.badge_outlined, size: 14, color: Color(0xFFFF5C5C)),
+                            const Icon(
+                              Icons.badge_outlined,
+                              size: 14,
+                              color: Color(0xFFFF5C5C),
+                            ),
                             const SizedBox(width: 6),
                             Expanded(
                               child: Text(
@@ -2663,11 +2819,18 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
                         const SizedBox(height: 4),
                         Row(
                           children: [
-                            const Icon(Icons.calendar_today_outlined, size: 14, color: Color(0xFFABB4C8)),
+                            const Icon(
+                              Icons.calendar_today_outlined,
+                              size: 14,
+                              color: Color(0xFFABB4C8),
+                            ),
                             const SizedBox(width: 6),
                             Text(
                               'Expired: ${_formatDate(expiry)}',
-                              style: const TextStyle(fontSize: 11, color: Color(0xFFABB4C8)),
+                              style: const TextStyle(
+                                fontSize: 11,
+                                color: Color(0xFFABB4C8),
+                              ),
                             ),
                           ],
                         ),
@@ -2710,7 +2873,9 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
             // Speak in driver's preferred language; dismiss when TTS finishes.
             // A 3-second minimum ensures the dialog is readable even for short phrases.
             Future.wait([
-              _tts.speakImmediately(AlertMessages.licenseExpiringSoon(_tts.currentLang, daysLeft)),
+              _tts.speakImmediately(
+                AlertMessages.licenseExpiringSoon(_tts.currentLang, daysLeft),
+              ),
               Future.delayed(const Duration(seconds: 3)),
             ]).then((_) {
               if (mounted) Navigator.of(context, rootNavigator: true).pop();
@@ -2722,8 +2887,13 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
             surfaceTintColor: Colors.transparent,
             elevation: 24,
             shadowColor: Colors.black54,
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-            insetPadding: const EdgeInsets.symmetric(horizontal: 52, vertical: 40),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(20),
+            ),
+            insetPadding: const EdgeInsets.symmetric(
+              horizontal: 52,
+              vertical: 40,
+            ),
             child: Container(
               decoration: BoxDecoration(
                 color: const Color(0xFF252839),
@@ -2779,7 +2949,10 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
                   const SizedBox(height: 16),
                   Container(
                     width: double.infinity,
-                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 14,
+                      vertical: 10,
+                    ),
                     decoration: BoxDecoration(
                       color: Colors.white.withOpacity(0.05),
                       borderRadius: BorderRadius.circular(10),
@@ -2790,7 +2963,11 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
                       children: [
                         Row(
                           children: [
-                            const Icon(Icons.badge_outlined, size: 14, color: Color(0xFFFBBF24)),
+                            const Icon(
+                              Icons.badge_outlined,
+                              size: 14,
+                              color: Color(0xFFFBBF24),
+                            ),
                             const SizedBox(width: 6),
                             Expanded(
                               child: Text(
@@ -2807,11 +2984,18 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
                         const SizedBox(height: 4),
                         Row(
                           children: [
-                            const Icon(Icons.calendar_today_outlined, size: 14, color: Color(0xFFABB4C8)),
+                            const Icon(
+                              Icons.calendar_today_outlined,
+                              size: 14,
+                              color: Color(0xFFABB4C8),
+                            ),
                             const SizedBox(width: 6),
                             Text(
                               'Expires: ${_formatDate(expiry)}',
-                              style: const TextStyle(fontSize: 11, color: Color(0xFFABB4C8)),
+                              style: const TextStyle(
+                                fontSize: 11,
+                                color: Color(0xFFABB4C8),
+                              ),
                             ),
                           ],
                         ),
@@ -2883,7 +3067,6 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       debugPrint('[TTS] Install intent failed: $e');
     }
   }
-
 
   void _openEspScannerScreen() {
     Navigator.of(context).push(
@@ -2960,6 +3143,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
           'from center, ${beyond.toStringAsFixed(1)} m beyond limit.',
         );
         _reportBoundaryViolation(beyond);
+        _tts.speak(AlertMessages.boundaryViolation(_tts.currentLang));
       }
     } else {
       // Back inside — clear banner and re-arm.
@@ -2977,11 +3161,16 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   }
 
   void _startHarshDetection() {
-    _accelSub = userAccelerometerEventStream(
-      samplingPeriod: SensorInterval.gameInterval, // ~20ms, responsive but not extreme
-    ).listen(_onAccelerometer, onError: (e) {
-      debugPrint('[Harsh] accelerometer error: $e');
-    });
+    _accelSub =
+        userAccelerometerEventStream(
+          samplingPeriod:
+              SensorInterval.gameInterval, // ~20ms, responsive but not extreme
+        ).listen(
+          _onAccelerometer,
+          onError: (e) {
+            debugPrint('[Harsh] accelerometer error: $e');
+          },
+        );
   }
 
   void _onAccelerometer(UserAccelerometerEvent event) {
@@ -2998,14 +3187,14 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
         now.difference(_speedHistory.last.key).inMilliseconds >= 250) {
       _speedHistory.add(MapEntry(now, speedMs));
       _speedHistory.removeWhere(
-            (e) => now.difference(e.key) > const Duration(milliseconds: 2500),
+        (e) => now.difference(e.key) > const Duration(milliseconds: 2500),
       );
     }
 
     // 1) Magnitude — orientation-independent total force.
-    final magnitude = sqrt(event.x * event.x +
-        event.y * event.y +
-        event.z * event.z);
+    final magnitude = sqrt(
+      event.x * event.x + event.y * event.y + event.z * event.z,
+    );
     if (magnitude < _kHarshMagnitude) return;
 
     // 2) Guards: minimum speed + local debounce.
@@ -3017,16 +3206,18 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
 
     // 3) Classify using GPS speed change over the last ~1–2s.
     final past = _speedHistory.firstWhere(
-          (e) => now.difference(e.key).inMilliseconds >= 800,
+      (e) => now.difference(e.key).inMilliseconds >= 800,
       orElse: () => _speedHistory.isNotEmpty
           ? _speedHistory.first
           : MapEntry(now, speedMs),
     );
     final delta = speedMs - past.value; // + = speeding up, − = slowing down
 
-    debugPrint('[Harsh] mag=${magnitude.toStringAsFixed(2)} m/s² | '
-        'speed=${speedKmh.toStringAsFixed(1)} km/h | '
-        'Δspeed=${delta.toStringAsFixed(2)} m/s');
+    debugPrint(
+      '[Harsh] mag=${magnitude.toStringAsFixed(2)} m/s² | '
+      'speed=${speedKmh.toStringAsFixed(1)} km/h | '
+      'Δspeed=${delta.toStringAsFixed(2)} m/s',
+    );
 
     if (delta >= _kSpeedDeltaMs) {
       _lastHarshAt = now;
@@ -3034,15 +3225,15 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
         _harshBannerText = ' HARSH ACCELERATION';
         _harshEventAt = now;
         _reportIncident('Harsh Acceleration', 'Medium', 0.9);
-        _tts.speak('Please accelerate smoothly.');
+        _tts.speak(AlertMessages.harshAcceleration(_tts.currentLang));
       }
     } else if (delta <= -_kSpeedDeltaMs) {
       _lastHarshAt = now;
       if (_harshCooldown('HarshBraking')) {
-        _harshBannerText = 'HARSH BRAKING';         // ← add
+        _harshBannerText = 'HARSH BRAKING';
         _harshEventAt = now;
         _reportIncident('Harsh Braking', 'High', 0.9);
-        _tts.speak('Please brake gently.');
+        _tts.speak(AlertMessages.harshBraking(_tts.currentLang));
       }
     }
     // else: strong force but speed barely changed → likely a turn or pothole.
@@ -3092,6 +3283,9 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
                 _rearManualOverride = false;
                 _setCamMode(CamMode.driverMonitoring);
               },
+              enableYolo: true,
+              symbol: 'B',
+              label: 'REAR CAM ACTIVE',
               onDetection: _onCamObjectDetected,
             ),
 
@@ -3139,7 +3333,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
               label: 'LEFT CAM ACTIVE',
               symbol: 'L',
               themeColor: Colors.redAccent,
-              enableYolo: true,
+              enableYolo: false,
             ),
 
           // if (_phase == Phase.monitoring &&
@@ -3174,7 +3368,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
               label: 'RIGHT CAM ACTIVE',
               symbol: 'R',
               themeColor: Colors.redAccent,
-              enableYolo: true,
+              enableYolo: false,
             ),
           if (_phase == Phase.monitoring &&
               !_tripCompleted &&
@@ -3377,7 +3571,6 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
           //     ),
           //   ),
           // ),
-
           _breakAlertOverlay(),
 
           // Screenshot effect — alert varumbol screen quick shrink + border + dim
@@ -3425,19 +3618,18 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     final nowMonitoring = mode == CamMode.driverMonitoring;
     _camMode = mode;
 
-    final needsLiveStream =
-        mode == CamMode.rear ||
-        mode == CamMode.front ||
-        mode == CamMode.left ||
-        mode == CamMode.right;
-    if (needsLiveStream && _ffmpegRecorderService.isRecording) {
+    // Only stop recording when opening FRONT cam overlay (same port 84 conflict).
+    // Rear/left/right use different ports — no conflict with front cam recording.
+    final needsStopRecording = mode == CamMode.front;
+    if (needsStopRecording && _ffmpegRecorderService.isRecording) {
       await _ffmpegRecorderService.stopRecording();
       debugPrint(
-        '[CamMode] Recorder STOPPED — releasing ESP32 stream for $mode',
+        '[CamMode] Recorder STOPPED — releasing front cam stream for overlay',
       );
     } else if (nowMonitoring &&
         _frontCamConnected &&
         _frontCamStreamUrl.isNotEmpty &&
+        _phase == Phase.monitoring &&
         !_ffmpegRecorderService.isRecording) {
       _ffmpegRecorderService.startRecording(_frontCamStreamUrl);
       debugPrint('[CamMode] Recorder RESTARTED — back to front cam monitoring');
@@ -3447,6 +3639,9 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       if (wasMonitoring && _streaming) {
         c.stopImageStream().catchError((_) {});
         _streaming = false;
+        // Reset no-face timer when switching away — camera is paused,
+        // so no face detection happens. Don't let old timer cause trip end.
+        _noFaceSince = null;
         debugPrint('[CamMode] → $mode | phone cam PAUSED');
       } else if (nowMonitoring && !_streaming && _camReady) {
         c.startImageStream(_processImage).catchError((_) {});
@@ -3510,6 +3705,8 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       }
 
       if (subnet == null) return;
+
+      // Try known static IP first (instant connection)
       debugPrint('[AutoDiscover] Scanning $subnet.* for rear cam (port 82)...');
 
       for (int start = 1; start <= 254; start += 50) {
@@ -3540,7 +3737,8 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
               _isConnectedToEsp32 = true;
             });
             if (!_ffmpegRecorderService.isRecording &&
-                _camMode == CamMode.driverMonitoring) {
+                _camMode == CamMode.driverMonitoring &&
+                _phase == Phase.monitoring) {
               _ffmpegRecorderService.startRecording(_esp32StreamUrl);
             }
           }
@@ -3666,16 +3864,25 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
         return null;
       }
 
-      // Strategy 2: Try raw TCP connect on video port
+      // Strategy 2: Try video port — verify it's an MJPEG stream (not a random HTTP server)
       Future<String?> probeVideo(String ip) async {
         if (excludeIps.contains(ip)) return null;
         try {
-          final socket = await Socket.connect(
-            ip,
-            videoPort,
-          ).timeout(const Duration(milliseconds: 800));
-          await socket.close();
-          return ip;
+          // HTTP GET and check for multipart content-type (MJPEG signature)
+          final req = http.Request('GET', Uri.parse('http://$ip:$videoPort/'));
+          final client = http.Client();
+          final response = await client
+              .send(req)
+              .timeout(const Duration(milliseconds: 1200));
+          final contentType = response.headers['content-type'] ?? '';
+          client.close();
+          if (contentType.contains('multipart') ||
+              contentType.contains('image/jpeg')) {
+            return ip;
+          }
+          debugPrint(
+            '[SideCam] $ip:$videoPort responded but not MJPEG (content-type: $contentType)',
+          );
         } catch (_) {}
         return null;
       }
@@ -3735,7 +3942,8 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     if (_frontCamIp != null) {
       _frontCamStreamUrl = 'http://$_frontCamIp:84/';
       if (!_ffmpegRecorderService.isRecording &&
-          _camMode == CamMode.driverMonitoring) {
+          _camMode == CamMode.driverMonitoring &&
+          _phase == Phase.monitoring) {
         debugPrint(
           '[SideCam] Starting Front camera background recording: $_frontCamStreamUrl',
         );
@@ -3816,15 +4024,9 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     final rightUrl = _rightCamIp != null
         ? 'http://$_rightCamIp:81/sensor'
         : null;
-    final frontUrl = _frontCamIp != null
-        ? 'http://$_frontCamIp:85/sensor'
-        : null;
+    // Front and rear cams have no sensor — skip polling them
 
-    final results = await Future.wait([
-      fetch(leftUrl),
-      fetch(rightUrl),
-      fetch(frontUrl),
-    ]);
+    final results = await Future.wait([fetch(leftUrl), fetch(rightUrl)]);
     if (!mounted) {
       _isPollingBlindSpot = false;
       return;
@@ -3832,31 +4034,38 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
 
     final double? left = results[0];
     final double? right = results[1];
-    final double? front = results[2];
 
     if (_camMode != CamMode.rear && !_rearManualOverride) {
-      if (left != null && left < 50.0) {
-        _leftManualOverride = false;
-        _setCamMode(CamMode.left);
-      } else if (right != null && right < 50.0) {
-        _rightManualOverride = false;
-        _setCamMode(CamMode.right);
-      } else if (front != null && front < 50.0) {
-        // Sensor triggered — not a manual open, so override is off.
-        _frontManualOverride = false;
-        _setCamMode(CamMode.front);
+      final bool objectNearby =
+          (left != null && left < 50.0) || (right != null && right < 50.0);
+
+      if (objectNearby) {
+        _blindSpotObjectLastSeenAt = DateTime.now();
+        if (left != null && left < 50.0) {
+          _leftManualOverride = false;
+          _setCamMode(CamMode.left);
+        } else if (right != null && right < 50.0) {
+          _rightManualOverride = false;
+          _setCamMode(CamMode.right);
+        }
       } else {
+        // Object cleared — keep cam open for 5 more seconds
         final bool leftClear = left == null || left > 60.0;
         final bool rightClear = right == null || right > 60.0;
-        final bool frontClear = front == null || front > 60.0;
-        if (leftClear &&
-            rightClear &&
-            frontClear &&
-            ((_camMode == CamMode.left && !_leftManualOverride) ||
-                (_camMode == CamMode.right && !_rightManualOverride) ||
-                // Only auto-close front cam if it was NOT manually opened.
-                (_camMode == CamMode.front && !_frontManualOverride))) {
-          _setCamMode(CamMode.driverMonitoring);
+        final bool isAutoSideCam =
+            (_camMode == CamMode.left && !_leftManualOverride) ||
+            (_camMode == CamMode.right && !_rightManualOverride);
+        if (leftClear && rightClear && isAutoSideCam) {
+          final bool lingerExpired =
+              _blindSpotObjectLastSeenAt == null ||
+              DateTime.now()
+                      .difference(_blindSpotObjectLastSeenAt!)
+                      .inSeconds >=
+                  _kBlindSpotLingerSec;
+          if (lingerExpired) {
+            _blindSpotObjectLastSeenAt = null;
+            _setCamMode(CamMode.driverMonitoring);
+          }
         }
       }
     }
@@ -3968,12 +4177,24 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
                   ),
                 ),
                 const SizedBox(height: 32),
-
-                // High-Tech Scanner scope in the center
-                SizedBox(
-                  width: 260,
-                  height: 260,
-                  child: Stack(
+                // Loader shown during initialization
+                if (_initializing)
+                  const SizedBox(
+                    width: 260,
+                    height: 260,
+                    child: Center(
+                      child: CircularProgressIndicator(
+                        color: Color(0xFF3B82F6),
+                        strokeWidth: 3,
+                      ),
+                    ),
+                  )
+                // High-Tech Scanner scope in the center (only during verify/monitor and NOT initializing)
+                else if (_phase == Phase.verifying || _phase == Phase.monitoring)
+                  SizedBox(
+                    width: 260,
+                    height: 260,
+                    child: Stack(
                     clipBehavior: Clip.none,
                     children: [
                       Container(
@@ -4152,14 +4373,16 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
                   style: TextStyle(color: Color(0xFF6B7280), fontSize: 15),
                 ),
                 const SizedBox(height: 4),
-                Text(
-                  _driverName,
-                  style: const TextStyle(
-                    color: Color(0xFF111827),
-                    fontSize: 26,
-                    fontWeight: FontWeight.w700,
+                if (_driverName.isNotEmpty && _driverName != 'Driver')
+                  Text(
+                    _driverName,
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(
+                      color: Color(0xFF111827),
+                      fontSize: 26,
+                      fontWeight: FontWeight.w700,
+                    ),
                   ),
-                ),
                 // const SizedBox(height: 14),
                 // Container(
                 //   padding: const EdgeInsets.symmetric(
@@ -4299,18 +4522,18 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          Align(
-            alignment: Alignment.centerLeft,
-            child: Padding(
-              padding: const EdgeInsets.only(left: 12, top: 2, bottom: 2),
-              child: _syncIconButton(),
-            ),
-          ),
+          // Align(
+          //   alignment: Alignment.centerLeft,
+          //   child: Padding(
+          //     padding: const EdgeInsets.only(left: 12, top: 2, bottom: 2),
+          //     child: _syncIconButton(),
+          //   ),
+          // ),
           // _cableUnpluggedBanner(),
           _monitorStatusBar(),
           _esp32StatusBanner(),
-          _camConnectionStatusBar(),
           // _deviceMotionCard(),
+          const SizedBox(height: 10),
           if (_noFaceSince != null && !_tripCompleted) _noDriverCountdown(),
           if (_unauthorizedStart != null && !_tripCompleted)
             _unauthorizedDriverCountdown(),
@@ -4353,67 +4576,67 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   // }
 
   Widget _esp32StatusBanner() {
-    final bool isRecording = _ffmpegRecorderService.isRecording;
-
-    final Color bgColor;
-    final IconData icon;
-    final String text;
-
-    if (_isConnectingToEsp32) {
-      bgColor = const Color(0xFFD97706);
-      icon = Icons.wifi_protected_setup_rounded;
-      text = 'Connecting to ESP32-CAM WiFi...';
-    } else if (_isConnectedToEsp32) {
-      if (isRecording) {
-        bgColor = const Color(0xFF16A34A);
-        icon = Icons.videocam_rounded;
-        text = 'ESP32-CAM: Connected & Recording (1-min segments)';
-      } else {
-        bgColor = const Color(0xFF2563EB);
-        icon = Icons.wifi_rounded;
-        text = 'ESP32-CAM: Connected (Idle)';
-      }
-    } else {
-      bgColor = const Color(0xFF475569);
-      icon = Icons.videocam_off_rounded;
-      text = 'ESP32-CAM: Disconnected (Tap to connect)';
+    Widget camDot(String label, bool connected) {
+      return Container(
+        padding: const EdgeInsets.symmetric(vertical: 5, horizontal: 6),
+        decoration: BoxDecoration(
+          color: connected
+              ? const Color(0xFF22C55E).withValues(alpha: 0.15)
+              : const Color(0xFFEF4444).withValues(alpha: 0.15),
+          borderRadius: BorderRadius.circular(6),
+          border: Border.all(
+            color: connected
+                ? const Color(0xFF22C55E).withValues(alpha: 0.4)
+                : const Color(0xFFEF4444).withValues(alpha: 0.4),
+            width: 1,
+          ),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              width: 8,
+              height: 8,
+              decoration: BoxDecoration(
+                color: connected
+                    ? const Color(0xFF22C55E)
+                    : const Color(0xFFEF4444),
+                shape: BoxShape.circle,
+              ),
+            ),
+            const SizedBox(width: 4),
+            Text(
+              label,
+              style: const TextStyle(
+                color: Colors.white,
+                fontSize: 11,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+          ],
+        ),
+      );
     }
 
     return Container(
       margin: const EdgeInsets.only(left: 12, right: 12, top: 8),
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
       decoration: BoxDecoration(
-        color: bgColor.withValues(alpha: 0.92),
+        color: Colors.black.withValues(alpha: 0.6),
         borderRadius: BorderRadius.circular(10),
       ),
       child: Row(
         children: [
-          // ── Tap icon+text area to connect to ESP32 WiFi ──
-          Expanded(
-            child: GestureDetector(
-              behavior: HitTestBehavior.opaque,
-              onTap: _connectToEsp32Wifi,
-              child: Row(
-                children: [
-                  Icon(icon, color: Colors.white, size: 16),
-                  const SizedBox(width: 6),
-                  Expanded(
-                    child: Text(
-                      text,
-                      overflow: TextOverflow.ellipsis,
-                      maxLines: 1,
-                      style: const TextStyle(
-                        color: Colors.white,
-                        fontSize: 11,
-                        fontWeight: FontWeight.w600,
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ),
-          const SizedBox(width: 8),
+          // ── L/R/F/B cam status (fills remaining space) ──
+          camDot('L', _leftCamConnected),
+          const SizedBox(width: 4),
+          camDot('R', _rightCamConnected),
+          const SizedBox(width: 4),
+          camDot('F', _frontCamConnected),
+          const SizedBox(width: 4),
+          camDot('B', _rearCamConnected),
+          const SizedBox(width: 10),
+          // ── REAR button ──
           GestureDetector(
             behavior: HitTestBehavior.opaque,
             onTap: () {
@@ -4457,8 +4680,8 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
               ),
             ),
           ),
-          // ── FRONT cam toggle button ──
           const SizedBox(width: 6),
+          // ── FRONT button ──
           GestureDetector(
             behavior: HitTestBehavior.opaque,
             onTap: () {
@@ -4491,39 +4714,6 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
                   SizedBox(width: 4),
                   Text(
                     'FRONT',
-                    style: TextStyle(
-                      color: Colors.white,
-                      fontSize: 11,
-                      fontWeight: FontWeight.w700,
-                      letterSpacing: 0.5,
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ),
-          const SizedBox(width: 6),
-          GestureDetector(
-            behavior: HitTestBehavior.opaque,
-            onTap: _openHotspotSettings,
-            child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-              decoration: BoxDecoration(
-                color: Colors.tealAccent.withValues(alpha: 0.20),
-                borderRadius: BorderRadius.circular(6),
-                border: Border.all(color: Colors.tealAccent, width: 1),
-              ),
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: const [
-                  Icon(
-                    Icons.wifi_tethering_rounded,
-                    color: Colors.white,
-                    size: 16,
-                  ),
-                  SizedBox(width: 4),
-                  Text(
-                    'HOTSPOT',
                     style: TextStyle(
                       color: Colors.white,
                       fontSize: 11,
@@ -4799,11 +4989,11 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
             ),
           ),
           const SizedBox(width: 8),
-          const Text(
-            'MONITORING',
-            style: TextStyle(
+          Text(
+            _appVersion.isNotEmpty ? _appVersion : 'MONITORING',
+            style: const TextStyle(
               color: Colors.white,
-              fontSize: 13,
+              fontSize: 10,
               fontWeight: FontWeight.w700,
               letterSpacing: 0.6,
             ),
@@ -5002,27 +5192,30 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
 
                 // ── DEBUG: manual update check trigger ──
                 const SizedBox(height: 24),
-                GestureDetector(
-                  onTap: _checkForUpdateInBackground,
-                  child: Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                    decoration: BoxDecoration(
-                      color: Colors.white.withValues(alpha: 0.07),
-                      borderRadius: BorderRadius.circular(20),
-                      border: Border.all(
-                        color: Colors.white.withValues(alpha: 0.15),
-                      ),
-                    ),
-                    child: const Text(
-                      'Check for Updates Test 20',
-                      style: TextStyle(
-                        color: Color(0xFF64748B),
-                        fontSize: 11,
-                        fontWeight: FontWeight.w500,
-                      ),
-                    ),
-                  ),
-                ),
+                // GestureDetector(
+                //   onTap: _checkForUpdateInBackground,
+                //   child: Container(
+                //     padding: const EdgeInsets.symmetric(
+                //       horizontal: 16,
+                //       vertical: 8,
+                //     ),
+                //     decoration: BoxDecoration(
+                //       color: Colors.white.withValues(alpha: 0.07),
+                //       borderRadius: BorderRadius.circular(20),
+                //       border: Border.all(
+                //         color: Colors.white.withValues(alpha: 0.15),
+                //       ),
+                //     ),
+                //     child: const Text(
+                //       'Check for Updates Test 20',
+                //       style: TextStyle(
+                //         color: Color(0xFF64748B),
+                //         fontSize: 11,
+                //         fontWeight: FontWeight.w500,
+                //       ),
+                //     ),
+                //   ),
+                // ),
               ],
             ),
           ),
@@ -5063,7 +5256,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     if (_harshEventAt != null &&
         DateTime.now().difference(_harshEventAt!) <= _kBannerVisibleDuration &&
         _harshBannerText != null) {
-      bg = const Color(0xFFB91C1C);   // red
+      bg = const Color(0xFFB91C1C); // red
       text = _harshBannerText;
     } else if (phone) {
       bg = const Color(0xFF7E22CE);
@@ -5147,12 +5340,11 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     return null;
   }
 
-  // Seatbelt status: red alert kaanikkum (off aanenkil). Buckled aanenkil hide.
   Widget _seatbeltIndicator() {
     final on = _state.seatbeltBuckled;
     if (on) return const SizedBox.shrink();
     final bg = on ? const Color(0xFF16A34A) : const Color(0xFFDC2626);
-    final icon = on ? Icons.check_circle_rounded : Icons.cancel_rounded;
+    // final icon = on ? Icons.check_circle_rounded : Icons.cancel_rounded;
     final text = on ? '🔒  SEATBELT ON' : '⚠️  FASTEN SEATBELT';
 
     return Container(
@@ -5517,17 +5709,12 @@ class _BreakToastWidgetState extends State<_BreakToastWidget>
       ),
       child: AnimatedBuilder(
         animation: _glance,
-        builder: (context, child) => Opacity(
-          opacity: 0.70 + 0.30 * _glance.value,
-          child: child,
-        ),
+        builder: (context, child) =>
+            Opacity(opacity: 0.70 + 0.30 * _glance.value, child: child),
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Text(
-              widget.msg['emoji']!,
-              style: const TextStyle(fontSize: 30),
-            ),
+            Text(widget.msg['emoji']!, style: const TextStyle(fontSize: 30)),
             const SizedBox(height: 4),
             Text(
               widget.msg['title']!,

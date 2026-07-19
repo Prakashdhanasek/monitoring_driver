@@ -218,16 +218,19 @@ const Set<String> _kRelevant = {
   'bicycle',
   'car',
   'motorcycle',
+  'airplane',
   'bus',
+  'train',
   'truck',
+  'boat',
   'dog',
   'cat',
   'traffic light',
   'stop sign',
 };
 
-const double _kConf = 0.35;
-const double _kIou = 0.50;
+const double _kConf = 0.25;
+const double _kIou = 0.45;
 
 // ── Isolate worker ────────────────────────────────────────────────────────────
 
@@ -437,6 +440,21 @@ void _isolateWorker(_InitMsg init) {
         final label = _kCoco80[maxClass];
         if (!_kRelevant.contains(label)) continue;
 
+        // Generalise all vehicle/transport types to single "vehicle" label
+        final String outputLabel;
+        if (label == 'car' ||
+            label == 'truck' ||
+            label == 'bus' ||
+            label == 'motorcycle' ||
+            label == 'bicycle' ||
+            label == 'boat' ||
+            label == 'train' ||
+            label == 'airplane') {
+          outputLabel = 'vehicle';
+        } else {
+          outputLabel = label;
+        }
+
         // Coordinates: in model pixel space (0–W, 0–H) → normalise to [0, 1]
         final cx = _get(0, b) / W;
         final cy = _get(1, b) / H;
@@ -450,7 +468,7 @@ void _isolateWorker(_InitMsg init) {
 
         dets.add(
           RearDetection(
-            label: label,
+            label: outputLabel,
             confidence: maxScore,
             x: x,
             y: y,
