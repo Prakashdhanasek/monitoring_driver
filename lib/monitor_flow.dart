@@ -1051,7 +1051,6 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       debugPrint('[Flow] Error clearing incidents queue: $e');
     }
 
-
     // Reset in-memory driver state to defaults
     _driverId = '—';
     _driverName = 'Driver';
@@ -1305,8 +1304,9 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     _isCapturingScreen = true;
 
     try {
-      final RenderRepaintBoundary? boundary = _screenBoundaryKey.currentContext
-          ?.findRenderObject() as RenderRepaintBoundary?;
+      final RenderRepaintBoundary? boundary =
+          _screenBoundaryKey.currentContext?.findRenderObject()
+              as RenderRepaintBoundary?;
       if (boundary == null) return;
 
       // Capture screen dynamically based on warning status
@@ -1315,8 +1315,9 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       final height = image.height;
 
       // Extract raw RGBA bytes on the UI thread
-      final ByteData? byteData =
-          await image.toByteData(format: ui.ImageByteFormat.rawRgba);
+      final ByteData? byteData = await image.toByteData(
+        format: ui.ImageByteFormat.rawRgba,
+      );
       image.dispose(); // Free GPU memory immediately
 
       if (byteData != null) {
@@ -1801,7 +1802,9 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     if (!_isOnline) {
       debugPrint('[Flow] Device is offline. Skipping API driver list refresh.');
       if (!_authEngine.isEnrolled) {
-        debugPrint('[Flow] Auth engine not enrolled. Initializing from local storage/cache...');
+        debugPrint(
+          '[Flow] Auth engine not enrolled. Initializing from local storage/cache...',
+        );
         try {
           setState(() {
             _isRefreshingDrivers = true;
@@ -1934,7 +1937,9 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
 
       // Trigger high-resolution streaming mode for 15 seconds for evidence capture
       _highResUntil = DateTime.now().add(const Duration(seconds: 15));
-      debugPrint('[Stream] Incident triggered! Boosting resolution to 0.7x for 15 seconds.');
+      debugPrint(
+        '[Stream] Incident triggered! Boosting resolution to 0.7x for 15 seconds.',
+      );
       _streamService.sendAlertMessage(eventType);
 
       // Check 10-minute cooldown for API syncing
@@ -2292,7 +2297,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
         !_initializing &&
         _camReady &&
         _latestFrameJpeg != null &&
-        _state.vehicleSpeed > 5) {
+        _state.vehicleSpeed > 25) {
       if (_checkCooldown('Unverified Driver')) {
         _reportIncident('Unverified Driver', 'High', 1.0);
         _tts.speak(AlertMessages.unverifiedDriver(_tts.currentLang));
@@ -2650,9 +2655,13 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       final decoded = img.decodeJpg(jpegBytes);
       if (decoded == null) return jpegBytes;
 
+      final hour12 = time.hour == 0
+          ? 12
+          : (time.hour > 12 ? time.hour - 12 : time.hour);
+      final amPm = time.hour >= 12 ? 'PM' : 'AM';
       final timeStr =
-          '${time.year}-${time.month.toString().padLeft(2, '0')}-${time.day.toString().padLeft(2, '0')} '
-          '${time.hour.toString().padLeft(2, '0')}:${time.minute.toString().padLeft(2, '0')}:${time.second.toString().padLeft(2, '0')}';
+          '${time.day.toString().padLeft(2, '0')}/${time.month.toString().padLeft(2, '0')}/${time.year} '
+          '${hour12.toString().padLeft(2, '0')}:${time.minute.toString().padLeft(2, '0')} $amPm';
 
       // Draw a semi-transparent black bar at the bottom
       final barHeight = 20;
@@ -3509,31 +3518,31 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
         child: Stack(
           fit: StackFit.expand,
           children: [
-          _cameraLayer(),
+            _cameraLayer(),
 
-          if (_phase == Phase.verifying) _verifyingOverlay(),
-          if (_phase == Phase.details) _detailsOverlay(),
-          if (_phase == Phase.monitoring)
-            (_tripCompleted ? _tripCompletedOverlay() : _monitoringOverlay()),
-          if (_phase == Phase.monitoring &&
-              !_tripCompleted &&
-              _camMode == CamMode.rear)
-            ReversingCameraOverlay(
-              key: const ValueKey('rear_camera_overlay'),
-              streamUrl: _esp32StreamUrl,
-              speed: _state.vehicleSpeed,
-              latitude: _state.gpsLat,
-              longitude: _state.gpsLng,
-              isPreviewMode: _rearManualOverride,
-              onClosePreview: () {
-                _rearManualOverride = false;
-                _setCamMode(CamMode.driverMonitoring);
-              },
-              enableYolo: true,
-              symbol: 'B',
-              label: 'REAR CAM ACTIVE',
-              onDetection: _onCamObjectDetected,
-            ),
+            if (_phase == Phase.verifying) _verifyingOverlay(),
+            if (_phase == Phase.details) _detailsOverlay(),
+            if (_phase == Phase.monitoring)
+              (_tripCompleted ? _tripCompletedOverlay() : _monitoringOverlay()),
+            if (_phase == Phase.monitoring &&
+                !_tripCompleted &&
+                _camMode == CamMode.rear)
+              ReversingCameraOverlay(
+                key: const ValueKey('rear_camera_overlay'),
+                streamUrl: _esp32StreamUrl,
+                speed: _state.vehicleSpeed,
+                latitude: _state.gpsLat,
+                longitude: _state.gpsLng,
+                isPreviewMode: _rearManualOverride,
+                onClosePreview: () {
+                  _rearManualOverride = false;
+                  _setCamMode(CamMode.driverMonitoring);
+                },
+                enableYolo: true,
+                symbol: 'B',
+                label: 'REAR CAM ACTIVE',
+                onDetection: _onCamObjectDetected,
+              ),
 
             // Invisible admin-exit hotspot (top-right corner). Tap 5x -> PIN.
             Positioned(
@@ -3850,7 +3859,6 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
         ),
       ),
     );
-
   }
 
   // ─────────────────────────────────────────────────────────
@@ -5230,11 +5238,13 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
         ? 'CAL ✓'
         : 'Calibrating ${_state.calibrationFrame}/${MonitoringEngine.kCalibrationFrames}';
     final calColor = _state.calibrated ? Colors.greenAccent : Colors.amber;
-    final allCamConnected =
-        _leftCamConnected &&
-        _rightCamConnected &&
-        _frontCamConnected &&
-        _rearCamConnected;
+    // WiFi/hotspot is considered active if any ESP32 camera IP was discovered
+    // (meaning the phone's hotspot is running and devices are connected)
+    final hotspotActive =
+        _leftCamIp != null ||
+        _rightCamIp != null ||
+        _frontCamIp != null ||
+        _esp32StreamUrl.isNotEmpty;
 
     return Container(
       margin: const EdgeInsets.all(12),
@@ -5285,51 +5295,59 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
             ],
           ),
           const SizedBox(height: 6),
-          // Bottom row: net + camera + WS live stream status indicators
+          // Bottom row: internet (globe) + wifi/hotspot + WS live stream
           Row(
+            mainAxisAlignment: MainAxisAlignment.spaceEvenly,
             children: [
-              Icon(
-                Icons.language_rounded,
-                color: _isOnline ? const Color(0xFF22C55E) : const Color(0xFFEF4444),
-                size: 15,
+              // ONLINE / OFFLINE
+              Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(
+                    Icons.language_rounded,
+                    color: _isOnline ? const Color(0xFF22C55E) : Colors.white,
+                    size: 14,
+                  ),
+                  const SizedBox(width: 3),
+                  Text(
+                    _isOnline ? 'ONLINE' : 'OFFLINE',
+                    style: TextStyle(
+                      color: _isOnline ? const Color(0xFF22C55E) : Colors.white,
+                      fontSize: 8,
+                      fontWeight: FontWeight.w800,
+                      letterSpacing: 0.3,
+                    ),
+                  ),
+                ],
               ),
-              const SizedBox(width: 4),
-              Text(
-                _isOnline ? 'ONLINE' : 'OFFLINE',
-                style: TextStyle(
-                  color: _isOnline ? const Color(0xFF22C55E) : const Color(0xFFEF4444),
-                  fontSize: 9,
-                  fontWeight: FontWeight.bold,
-                ),
+              Container(height: 12, width: 1, color: Colors.white24),
+              // HOTSPOT OK / OFF
+              Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(
+                    hotspotActive ? Icons.wifi_rounded : Icons.wifi_off_rounded,
+                    color: hotspotActive
+                        ? const Color(0xFF22C55E)
+                        : Colors.white,
+                    size: 14,
+                  ),
+                  const SizedBox(width: 3),
+                  Text(
+                    hotspotActive ? 'WIFI' : 'NO WIFI',
+                    style: TextStyle(
+                      color: hotspotActive
+                          ? const Color(0xFF22C55E)
+                          : Colors.white,
+                      fontSize: 8,
+                      fontWeight: FontWeight.w800,
+                      letterSpacing: 0.3,
+                    ),
+                  ),
+                ],
               ),
-              const SizedBox(width: 10),
-              Container(
-                height: 12,
-                width: 1,
-                color: Colors.white24,
-              ),
-              const SizedBox(width: 10),
-              Icon(
-                allCamConnected ? Icons.wifi_rounded : Icons.wifi_off_rounded,
-                color: allCamConnected ? const Color(0xFF22C55E) : const Color(0xFFEF4444),
-                size: 15,
-              ),
-              const SizedBox(width: 4),
-              Text(
-                allCamConnected ? 'CAMS OK' : 'CAMS ERR',
-                style: TextStyle(
-                  color: allCamConnected ? const Color(0xFF22C55E) : const Color(0xFFEF4444),
-                  fontSize: 9,
-                  fontWeight: FontWeight.bold,
-                ),
-              ),
-              const SizedBox(width: 10),
-              Container(
-                height: 12,
-                width: 1,
-                color: Colors.white24,
-              ),
-              const SizedBox(width: 10),
+              Container(height: 12, width: 1, color: Colors.white24),
+              // WS LIVE / OFF
               ValueListenableBuilder<bool>(
                 valueListenable: _streamService.isConnected,
                 builder: (context, isLiveConnected, child) {
@@ -5342,18 +5360,19 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
                             : Icons.videocam_off_rounded,
                         color: isLiveConnected
                             ? const Color(0xFF22C55E)
-                            : const Color(0xFFEF4444),
-                        size: 15,
+                            : Colors.white,
+                        size: 14,
                       ),
-                      const SizedBox(width: 4),
+                      const SizedBox(width: 3),
                       Text(
                         isLiveConnected ? 'WS LIVE' : 'WS OFF',
                         style: TextStyle(
                           color: isLiveConnected
                               ? const Color(0xFF22C55E)
-                              : const Color(0xFFEF4444),
-                          fontSize: 9,
-                          fontWeight: FontWeight.bold,
+                              : Colors.white,
+                          fontSize: 8,
+                          fontWeight: FontWeight.w800,
+                          letterSpacing: 0.3,
                         ),
                       ),
                     ],
