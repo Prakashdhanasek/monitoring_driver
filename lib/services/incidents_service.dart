@@ -144,81 +144,83 @@ class IncidentsService {
           try {
             final decoded = jsonDecode(jsonBody) as Map<String, dynamic>;
 
-            // ── STEP 1: snapshotPath undenkil, image evidence endpoint-il
-            // upload cheyt server URL vaanguka. Aa URL snapshotUrl aakkuka. ──
-            final String? snapshotPath = decoded['snapshotPath'] as String?;
-
-            if (snapshotPath != null && snapshotPath.isNotEmpty) {
-              final File? snapshotFile = _findLatestSnapshotFile(snapshotPath);
-
-              if (snapshotFile != null && await snapshotFile.exists()) {
-                debugPrint(
-                  '[IncidentsService] Uploading exact evidence file: ${snapshotFile.path}',
-                );
-
-                final uploadedUrl = await _uploadEvidence(snapshotFile);
-
-                if (uploadedUrl != null && uploadedUrl.isNotEmpty) {
-                  decoded['snapshotUrl'] = uploadedUrl;
-                  decoded.remove('snapshotPath');
-                  _box.put(key, jsonEncode(decoded)); // Save URL to avoid re-upload on retry
-
-                  debugPrint(
-                    '[IncidentsService] Evidence uploaded -> $uploadedUrl',
-                  );
-                } else {
-                  debugPrint(
-                    '[IncidentsService] Evidence upload failed; will retry later.',
-                  );
-                }
-              } else {
-                debugPrint(
-                  '[IncidentsService] Snapshot file not found: $snapshotPath',
-                );
-                // Only remove if file doesn't exist, to prevent infinite retries for a missing file
-                decoded.remove('snapshotPath');
-                _box.put(key, jsonEncode(decoded));
-              }
-            }
-
-            // ── STEP 1.5: videoPath ──
-            final String? videoPath = decoded['videoPath'] as String?;
-            if (videoPath != null && videoPath.isNotEmpty) {
-              final File videoFile = File(videoPath);
-              if (await videoFile.exists()) {
-                debugPrint(
-                  '[IncidentsService] Uploading video evidence file: ${videoFile.path}',
-                );
-
-                final uploadedUrl = await _uploadEvidence(videoFile);
-
-                if (uploadedUrl != null && uploadedUrl.isNotEmpty) {
-                  decoded['videoClipUrl'] = uploadedUrl;
-                  decoded.remove('videoPath');
-                  _box.put(key, jsonEncode(decoded)); // Save URL to avoid re-upload on retry
-
-                  debugPrint(
-                    '[IncidentsService] Video uploaded -> $uploadedUrl',
-                  );
-
-                  // Clean up the local temporary video file ONLY after successful upload
-                  try {
-                    await videoFile.delete();
-                  } catch (_) {}
-                } else {
-                  debugPrint(
-                    '[IncidentsService] Video upload failed; will retry later.',
-                  );
-                }
-              } else {
-                debugPrint(
-                  '[IncidentsService] Video file not found: $videoPath',
-                );
-                // Only remove if file doesn't exist, to prevent infinite retries for a missing file
-                decoded.remove('videoPath');
-                _box.put(key, jsonEncode(decoded));
-              }
-            }
+             // ── STEP 1: snapshotPath undenkil, image evidence endpoint-il
+             // upload cheyt server URL vaanguka. Aa URL snapshotUrl aakkuka. ──
+             final String? snapshotPath = decoded['snapshotPath'] as String?;
+ 
+             if (snapshotPath != null && snapshotPath.isNotEmpty) {
+               final File? snapshotFile = _findLatestSnapshotFile(snapshotPath);
+ 
+               if (snapshotFile != null && await snapshotFile.exists()) {
+                 debugPrint(
+                   '[IncidentsService] Uploading exact evidence file: ${snapshotFile.path}',
+                 );
+ 
+                 final uploadedUrl = await _uploadEvidence(snapshotFile);
+ 
+                 if (uploadedUrl != null && uploadedUrl.isNotEmpty) {
+                   decoded['snapshotUrl'] = uploadedUrl;
+                   decoded.remove('snapshotPath');
+                   _box.put(key, jsonEncode(decoded)); // Save URL to avoid re-upload on retry
+ 
+                   debugPrint(
+                     '[IncidentsService] Evidence uploaded -> $uploadedUrl',
+                   );
+                 } else {
+                   debugPrint(
+                     '[IncidentsService] Evidence upload failed; will retry later.',
+                   );
+                   throw Exception('Snapshot image evidence upload failed; aborting sync of this incident.');
+                 }
+               } else {
+                 debugPrint(
+                   '[IncidentsService] Snapshot file not found: $snapshotPath',
+                 );
+                 // Only remove if file doesn't exist, to prevent infinite retries for a missing file
+                 decoded.remove('snapshotPath');
+                 _box.put(key, jsonEncode(decoded));
+               }
+             }
+ 
+             // ── STEP 1.5: videoPath ──
+             final String? videoPath = decoded['videoPath'] as String?;
+             if (videoPath != null && videoPath.isNotEmpty) {
+               final File videoFile = File(videoPath);
+               if (await videoFile.exists()) {
+                 debugPrint(
+                   '[IncidentsService] Uploading video evidence file: ${videoFile.path}',
+                 );
+ 
+                 final uploadedUrl = await _uploadEvidence(videoFile);
+ 
+                 if (uploadedUrl != null && uploadedUrl.isNotEmpty) {
+                   decoded['videoClipUrl'] = uploadedUrl;
+                   decoded.remove('videoPath');
+                   _box.put(key, jsonEncode(decoded)); // Save URL to avoid re-upload on retry
+ 
+                   debugPrint(
+                     '[IncidentsService] Video uploaded -> $uploadedUrl',
+                   );
+ 
+                   // Clean up the local temporary video file ONLY after successful upload
+                   try {
+                     await videoFile.delete();
+                   } catch (_) {}
+                 } else {
+                   debugPrint(
+                     '[IncidentsService] Video upload failed; will retry later.',
+                   );
+                   throw Exception('Video evidence upload failed; aborting sync of this incident.');
+                 }
+               } else {
+                 debugPrint(
+                   '[IncidentsService] Video file not found: $videoPath',
+                 );
+                 // Only remove if file doesn't exist, to prevent infinite retries for a missing file
+                 decoded.remove('videoPath');
+                 _box.put(key, jsonEncode(decoded));
+               }
+             }
 
             // Clean up payload: replace empty string or 'string' placeholder with null
             decoded.forEach((key, value) {
