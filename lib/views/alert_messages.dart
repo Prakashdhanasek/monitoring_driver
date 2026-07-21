@@ -78,6 +78,14 @@ class AlertMessages {
     ta: 'அங்கீகரிக்கப்படாத ஓட்டுநர் கண்டறியப்பட்டார்.',
   );
 
+  static String unverifiedDriver(AlertLang lang) => _pick(
+    lang,
+    en: 'Driver not verified. Please verify your face before driving.',
+    hi: 'चालक सत्यापित नहीं है। कृपया गाड़ी चलाने से पहले अपना चेहरा सत्यापित करें।',
+    ml: 'ഡ്രൈവർ പരിശോധിച്ചിട്ടില്ല. വാഹനം ഓടിക്കുന്നതിന് മുമ്പ് മുഖം പരിശോധിക്കുക.',
+    ta: 'ஓட்டுநர் சரிபார்க்கப்படவில்லை. ஓட்டுவதற்கு முன் முகத்தைச் சரிபார்க்கவும்.',
+  );
+
   static String drowsy(AlertLang lang) => _pick(
     lang,
     en: 'You appear tired. Please stay alert.',

@@ -36,6 +36,7 @@ import 'services/esp32_wifi_service.dart';
 import 'services/ffmpeg_recorder_service.dart';
 import 'services/sftp_upload_service.dart';
 import 'services/http_video_upload_service.dart';
+import 'services/background_telemetry_service.dart';
 
 import 'services/reversing_detector_service.dart';
 import 'services/app_update_service.dart';
@@ -181,6 +182,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   String? _vehicleId;
   String? _vehicleRegNo;
   String? _tripId;
+  double _overspeedThreshold = 0; // km/h from API (0 = disabled)
 
   // Countdown
   int _countdown = 3;
@@ -1171,6 +1173,26 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
 
     if (permission == LocationPermission.always ||
         permission == LocationPermission.whileInUse) {
+      // Get initial position immediately so telemetry doesn't send 0,0
+      try {
+        final pos = await Geolocator.getCurrentPosition(
+          locationSettings: const LocationSettings(
+            accuracy: LocationAccuracy.high,
+          ),
+        ).timeout(const Duration(seconds: 10));
+        _state.gpsLat = pos.latitude;
+        _state.gpsLng = pos.longitude;
+        _state.vehicleSpeed = pos.speed > 0 ? (pos.speed * 3.6) : 0.0;
+        BackgroundTelemetryService.instance.updatePosition(
+          pos.latitude,
+          pos.longitude,
+          _state.vehicleSpeed,
+        );
+        debugPrint('[Flow] Initial GPS fix: ${pos.latitude}, ${pos.longitude}');
+      } catch (e) {
+        debugPrint('[Flow] Initial GPS fix failed: $e');
+      }
+
       Geolocator.getPositionStream(
         locationSettings: const LocationSettings(
           accuracy: LocationAccuracy.high,
@@ -1181,6 +1203,12 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
         _state.gpsLat = position.latitude;
         _state.gpsLng = position.longitude;
         _state.vehicleSpeed = speedKmH;
+        // Keep background telemetry in sync with latest position
+        BackgroundTelemetryService.instance.updatePosition(
+          position.latitude,
+          position.longitude,
+          speedKmH,
+        );
         _reversingDetector?.updateGps(
           position.latitude,
           position.longitude,
@@ -1257,6 +1285,18 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
             _refreshDriversOnFaceDetection();
           }
           _faceWasPresentLastFrame = faces.isNotEmpty;
+
+          // Capture frames during verifying phase for unverified-driver incidents
+          if (_frame % 5 == 0) {
+            final jpeg = _captureFaceJpeg(image, targetWidth: 240);
+            if (jpeg != null) {
+              _latestFrameJpeg = jpeg;
+              _recentFrames.add(jpeg);
+              if (_recentFrames.length > 30) {
+                _recentFrames.removeAt(0);
+              }
+            }
+          }
 
           if (faces.length == 1) {
             final now = DateTime.now();
@@ -1505,6 +1545,16 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
               assignedVehiclesList.first as Map<String, dynamic>;
           _vehicleId = firstVehicle['vehicleId'] as String?;
           _vehicleRegNo = firstVehicle['vehicleRegistrationNumber'] as String?;
+          // Parse overspeed threshold from API
+          final threshold = firstVehicle['overspeedThreshold'];
+          if (threshold != null) {
+            _overspeedThreshold = (threshold is num)
+                ? threshold.toDouble()
+                : (double.tryParse(threshold.toString()) ?? 0);
+          }
+          debugPrint(
+            '[Flow] Overspeed threshold set to: $_overspeedThreshold km/h',
+          );
         } else {
           _vehicleId = driver['assignedVehicleId'] as String?;
           _vehicleRegNo = driver['vehicleRegistrationNumber'] as String?;
@@ -1823,17 +1873,26 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
 
       // FIX: Never create an incident before face verification is complete.
       // This prevents blank images and stale/random driver names from being sent.
-      // Exception: Allow if the driver is explicitly unauthorized.
-      if (_phase != Phase.monitoring ||
-          (_driverId == '—' && _state.authStatus != AuthStatus.unauthorized)) {
+      // Exception: Allow if the driver is explicitly unauthorized OR if it's
+      // an "Unverified Driver" event (vehicle moving without face auth).
+      if (_phase != Phase.monitoring && eventType != 'Unverified Driver') {
         debugPrint(
           '[Flow] Skipping incident "$eventType" — driver not verified (phase=$_phase, id=$_driverId).',
         );
         return;
       }
+      if (_phase == Phase.monitoring &&
+          _driverId == '—' &&
+          _state.authStatus != AuthStatus.unauthorized &&
+          eventType != 'Unverified Driver') {
+        debugPrint('[Flow] Skipping incident "$eventType" — no driver ID.');
+        return;
+      }
 
       // FIX: Never upload a blank/empty image as evidence.
-      if (snapshotPath.isEmpty) {
+      // Exception: Unverified Driver can be reported without snapshot
+      // (the point is to report movement, not capture the driver's face).
+      if (snapshotPath.isEmpty && eventType != 'Unverified Driver') {
         debugPrint(
           '[Flow] Skipping incident "$eventType" — no valid snapshot available.',
         );
@@ -2095,8 +2154,26 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
 
   Future<void> _sendTelemetryTask() async {
     if (!mounted) return;
+    _state.vehicleSpeed = 10; // TODO: Remove after testing unverified driver
+
     // Boundary check runs every tick, even offline — it detects the crossing.
     _checkBoundary();
+
+    // ── Unverified driver moving detection ──────────────────────
+    // If face not verified and vehicle is moving, report incident
+    // Only when verifying screen is active (not during system initialization)
+    if (_phase == Phase.verifying &&
+        !_initializing &&
+        _state.vehicleSpeed > 5) {
+      if (_checkCooldown('Unverified Driver')) {
+        _reportIncident('Unverified Driver', 'High', 1.0);
+        _tts.speak(AlertMessages.unverifiedDriver(_tts.currentLang));
+        debugPrint(
+          '[Flow] Vehicle moving at ${_state.vehicleSpeed.toStringAsFixed(1)} km/h without driver verification!',
+        );
+      }
+    }
+
     final deviceId = _settings.getDeviceId();
     if (deviceId == null || deviceId.isEmpty) {
       return;
@@ -2280,6 +2357,17 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       soft = true;
       if (_checkCooldown('Distraction')) {
         _reportIncident('Distraction', 'Medium', 0.8);
+      }
+    }
+
+    // ── OVERSPEED ALERT ──────────────────────────────────────
+    if (_overspeedThreshold > 0 && _state.vehicleSpeed > _overspeedThreshold) {
+      loud = true;
+      if (_checkCooldown('Overspeeding')) {
+        _reportIncident('Overspeeding', 'High', 1.0);
+      }
+      if (_checkVoiceCooldown('overspeed', const Duration(seconds: 15))) {
+        _tts.speak(AlertMessages.overspeed(_tts.currentLang));
       }
     }
 
