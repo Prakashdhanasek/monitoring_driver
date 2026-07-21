@@ -1043,13 +1043,6 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   }
 
   Future<void> _init() async {
-    // Clear old queued incidents to start fresh with new schema/details
-    try {
-      await _incidentsService.clearAll();
-      debugPrint('[Flow] Cleared old queued incidents for new schema.');
-    } catch (e) {
-      debugPrint('[Flow] Error clearing incidents queue: $e');
-    }
 
 
     // Reset in-memory driver state to defaults
@@ -1154,6 +1147,9 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
 
     final deviceId = _settings.getDeviceId() ?? 'unknown_device';
     _streamService.connect(deviceId);
+
+    // Sync any leftover offline-queued incidents on startup
+    _syncIncidentsTask();
 
     if (mounted) setState(() => _initializing = false);
   }
