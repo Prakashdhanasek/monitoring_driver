@@ -1666,6 +1666,8 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
             preferred = AlertLang.hindi;
           } else if (cleanLang.contains('tamil') || cleanLang == 'ta') {
             preferred = AlertLang.tamil;
+          } else if (cleanLang.contains('kannada') || cleanLang == 'kn') {
+            preferred = AlertLang.kannada;
           }
         }
         debugPrint(

@@ -1,7 +1,7 @@
 import 'package:flutter/foundation.dart';
 import 'package:flutter_tts/flutter_tts.dart';
 
-enum AlertLang { english, hindi, malayalam, tamil }
+enum AlertLang { english, hindi, malayalam, tamil, kannada }
 
 class TtsService {
   final FlutterTts _tts = FlutterTts();
@@ -14,6 +14,7 @@ class TtsService {
     AlertLang.hindi: 'hi-IN',
     AlertLang.malayalam: 'ml-IN',
     AlertLang.tamil: 'ta-IN',
+    AlertLang.kannada: 'kn-IN',
   };
 
   Future<void> init() async {
