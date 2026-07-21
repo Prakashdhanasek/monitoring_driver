@@ -39,6 +39,7 @@ import 'services/http_video_upload_service.dart';
 
 import 'services/reversing_detector_service.dart';
 import 'services/app_update_service.dart';
+import 'services/live_stream_service.dart';
 import 'views/reversing_camera_overlay.dart';
 import 'views/cam_detection_panel.dart';
 import 'views/alert_messages.dart';
@@ -100,6 +101,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   );
   final HttpVideoUploadService _httpVideoUploadService =
       HttpVideoUploadService();
+  final LiveStreamService _liveStreamService = LiveStreamService();
 
   // ── Connectivity tracking ──
   bool _isOnline = true;
@@ -207,6 +209,9 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   DateTime? _seatbeltPhaseStart; // start of current beep/silence phase
   static const int _kSeatbeltBeepDuration = 30; // seconds
   static const int _kSeatbeltSilenceDuration = 60; // seconds
+
+  // Stream capture throttle — independent of ML Kit pipeline.
+  int _lastStreamMs = -100;
 
   // ESP cam detection alert (person/vehicle detected on front/rear cam)
   String? _camDetectionAlert;
@@ -711,6 +716,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     _breakAlertDismissTimer?.cancel();
     _noDriversRetryTimer?.cancel();
     _accelSub?.cancel();
+    _liveStreamService.dispose();
     super.dispose();
   }
 
@@ -1074,6 +1080,12 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       debugPrint('[Flow] Permission error: $e');
     }
 
+    // Connect live stream WebSocket — backend triggers on-demand streaming.
+    final lsDeviceId = _settings.getDeviceId();
+    if (lsDeviceId != null && lsDeviceId.isNotEmpty) {
+      _liveStreamService.connect(lsDeviceId);
+    }
+
     // 1) Fetch and download driver list and photos for this device.
     try {
       await _fetchAndDownloadDrivers();
@@ -1241,7 +1253,28 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   // ─────────────────────────────────────────────────────────
   Future<void> _processImage(CameraImage image) async {
     if (_updatingApp) return;
-    if (_camMode != CamMode.driverMonitoring) return;
+    if (_camMode != CamMode.driverMonitoring) {
+      // Still stream live view even outside monitoring mode.
+      if (_liveStreamService.isStreaming) {
+        final ms = DateTime.now().millisecondsSinceEpoch;
+        if (ms - _lastStreamMs >= 50) {
+          _lastStreamMs = ms;
+          final liveJpeg = _captureFaceJpeg(image, targetWidth: 320, quality: 60);
+          if (liveJpeg != null) _liveStreamService.sendFrame(liveJpeg);
+        }
+      }
+      return;
+    }
+
+    // Decoupled stream capture — fires at 20 fps regardless of ML Kit pipeline.
+    if (_liveStreamService.isStreaming) {
+      final ms = DateTime.now().millisecondsSinceEpoch;
+      if (ms - _lastStreamMs >= 50) {
+        _lastStreamMs = ms;
+        final liveJpeg = _captureFaceJpeg(image, targetWidth: 320, quality: 60);
+        if (liveJpeg != null) _liveStreamService.sendFrame(liveJpeg);
+      }
+    }
     if (_busy || !_camReady || _detector == null) return;
     _busy = true;
     _frame++;
@@ -1336,7 +1369,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
             // Object detection (phone / cigarette / seatbelt) every 5 frames.
             if (_frame % 5 == 0) {
               _objectDetector.processFrame(image, _state, _getCameraRotation());
-              // Capture current frame for incident snapshot and video buffer
+              // Capture current frame for incident snapshot and video buffer.
               final jpeg = _captureFaceJpeg(image, targetWidth: 240);
               if (jpeg != null) {
                 _latestFrameJpeg = jpeg;
@@ -2118,6 +2151,10 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     if (deviceId == null || deviceId.isEmpty) {
       return;
     }
+    // Lazy-connect live stream in case deviceId wasn't available at init.
+    if (!_liveStreamService.isConnected) {
+      _liveStreamService.connect(deviceId);
+    }
     // Only attempt to send telemetry if online
     if (!_isOnline) {
       debugPrint('[Telemetry] Skipping location telemetry (Device is offline)');
@@ -2441,7 +2478,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
 
   /// Converts the current YUV camera frame to an upright (mirrored for the
   /// front camera) JPEG — used as the captured still on the verified screen.
-  Uint8List? _captureFaceJpeg(CameraImage image, {int targetWidth = 360}) {
+  Uint8List? _captureFaceJpeg(CameraImage image, {int targetWidth = 360, int quality = 80}) {
     try {
       if (image.planes.length < 3) return null;
       final int srcW = image.width;
@@ -2497,7 +2534,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
         fixed = img.flipHorizontal(fixed);
       }
 
-      return Uint8List.fromList(img.encodeJpg(fixed, quality: 80));
+      return Uint8List.fromList(img.encodeJpg(fixed, quality: quality));
     } catch (e) {
       debugPrint('[Flow] capture error: $e');
       return null;
