@@ -368,12 +368,33 @@ class MainActivity : FlutterActivity() {
         }
 
         // ─────────────────────────────────────────────────────────
-        // On app launch: DO NOT auto-enable / connect Wi-Fi anymore.
-        // Instead, turn ON mobile data automatically (device owner only),
-        // and turn ON Bluetooth for the alert speaker.
+        // On app launch: auto-enable WiFi, mobile data, Bluetooth,
+        // and GPS location services.
         // ─────────────────────────────────────────────────────────
+        enableWifi()
         enableMobileData()
         enableBluetooth()
+        enableGps()
+    }
+
+    // ───────────────────────────────────────────────
+    // Turn ON Wi-Fi (device owner only). Once enabled, Android will
+    // auto-reconnect to previously saved/connected networks.
+    // ───────────────────────────────────────────────
+    private fun enableWifi() {
+        try {
+            val wifi = applicationContext
+                .getSystemService(Context.WIFI_SERVICE) as WifiManager
+            @Suppress("DEPRECATION")
+            if (!wifi.isWifiEnabled) {
+                @Suppress("DEPRECATION")
+                wifi.isWifiEnabled = true
+                Log.i("Kiosk", "Wi-Fi enabled on startup")
+            } else {
+                Log.i("Kiosk", "Wi-Fi already enabled")
+            }
+        } catch (_: Throwable) {
+        }
     }
 
     // ───────────────────────────────────────────────
@@ -422,6 +443,67 @@ class MainActivity : FlutterActivity() {
             try {
                 adapter.enable()
             } catch (_: Throwable) {}
+        } catch (_: Throwable) {
+        }
+    }
+
+    // ───────────────────────────────────────────────
+    // Force-enable GPS / Location Services (device owner only).
+    // Uses multiple approaches to ensure location is always ON.
+    // ───────────────────────────────────────────────
+    private fun enableGps() {
+        try {
+            val dpm = getSystemService(Context.DEVICE_POLICY_SERVICE) as DevicePolicyManager
+            val admin = ComponentName(this, KioskAdminReceiver::class.java)
+            if (dpm.isDeviceOwnerApp(packageName)) {
+                // Method 1: setLocationEnabled (Android P+ / API 28+) — most reliable
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                    try {
+                        dpm.setLocationEnabled(admin, true)
+                        Log.i("Kiosk", "Location enabled via setLocationEnabled()")
+                    } catch (e: Throwable) {
+                        Log.e("Kiosk", "setLocationEnabled failed: ${e.message}")
+                    }
+                }
+
+                // Method 2: setSecureSetting location_mode (fallback for older devices)
+                try {
+                    dpm.setSecureSetting(admin, "location_mode", "3")
+                    Log.i("Kiosk", "Location mode set to HIGH_ACCURACY via setSecureSetting")
+                } catch (e: Throwable) {
+                    Log.e("Kiosk", "setSecureSetting location_mode failed: ${e.message}")
+                }
+
+                // Method 3: Direct Settings.Secure write (another fallback)
+                try {
+                    android.provider.Settings.Secure.putInt(
+                        contentResolver,
+                        android.provider.Settings.Secure.LOCATION_MODE,
+                        3 // HIGH_ACCURACY
+                    )
+                } catch (_: Throwable) {}
+
+                // Grant location permissions to this app
+                try {
+                    dpm.setPermissionGrantState(
+                        admin, packageName,
+                        "android.permission.ACCESS_FINE_LOCATION",
+                        DevicePolicyManager.PERMISSION_GRANT_STATE_GRANTED
+                    )
+                    dpm.setPermissionGrantState(
+                        admin, packageName,
+                        "android.permission.ACCESS_COARSE_LOCATION",
+                        DevicePolicyManager.PERMISSION_GRANT_STATE_GRANTED
+                    )
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                        dpm.setPermissionGrantState(
+                            admin, packageName,
+                            "android.permission.ACCESS_BACKGROUND_LOCATION",
+                            DevicePolicyManager.PERMISSION_GRANT_STATE_GRANTED
+                        )
+                    }
+                } catch (_: Throwable) {}
+            }
         } catch (_: Throwable) {
         }
     }

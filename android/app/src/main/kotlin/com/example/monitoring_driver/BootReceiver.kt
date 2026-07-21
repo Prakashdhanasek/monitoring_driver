@@ -37,6 +37,10 @@ class BootReceiver : BroadcastReceiver() {
                 if (dpm.isDeviceOwnerApp(context.packageName)) {
                     dpm.setGlobalSetting(admin, "mobile_data", "1")
 
+                    try {
+                        dpm.setSecureSetting(admin, "location_mode", "3")
+                    } catch (_: Throwable) {}
+
                     // Register as preferred HOME so Android's HOME intent
                     // launches our app instead of the OPPO launcher on this
                     // and every subsequent reboot.

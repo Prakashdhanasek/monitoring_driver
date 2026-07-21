@@ -240,6 +240,7 @@ class FaceAuthEngine {
   /// produce a match until [resetAndReenroll] or [_enrollFromReferencePhotos]
   /// completes. Use this before switching back to a scanning phase when you
   /// need to prevent an instant re-match on the next camera frame.
+  
   void clearEnrollment() {
     isEnrolled = false;
     _referenceEmbeddings = [];
