@@ -9,7 +9,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:path/path.dart' as p;
 
 /// Duration of each video chunk in seconds (5 minutes).
-const int _kChunkDurationSeconds = 300;
+const int _kChunkDurationSeconds = 120;
 
 class FFmpegVideoRecorderService {
   bool _isRecording = false;
@@ -153,7 +153,7 @@ class FFmpegVideoRecorderService {
 
     final String ffmpegCommand =
         '-y $rtspOpt -use_wallclock_as_timestamps 1 -i $_streamUrl '
-        '$filterOpt '
+        '-vf "fps=15" '
         '-c:v libx264 -preset ultrafast '
         '-profile:v baseline -pix_fmt yuv420p '
         '-movflags frag_keyframe+empty_moov '
