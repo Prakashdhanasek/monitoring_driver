@@ -2262,7 +2262,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
 
   Future<void> _sendTelemetryTask() async {
     if (!mounted) return;
-    _state.vehicleSpeed = 10; // TODO: Remove after testing unverified driver
+    // _state.vehicleSpeed = 10; // TODO: Remove after testing unverified driver
 
     // Boundary check runs every tick, even offline — it detects the crossing.
     _checkBoundary();
