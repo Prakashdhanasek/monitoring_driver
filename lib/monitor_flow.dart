@@ -1312,9 +1312,8 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     _isCapturingScreen = true;
 
     try {
-      final RenderRepaintBoundary? boundary =
-          _screenBoundaryKey.currentContext?.findRenderObject()
-              as RenderRepaintBoundary?;
+      final RenderRepaintBoundary? boundary = _screenBoundaryKey.currentContext
+          ?.findRenderObject() as RenderRepaintBoundary?;
       if (boundary == null) return;
 
       // Capture screen dynamically based on warning status
@@ -1323,9 +1322,8 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       final height = image.height;
 
       // Extract raw RGBA bytes on the UI thread
-      final ByteData? byteData = await image.toByteData(
-        format: ui.ImageByteFormat.rawRgba,
-      );
+      final ByteData? byteData =
+          await image.toByteData(format: ui.ImageByteFormat.rawRgba);
       image.dispose(); // Free GPU memory immediately
 
       if (byteData != null) {
@@ -1922,9 +1920,8 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
 
       // Trigger high-resolution streaming mode for 15 seconds for evidence capture
       _highResUntil = DateTime.now().add(const Duration(seconds: 15));
-      debugPrint(
-        '[Stream] Incident triggered! Boosting resolution to 0.7x for 15 seconds.',
-      );
+      debugPrint('[Stream] Incident triggered! Boosting resolution to 0.7x for 15 seconds.');
+      _streamService.sendAlertMessage(eventType);
 
       // Check 10-minute cooldown for API syncing
       final now = DateTime.now();
@@ -3494,73 +3491,69 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
         child: Stack(
           fit: StackFit.expand,
           children: [
-            _cameraLayer(),
-            Positioned(
-              top: 60,
-              left: 10,
-              child: ValueListenableBuilder<bool>(
-                valueListenable: _streamService.isConnected,
-                builder: (context, isConnected, child) {
-                  return Container(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 8,
-                      vertical: 4,
-                    ),
-                    decoration: BoxDecoration(
-                      color: Colors.black54,
-                      borderRadius: BorderRadius.circular(8),
-                    ),
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Container(
-                          width: 8,
-                          height: 8,
-                          decoration: BoxDecoration(
-                            shape: BoxShape.circle,
-                            color: isConnected ? Colors.green : Colors.red,
-                          ),
+          _cameraLayer(),
+          Positioned(
+            top: 60,
+            left: 10,
+            child: ValueListenableBuilder<bool>(
+              valueListenable: _streamService.isConnected,
+              builder: (context, isConnected, child) {
+                return Container(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                  decoration: BoxDecoration(
+                    color: Colors.black54,
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Container(
+                        width: 8,
+                        height: 8,
+                        decoration: BoxDecoration(
+                          shape: BoxShape.circle,
+                          color: isConnected ? Colors.green : Colors.red,
                         ),
-                        const SizedBox(width: 6),
-                        Text(
-                          isConnected
-                              ? 'WS LIVE CAM: ACTIVE'
-                              : 'WS LIVE CAM: NO CONN',
-                          style: const TextStyle(
-                            color: Colors.white,
-                            fontSize: 10,
-                            fontWeight: FontWeight.bold,
-                          ),
+                      ),
+                      const SizedBox(width: 6),
+                      Text(
+                        isConnected ? 'WS LIVE CAM: ACTIVE' : 'WS LIVE CAM: NO CONN',
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 10,
+                          fontWeight: FontWeight.bold,
                         ),
-                      ],
-                    ),
-                  );
-                },
-              ),
+                      ),
+                    ],
+                  ),
+                );
+              },
             ),
-            if (_phase == Phase.verifying) _verifyingOverlay(),
-            if (_phase == Phase.details) _detailsOverlay(),
-            if (_phase == Phase.monitoring)
-              (_tripCompleted ? _tripCompletedOverlay() : _monitoringOverlay()),
-            if (_phase == Phase.monitoring &&
-                !_tripCompleted &&
-                _camMode == CamMode.rear)
-              ReversingCameraOverlay(
-                key: const ValueKey('rear_camera_overlay'),
-                streamUrl: _esp32StreamUrl,
-                speed: _state.vehicleSpeed,
-                latitude: _state.gpsLat,
-                longitude: _state.gpsLng,
-                isPreviewMode: _rearManualOverride,
-                onClosePreview: () {
-                  _rearManualOverride = false;
-                  _setCamMode(CamMode.driverMonitoring);
-                },
-                enableYolo: true,
-                symbol: 'B',
-                label: 'REAR CAM ACTIVE',
-                onDetection: _onCamObjectDetected,
-              ),
+          ),
+          if (_phase == Phase.verifying) _verifyingOverlay(),
+          if (_phase == Phase.details) _detailsOverlay(),
+          if (_phase == Phase.monitoring)
+            (_tripCompleted ? _tripCompletedOverlay() : _monitoringOverlay()),
+          if (_phase == Phase.monitoring &&
+              !_tripCompleted &&
+              _camMode == CamMode.rear)
+            ReversingCameraOverlay(
+              key: const ValueKey('rear_camera_overlay'),
+              streamUrl: _esp32StreamUrl,
+              speed: _state.vehicleSpeed,
+              latitude: _state.gpsLat,
+              longitude: _state.gpsLng,
+              isPreviewMode: _rearManualOverride,
+              onClosePreview: () {
+                _rearManualOverride = false;
+                _setCamMode(CamMode.driverMonitoring);
+              },
+              enableYolo: true,
+              symbol: 'B',
+              label: 'REAR CAM ACTIVE',
+              onDetection: _onCamObjectDetected,
+            ),
 
             // Invisible admin-exit hotspot (top-right corner). Tap 5x -> PIN.
             Positioned(
@@ -3877,6 +3870,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
         ),
       ),
     );
+
   }
 
   // ─────────────────────────────────────────────────────────
