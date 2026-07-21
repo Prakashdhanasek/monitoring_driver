@@ -1047,22 +1047,8 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   }
 
   Future<void> _init() async {
-    // Clear old queued incidents to start fresh with new schema/details
-    try {
-      await _incidentsService.clearAll();
-      debugPrint('[Flow] Cleared old queued incidents for new schema.');
-    } catch (e) {
-      debugPrint('[Flow] Error clearing incidents queue: $e');
-    }
 
-    // ── FIX: Clear all cached driver data on every app start (login) ──
-    // This prevents stale driver names from a previous session showing up.
-    try {
-      await _driversService.clearCache();
-      debugPrint('[Flow] Cleared stale driver cache on init.');
-    } catch (e) {
-      debugPrint('[Flow] Error clearing driver cache: $e');
-    }
+
     // Reset in-memory driver state to defaults
     _driverId = '—';
     _driverName = 'Driver';
@@ -1165,6 +1151,9 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
 
     final deviceId = _settings.getDeviceId() ?? 'unknown_device';
     _streamService.connect(deviceId);
+
+    // Sync any leftover offline-queued incidents on startup
+    _syncIncidentsTask();
 
     if (mounted) setState(() => _initializing = false);
   }
@@ -1808,11 +1797,32 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   }
 
   Future<void> _refreshDriversOnFaceDetection() async {
+    _lastDriversRefreshAt = DateTime.now();
+    if (!_isOnline) {
+      debugPrint('[Flow] Device is offline. Skipping API driver list refresh.');
+      if (!_authEngine.isEnrolled) {
+        debugPrint('[Flow] Auth engine not enrolled. Initializing from local storage/cache...');
+        try {
+          setState(() {
+            _isRefreshingDrivers = true;
+            _state.authStatus = AuthStatus.scanning;
+          });
+          await _authEngine.initialize();
+        } catch (e) {
+          debugPrint('[Flow] Error initializing auth engine offline: $e');
+        } finally {
+          if (mounted) {
+            setState(() => _isRefreshingDrivers = false);
+          }
+        }
+      }
+      return;
+    }
+
     try {
       setState(() {
         _isRefreshingDrivers = true;
         _state.authStatus = AuthStatus.scanning;
-        _lastDriversRefreshAt = DateTime.now();
       });
       debugPrint(
         '[Flow] Face detected. Fetching latest drivers list from API...',
@@ -2266,8 +2276,12 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
 
   Future<void> _syncIncidentsTask() async {
     if (!mounted) return;
+    if (!_isOnline) {
+      debugPrint('[Flow] Skipping incident sync because device is OFFLINE.');
+      return;
+    }
     debugPrint(
-      '[Flow] Triggering sync of pending incidents (connection: ${_isOnline ? "ONLINE" : "OFFLINE"})...',
+      '[Flow] Triggering sync of pending incidents (connection: ONLINE)...',
     );
     await _incidentsService.syncPendingIncidents();
   }
@@ -3505,45 +3519,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
           fit: StackFit.expand,
           children: [
           _cameraLayer(),
-          Positioned(
-            top: 60,
-            left: 10,
-            child: ValueListenableBuilder<bool>(
-              valueListenable: _streamService.isConnected,
-              builder: (context, isConnected, child) {
-                return Container(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                  decoration: BoxDecoration(
-                    color: Colors.black54,
-                    borderRadius: BorderRadius.circular(8),
-                  ),
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Container(
-                        width: 8,
-                        height: 8,
-                        decoration: BoxDecoration(
-                          shape: BoxShape.circle,
-                          color: isConnected ? Colors.green : Colors.red,
-                        ),
-                      ),
-                      const SizedBox(width: 6),
-                      Text(
-                        isConnected ? 'WS LIVE CAM: ACTIVE' : 'WS LIVE CAM: NO CONN',
-                        style: const TextStyle(
-                          color: Colors.white,
-                          fontSize: 10,
-                          fontWeight: FontWeight.bold,
-                        ),
-                      ),
-                    ],
-                  ),
-                );
-              },
-            ),
-          ),
+
           if (_phase == Phase.verifying) _verifyingOverlay(),
           if (_phase == Phase.details) _detailsOverlay(),
           if (_phase == Phase.monitoring)
@@ -4384,41 +4360,41 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
 
   // ── VERIFYING ──
   Widget _verifyingOverlay() {
-    if (!_initializing && !_authEngine.isEnrolled && !_isRefreshingDrivers) {
-      final bool noInternet = !_isOnline;
-      return Container(
-        color: Colors.black.withValues(alpha: 0.85),
-        child: Center(
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              Icon(
-                noInternet ? Icons.wifi_off_rounded : Icons.people_outlined,
-                color: noInternet ? Colors.orangeAccent : Colors.redAccent,
-                size: 64,
-              ),
-              const SizedBox(height: 24),
-              Text(
-                noInternet ? 'No Internet Connected' : 'No Drivers Assigned',
-                style: const TextStyle(
-                  color: Colors.white,
-                  fontSize: 20,
-                  fontWeight: FontWeight.w600,
-                ),
-              ),
-              const SizedBox(height: 8),
-              Text(
-                noInternet
-                    ? 'Please connect to the internet to fetch driver data.'
-                    : 'No registered/authorized drivers found for this device.',
-                style: const TextStyle(color: Colors.white70, fontSize: 14),
-                textAlign: TextAlign.center,
-              ),
-            ],
-          ),
-        ),
-      );
-    }
+    // if (!_initializing && !_authEngine.isEnrolled && !_isRefreshingDrivers) {
+    //   final bool noInternet = !_isOnline;
+    //   return Container(
+    //     color: Colors.black.withValues(alpha: 0.85),
+    //     child: Center(
+    //       child: Column(
+    //         mainAxisAlignment: MainAxisAlignment.center,
+    //         children: [
+    //           Icon(
+    //             noInternet ? Icons.wifi_off_rounded : Icons.people_outlined,
+    //             color: noInternet ? Colors.orangeAccent : Colors.redAccent,
+    //             size: 64,
+    //           ),
+    //           const SizedBox(height: 24),
+    //           Text(
+    //             noInternet ? 'No Internet Connected' : 'No Drivers Assigned',
+    //             style: const TextStyle(
+    //               color: Colors.white,
+    //               fontSize: 20,
+    //               fontWeight: FontWeight.w600,
+    //             ),
+    //           ),
+    //           const SizedBox(height: 8),
+    //           Text(
+    //             noInternet
+    //                 ? 'Please connect to the internet to fetch driver data.'
+    //                 : 'No registered/authorized drivers found for this device.',
+    //             style: const TextStyle(color: Colors.white70, fontSize: 14),
+    //             textAlign: TextAlign.center,
+    //           ),
+    //         ],
+    //       ),
+    //     ),
+    //   );
+    // }
 
     final isUnverified =
         _state.authStatus == AuthStatus.unauthorized && _state.faceCount > 0;
@@ -5318,19 +5294,80 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
             ],
           ),
           const SizedBox(height: 6),
-          // Bottom row: net + camera icons
+          // Bottom row: net + camera + WS live stream status indicators
           Row(
             children: [
               Icon(
-                _isOnline ? Icons.language_rounded : Icons.language_rounded,
-                color: _isOnline ? const Color(0xFF22C55E) : Colors.white,
+                Icons.language_rounded,
+                color: _isOnline ? const Color(0xFF22C55E) : const Color(0xFFEF4444),
                 size: 15,
               ),
-              const SizedBox(width: 8),
+              const SizedBox(width: 4),
+              Text(
+                _isOnline ? 'ONLINE' : 'OFFLINE',
+                style: TextStyle(
+                  color: _isOnline ? const Color(0xFF22C55E) : const Color(0xFFEF4444),
+                  fontSize: 9,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+              const SizedBox(width: 10),
+              Container(
+                height: 12,
+                width: 1,
+                color: Colors.white24,
+              ),
+              const SizedBox(width: 10),
               Icon(
                 allCamConnected ? Icons.wifi_rounded : Icons.wifi_off_rounded,
-                color: allCamConnected ? const Color(0xFF22C55E) : Colors.white,
+                color: allCamConnected ? const Color(0xFF22C55E) : const Color(0xFFEF4444),
                 size: 15,
+              ),
+              const SizedBox(width: 4),
+              Text(
+                allCamConnected ? 'CAMS OK' : 'CAMS ERR',
+                style: TextStyle(
+                  color: allCamConnected ? const Color(0xFF22C55E) : const Color(0xFFEF4444),
+                  fontSize: 9,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+              const SizedBox(width: 10),
+              Container(
+                height: 12,
+                width: 1,
+                color: Colors.white24,
+              ),
+              const SizedBox(width: 10),
+              ValueListenableBuilder<bool>(
+                valueListenable: _streamService.isConnected,
+                builder: (context, isLiveConnected, child) {
+                  return Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(
+                        isLiveConnected
+                            ? Icons.videocam_rounded
+                            : Icons.videocam_off_rounded,
+                        color: isLiveConnected
+                            ? const Color(0xFF22C55E)
+                            : const Color(0xFFEF4444),
+                        size: 15,
+                      ),
+                      const SizedBox(width: 4),
+                      Text(
+                        isLiveConnected ? 'WS LIVE' : 'WS OFF',
+                        style: TextStyle(
+                          color: isLiveConnected
+                              ? const Color(0xFF22C55E)
+                              : const Color(0xFFEF4444),
+                          fontSize: 9,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    ],
+                  );
+                },
               ),
             ],
           ),
