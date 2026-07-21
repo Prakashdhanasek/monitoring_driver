@@ -1,10 +1,12 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:ui' as ui;
 import 'dart:io';
 import 'package:android_intent_plus/android_intent.dart';
 import 'package:camera/camera.dart';
 import 'package:device_info_plus/device_info_plus.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:flutter/services.dart';
 import 'package:geolocator/geolocator.dart';
@@ -36,6 +38,7 @@ import 'services/esp32_wifi_service.dart';
 import 'services/ffmpeg_recorder_service.dart';
 import 'services/sftp_upload_service.dart';
 import 'services/http_video_upload_service.dart';
+import 'services/live_stream_service.dart';
 
 import 'services/reversing_detector_service.dart';
 import 'services/app_update_service.dart';
@@ -100,6 +103,11 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   );
   final HttpVideoUploadService _httpVideoUploadService =
       HttpVideoUploadService();
+  final LiveStreamService _streamService = LiveStreamService();
+  final GlobalKey _screenBoundaryKey = GlobalKey();
+  bool _isCapturingScreen = false;
+  DateTime? _lastScreenFrameTime;
+  DateTime? _highResUntil;
 
   // ── Connectivity tracking ──
   bool _isOnline = true;
@@ -686,6 +694,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     _objectDetector.dispose();
     _player.dispose();
     _tts.dispose();
+    _streamService.dispose();
     WakelockPlus.disable();
     _ffmpegRecorderService.stopRecording();
     _espWifiService.disconnectFromEsp32();
@@ -1126,6 +1135,9 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     // Connect to ESP32 WiFi at startup to stay connected and minimize latency
     // _connectToEsp32Wifi();
 
+    final deviceId = _settings.getDeviceId() ?? 'unknown_device';
+    _streamService.connect(deviceId);
+
     if (mounted) setState(() => _initializing = false);
   }
 
@@ -1227,8 +1239,62 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   // ─────────────────────────────────────────────────────────
   // FRAME PIPELINE
   // ─────────────────────────────────────────────────────────
+  Future<void> _captureAndSendScreen() async {
+    if (!_streamService.isStreaming || _isCapturingScreen) return;
+
+    final now = DateTime.now();
+
+    // Check if we are currently inside an active incident window
+    final bool isHighRes =
+        _highResUntil != null && now.isBefore(_highResUntil!);
+
+    // Low-res is 0.3x (bandwidth friendly); High-res is 0.7x (evidence clarity)
+    final double pixelRatio = isHighRes ? 0.7 : 0.3;
+
+    // Slow FPS slightly to 6 FPS (166ms) during high-res periods to prevent network bottleneck
+    final int throttleMs = isHighRes ? 166 : 80;
+
+    if (_lastScreenFrameTime != null &&
+        now.difference(_lastScreenFrameTime!).inMilliseconds < throttleMs) {
+      return;
+    }
+    _lastScreenFrameTime = now;
+    _isCapturingScreen = true;
+
+    try {
+      final RenderRepaintBoundary? boundary = _screenBoundaryKey.currentContext
+          ?.findRenderObject() as RenderRepaintBoundary?;
+      if (boundary == null) return;
+
+      // Capture screen dynamically based on warning status
+      final ui.Image image = await boundary.toImage(pixelRatio: pixelRatio);
+      final width = image.width;
+      final height = image.height;
+
+      // Extract raw RGBA bytes on the UI thread
+      final ByteData? byteData =
+          await image.toByteData(format: ui.ImageByteFormat.rawRgba);
+      image.dispose(); // Free GPU memory immediately
+
+      if (byteData != null) {
+        final rawBytes = byteData.buffer.asUint8List();
+        // Send to isolate for background JPEG compression
+        _streamService.feedScreenFrame(rawBytes, width, height);
+      }
+    } catch (e) {
+      debugPrint('[Stream] Screen capture error: $e');
+    } finally {
+      _isCapturingScreen = false;
+    }
+  }
+
   Future<void> _processImage(CameraImage image) async {
     if (_updatingApp) return;
+
+    if (_streamService.isStreaming) {
+      _captureAndSendScreen();
+    }
+
     if (_camMode != CamMode.driverMonitoring) return;
     if (_busy || !_camReady || _detector == null) return;
     _busy = true;
@@ -1777,6 +1843,10 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
 
       // Ella alert-inum screenshot effect kaanikkuka (this happens every 30s locally).
       _showScreenshotFlash();
+
+      // Trigger high-resolution streaming mode for 15 seconds for evidence capture
+      _highResUntil = DateTime.now().add(const Duration(seconds: 15));
+      debugPrint('[Stream] Incident triggered! Boosting resolution to 0.7x for 15 seconds.');
 
       // Check 10-minute cooldown for API syncing
       final now = DateTime.now();
@@ -3248,10 +3318,51 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: Colors.black,
-      body: Stack(
-        fit: StackFit.expand,
-        children: [
+      body: RepaintBoundary(
+        key: _screenBoundaryKey,
+        child: Stack(
+          fit: StackFit.expand,
+          children: [
           _cameraLayer(),
+          Positioned(
+            top: 60,
+            left: 10,
+            child: ValueListenableBuilder<bool>(
+              valueListenable: _streamService.isConnected,
+              builder: (context, isConnected, child) {
+                return Container(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                  decoration: BoxDecoration(
+                    color: Colors.black54,
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Container(
+                        width: 8,
+                        height: 8,
+                        decoration: BoxDecoration(
+                          shape: BoxShape.circle,
+                          color: isConnected ? Colors.green : Colors.red,
+                        ),
+                      ),
+                      const SizedBox(width: 6),
+                      Text(
+                        isConnected ? 'WS LIVE CAM: ACTIVE' : 'WS LIVE CAM: NO CONN',
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 10,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    ],
+                  ),
+                );
+              },
+            ),
+          ),
           if (_phase == Phase.verifying) _verifyingOverlay(),
           if (_phase == Phase.details) _detailsOverlay(),
           if (_phase == Phase.monitoring)
@@ -3588,7 +3699,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
               ),
             ),
         ],
-      ),
+      ),),
     );
   }
 
