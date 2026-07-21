@@ -164,6 +164,15 @@ class LiveStreamService {
     }
   }
 
+  /// Sends a text-based alert message over the WebSocket to notify web dashboard.
+  void sendAlertMessage(String alertType) {
+    if (_channel != null && _isStreaming) {
+      final jsonMsg = '{"event": "alert", "type": "$alertType", "timestamp": "${DateTime.now().toIso8601String()}"}';
+      _channel!.sink.add(jsonMsg);
+      debugPrint('[Stream] Sent alert metadata over WebSocket: $jsonMsg');
+    }
+  }
+
   /// Closes the connection and stops streaming
   void dispose() {
     _isStreaming = false;

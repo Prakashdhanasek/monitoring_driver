@@ -1897,6 +1897,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       // Trigger high-resolution streaming mode for 15 seconds for evidence capture
       _highResUntil = DateTime.now().add(const Duration(seconds: 15));
       debugPrint('[Stream] Incident triggered! Boosting resolution to 0.7x for 15 seconds.');
+      _streamService.sendAlertMessage(eventType);
 
       // Check 10-minute cooldown for API syncing
       final now = DateTime.now();
