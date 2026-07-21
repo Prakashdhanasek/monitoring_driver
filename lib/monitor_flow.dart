@@ -1097,6 +1097,28 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     }
     if (!mounted) return;
 
+    // Set documentsDirectoryPath early so incident snapshots can be saved
+    // even during verifying phase (before object detector processes a frame).
+    if (_state.documentsDirectoryPath == null) {
+      try {
+        final docsDir = Directory('/storage/emulated/0/Documents');
+        if (await docsDir.exists()) {
+          _state.documentsDirectoryPath = docsDir.path;
+        } else {
+          await docsDir.create(recursive: true);
+          _state.documentsDirectoryPath = docsDir.path;
+        }
+        debugPrint(
+          '[Flow] documentsDirectoryPath: ${_state.documentsDirectoryPath}',
+        );
+      } catch (e) {
+        _state.documentsDirectoryPath = Directory.systemTemp.path;
+        debugPrint(
+          '[Flow] documentsDirectoryPath fallback: ${_state.documentsDirectoryPath}',
+        );
+      }
+    }
+
     // 3) Live face detector (contours for EAR, landmarks for mouth, tracking for auth).
     _detector = FaceDetector(
       options: FaceDetectorOptions(
@@ -1290,8 +1312,9 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     _isCapturingScreen = true;
 
     try {
-      final RenderRepaintBoundary? boundary = _screenBoundaryKey.currentContext
-          ?.findRenderObject() as RenderRepaintBoundary?;
+      final RenderRepaintBoundary? boundary =
+          _screenBoundaryKey.currentContext?.findRenderObject()
+              as RenderRepaintBoundary?;
       if (boundary == null) return;
 
       // Capture screen dynamically based on warning status
@@ -1300,8 +1323,9 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       final height = image.height;
 
       // Extract raw RGBA bytes on the UI thread
-      final ByteData? byteData =
-          await image.toByteData(format: ui.ImageByteFormat.rawRgba);
+      final ByteData? byteData = await image.toByteData(
+        format: ui.ImageByteFormat.rawRgba,
+      );
       image.dispose(); // Free GPU memory immediately
 
       if (byteData != null) {
@@ -1896,7 +1920,9 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
 
       // Trigger high-resolution streaming mode for 15 seconds for evidence capture
       _highResUntil = DateTime.now().add(const Duration(seconds: 15));
-      debugPrint('[Stream] Incident triggered! Boosting resolution to 0.7x for 15 seconds.');
+      debugPrint(
+        '[Stream] Incident triggered! Boosting resolution to 0.7x for 15 seconds.',
+      );
 
       // Check 10-minute cooldown for API syncing
       final now = DateTime.now();
@@ -1918,7 +1944,9 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
           final filePath =
               '${_state.documentsDirectoryPath}/incident_${eventType}_$timestamp.jpg';
           final file = File(filePath);
-          await file.writeAsBytes(_latestFrameJpeg!);
+          // Stamp CCTV-style timestamp on snapshot
+          final stampedBytes = _stampTimestamp(_latestFrameJpeg!, now);
+          await file.writeAsBytes(stampedBytes);
           snapshotPath = filePath;
           debugPrint('[Flow] Incident snapshot saved: $filePath');
         } catch (e) {
@@ -1960,9 +1988,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       }
 
       // FIX: Never upload a blank/empty image as evidence.
-      // Exception: Unverified Driver can be reported without snapshot
-      // (the point is to report movement, not capture the driver's face).
-      if (snapshotPath.isEmpty && eventType != 'Unverified Driver') {
+      if (snapshotPath.isEmpty) {
         debugPrint(
           '[Flow] Skipping incident "$eventType" — no valid snapshot available.',
         );
@@ -1970,8 +1996,15 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       }
 
       final String? effectiveDriverId =
-          (_state.authStatus == AuthStatus.unauthorized) ? null : _driverId;
-      final effectiveDriverName = (_state.authStatus == AuthStatus.unauthorized)
+          (_state.authStatus == AuthStatus.unauthorized ||
+              _driverId == '—' ||
+              _driverId.isEmpty)
+          ? null
+          : _driverId;
+      final effectiveDriverName =
+          (_state.authStatus == AuthStatus.unauthorized ||
+              _driverName == 'Driver' ||
+              _driverName.isEmpty)
           ? 'Unknown Person'
           : _driverName;
 
@@ -1989,13 +2022,16 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
         vehicleRegistrationNumber: _vehicleRegNo,
         snapshotUrl: '',
         snapshotPath: snapshotPath,
-        videoClipUrl: '', // Let IncidentsService upload the file and fill this
-        videoPath: videoPath, // Pass the path to the video file
+        videoClipUrl: '',
+        videoPath: videoPath,
         isOnline: _isOnline,
       );
 
-      // If online, upload immediately in real-time
+      // Upload evidence and sync incident sequentially (not in parallel)
+      // This prevents race conditions where evidence URLs get swapped
       if (_isOnline) {
+        // Small delay to ensure file writes are flushed
+        await Future.delayed(const Duration(milliseconds: 100));
         await _syncIncidentsTask();
       }
     } catch (e) {
@@ -2040,12 +2076,14 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       final tempDir = Directory('$docsDir/temp_vid_$timestamp');
       await tempDir.create();
 
-      // Write frames to disk
+      // Write frames to disk with CCTV timestamp overlay
+      final videoTime = DateTime.now();
       for (int i = 0; i < frames.length; i++) {
         final file = File(
           '${tempDir.path}/img${i.toString().padLeft(3, '0')}.jpg',
         );
-        await file.writeAsBytes(frames[i]);
+        final stampedFrame = _stampTimestamp(frames[i], videoTime);
+        await file.writeAsBytes(stampedFrame);
       }
 
       final outputPath = '$docsDir/incident_video_${eventType}_$timestamp.mp4';
@@ -2232,8 +2270,11 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     // ── Unverified driver moving detection ──────────────────────
     // If face not verified and vehicle is moving, report incident
     // Only when verifying screen is active (not during system initialization)
+    // Wait for camera to have captured a frame (snapshot available)
     if (_phase == Phase.verifying &&
         !_initializing &&
+        _camReady &&
+        _latestFrameJpeg != null &&
         _state.vehicleSpeed > 5) {
       if (_checkCooldown('Unverified Driver')) {
         _reportIncident('Unverified Driver', 'High', 1.0);
@@ -2583,6 +2624,46 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       } else if (labels.contains('car')) {
         _tts.speak(AlertMessages.vehicleDetected(_tts.currentLang));
       }
+    }
+  }
+
+  /// Overlays a CCTV-style timestamp at the bottom of a JPEG image.
+  Uint8List _stampTimestamp(Uint8List jpegBytes, DateTime time) {
+    try {
+      final decoded = img.decodeJpg(jpegBytes);
+      if (decoded == null) return jpegBytes;
+
+      final timeStr =
+          '${time.year}-${time.month.toString().padLeft(2, '0')}-${time.day.toString().padLeft(2, '0')} '
+          '${time.hour.toString().padLeft(2, '0')}:${time.minute.toString().padLeft(2, '0')}:${time.second.toString().padLeft(2, '0')}';
+
+      // Draw a semi-transparent black bar at the bottom
+      final barHeight = 20;
+      final yStart = decoded.height - barHeight;
+      for (int y = yStart; y < decoded.height; y++) {
+        for (int x = 0; x < decoded.width; x++) {
+          final pixel = decoded.getPixel(x, y);
+          final r = (pixel.r * 0.4).toInt();
+          final g = (pixel.g * 0.4).toInt();
+          final b = (pixel.b * 0.4).toInt();
+          decoded.setPixelRgb(x, y, r, g, b);
+        }
+      }
+
+      // Draw timestamp text on the bar
+      img.drawString(
+        decoded,
+        timeStr,
+        font: img.arial14,
+        x: 4,
+        y: yStart + 3,
+        color: img.ColorRgba8(255, 255, 255, 255),
+      );
+
+      return Uint8List.fromList(img.encodeJpg(decoded, quality: 85));
+    } catch (e) {
+      debugPrint('[Flow] Timestamp stamp error: $e');
+      return jpegBytes;
     }
   }
 
@@ -3411,385 +3492,389 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
         child: Stack(
           fit: StackFit.expand,
           children: [
-          _cameraLayer(),
-          Positioned(
-            top: 60,
-            left: 10,
-            child: ValueListenableBuilder<bool>(
-              valueListenable: _streamService.isConnected,
-              builder: (context, isConnected, child) {
-                return Container(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                  decoration: BoxDecoration(
-                    color: Colors.black54,
-                    borderRadius: BorderRadius.circular(8),
-                  ),
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Container(
-                        width: 8,
-                        height: 8,
-                        decoration: BoxDecoration(
-                          shape: BoxShape.circle,
-                          color: isConnected ? Colors.green : Colors.red,
-                        ),
-                      ),
-                      const SizedBox(width: 6),
-                      Text(
-                        isConnected ? 'WS LIVE CAM: ACTIVE' : 'WS LIVE CAM: NO CONN',
-                        style: const TextStyle(
-                          color: Colors.white,
-                          fontSize: 10,
-                          fontWeight: FontWeight.bold,
-                        ),
-                      ),
-                    ],
-                  ),
-                );
-              },
-            ),
-          ),
-          if (_phase == Phase.verifying) _verifyingOverlay(),
-          if (_phase == Phase.details) _detailsOverlay(),
-          if (_phase == Phase.monitoring)
-            (_tripCompleted ? _tripCompletedOverlay() : _monitoringOverlay()),
-          if (_phase == Phase.monitoring &&
-              !_tripCompleted &&
-              _camMode == CamMode.rear)
-            ReversingCameraOverlay(
-              key: const ValueKey('rear_camera_overlay'),
-              streamUrl: _esp32StreamUrl,
-              speed: _state.vehicleSpeed,
-              latitude: _state.gpsLat,
-              longitude: _state.gpsLng,
-              isPreviewMode: _rearManualOverride,
-              onClosePreview: () {
-                _rearManualOverride = false;
-                _setCamMode(CamMode.driverMonitoring);
-              },
-              enableYolo: true,
-              symbol: 'B',
-              label: 'REAR CAM ACTIVE',
-              onDetection: _onCamObjectDetected,
-            ),
-
-          // Invisible admin-exit hotspot (top-right corner). Tap 5x -> PIN.
-          Positioned(
-            top: 0,
-            right: 0,
-            child: GestureDetector(
-              behavior: HitTestBehavior.opaque,
-              onTap: _onCornerTap,
-              child: const SizedBox(width: 72, height: 72),
-            ),
-          ),
-
-          // ── Side cam overlays (monitoring phase) — full-screen ──
-          // if (_phase == Phase.monitoring &&
-          //     !_tripCompleted &&
-          //     _camMode == CamMode.left &&
-          //     _leftCamIp != null)
-          //   Positioned.fill(
-          //     child: CamDetectionPanel(
-          //       streamUrl: 'http://$_leftCamIp:86/',
-          //       label: 'LEFT CAM',
-          //       width: double.infinity,
-          //       height: double.infinity,
-          //       fullScreen: true,
-          //       onClose: () => _setCamMode(CamMode.driverMonitoring),
-          //     ),
-          //   ),
-          if (_phase == Phase.monitoring &&
-              !_tripCompleted &&
-              _camMode == CamMode.left &&
-              _leftCamIp != null)
-            ReversingCameraOverlay(
-              key: const ValueKey('left_camera_overlay'),
-              streamUrl: 'http://$_leftCamIp:86/',
-              speed: _state.vehicleSpeed,
-              latitude: _state.gpsLat,
-              longitude: _state.gpsLng,
-              isPreviewMode: _leftManualOverride,
-              onClosePreview: () {
-                _leftManualOverride = false;
-                _setCamMode(CamMode.driverMonitoring);
-              },
-              label: 'LEFT CAM ACTIVE',
-              symbol: 'L',
-              themeColor: Colors.redAccent,
-              enableYolo: false,
-            ),
-
-          // if (_phase == Phase.monitoring &&
-          //     !_tripCompleted &&
-          //     _camMode == CamMode.right &&
-          //     _rightCamIp != null)
-          //   Positioned.fill(
-          //     child: CamDetectionPanel(
-          //       streamUrl: 'http://$_rightCamIp:80/',
-          //       label: 'RIGHT CAM',
-          //       width: double.infinity,
-          //       height: double.infinity,
-          //       fullScreen: true,
-          //       onClose: () => _setCamMode(CamMode.driverMonitoring),
-          //     ),
-          //   ),
-          if (_phase == Phase.monitoring &&
-              !_tripCompleted &&
-              _camMode == CamMode.right &&
-              _rightCamIp != null)
-            ReversingCameraOverlay(
-              key: const ValueKey('right_camera_overlay'),
-              streamUrl: 'http://$_rightCamIp:80/',
-              speed: _state.vehicleSpeed,
-              latitude: _state.gpsLat,
-              longitude: _state.gpsLng,
-              isPreviewMode: _rightManualOverride,
-              onClosePreview: () {
-                _rightManualOverride = false;
-                _setCamMode(CamMode.driverMonitoring);
-              },
-              label: 'RIGHT CAM ACTIVE',
-              symbol: 'R',
-              themeColor: Colors.redAccent,
-              enableYolo: false,
-            ),
-          if (_phase == Phase.monitoring &&
-              !_tripCompleted &&
-              _camMode == CamMode.front &&
-              _frontCamIp != null)
-            ReversingCameraOverlay(
-              key: const ValueKey('front_camera_overlay'),
-              streamUrl: 'http://$_frontCamIp:84/',
-              speed: _state.vehicleSpeed,
-              latitude: _state.gpsLat,
-              longitude: _state.gpsLng,
-              isPreviewMode: _frontManualOverride,
-              onClosePreview: () {
-                _frontManualOverride = false;
-                _setCamMode(CamMode.driverMonitoring);
-              },
-              label: 'FRONT CAM ACTIVE',
-              symbol: 'F',
-              themeColor: Colors.orange,
-              enableYolo: true,
-              onDetection: _onCamObjectDetected,
-            ),
-
-          // ── Side cam toggle buttons (monitoring phase) ──
-          if (_phase == Phase.monitoring && !_tripCompleted)
+            _cameraLayer(),
             Positioned(
-              left: 0,
-              top: 0,
-              bottom: 0,
-              child: Center(
-                child: GestureDetector(
-                  onTap: () {
-                    if (_camMode == CamMode.left) {
-                      _leftManualOverride = false;
-                      _setCamMode(CamMode.driverMonitoring);
-                    } else {
-                      _leftManualOverride = true;
-                      _setCamMode(CamMode.left);
-                    }
-                  },
-                  child: Container(
-                    width: 36,
-                    height: 64,
+              top: 60,
+              left: 10,
+              child: ValueListenableBuilder<bool>(
+                valueListenable: _streamService.isConnected,
+                builder: (context, isConnected, child) {
+                  return Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 8,
+                      vertical: 4,
+                    ),
                     decoration: BoxDecoration(
-                      color: _camMode == CamMode.left
-                          ? Colors.redAccent.withValues(alpha: 0.85)
-                          : Colors.black54,
-                      borderRadius: const BorderRadius.only(
-                        topRight: Radius.circular(10),
-                        bottomRight: Radius.circular(10),
-                      ),
-                      border: Border.all(
-                        color: _camMode == CamMode.left
-                            ? Colors.redAccent
-                            : Colors.white24,
-                        width: 1.2,
-                      ),
+                      color: Colors.black54,
+                      borderRadius: BorderRadius.circular(8),
                     ),
-                    child: Column(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: const [
-                        Icon(
-                          Icons.chevron_left_rounded,
-                          color: Colors.white,
-                          size: 20,
-                        ),
-                        Icon(
-                          Icons.videocam_rounded,
-                          color: Colors.white,
-                          size: 14,
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
-              ),
-            ),
-          if (_phase == Phase.monitoring && !_tripCompleted)
-            Positioned(
-              right: 0,
-              top: 0,
-              bottom: 0,
-              child: Center(
-                child: GestureDetector(
-                  onTap: () {
-                    if (_camMode == CamMode.right) {
-                      _rightManualOverride = false;
-                      _setCamMode(CamMode.driverMonitoring);
-                    } else {
-                      _rightManualOverride = true;
-                      _setCamMode(CamMode.right);
-                    }
-                  },
-                  child: Container(
-                    width: 36,
-                    height: 64,
-                    decoration: BoxDecoration(
-                      color: _camMode == CamMode.right
-                          ? Colors.redAccent.withValues(alpha: 0.85)
-                          : Colors.black54,
-                      borderRadius: const BorderRadius.only(
-                        topLeft: Radius.circular(10),
-                        bottomLeft: Radius.circular(10),
-                      ),
-                      border: Border.all(
-                        color: _camMode == CamMode.right
-                            ? Colors.redAccent
-                            : Colors.white24,
-                        width: 1.2,
-                      ),
-                    ),
-                    child: Column(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: const [
-                        Icon(
-                          Icons.videocam_rounded,
-                          color: Colors.white,
-                          size: 14,
-                        ),
-                        Icon(
-                          Icons.chevron_right_rounded,
-                          color: Colors.white,
-                          size: 20,
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
-              ),
-            ),
-
-          // 👇 ESP CAM DETECTION ALERT banner — shows for 3 seconds
-          if (_camDetectionAlert != null &&
-              _camDetectionAlertAt != null &&
-              DateTime.now().difference(_camDetectionAlertAt!).inSeconds < 3)
-            Positioned(
-              bottom: 80,
-              left: 12,
-              right: 12,
-              child: Container(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 16,
-                  vertical: 14,
-                ),
-                decoration: BoxDecoration(
-                  color: const Color(0xFFDC2626).withValues(alpha: 0.95),
-                  borderRadius: BorderRadius.circular(14),
-                ),
-                child: Text(
-                  _camDetectionAlert!,
-                  textAlign: TextAlign.center,
-                  style: const TextStyle(
-                    color: Colors.white,
-                    fontSize: 16,
-                    fontWeight: FontWeight.w800,
-                  ),
-                ),
-              ),
-            ),
-
-          // 👇 CABLE UNPLUGGED banner — shows for 5 seconds only.
-          // if (_showCableBanner)
-          //   Positioned(
-          //   top: 0,
-          //   left: 0,
-          //   right: 0,
-          //   child: SafeArea(
-          //     child: Padding(
-          //       padding: const EdgeInsets.all(12),
-          //       child: Container(
-          //         padding: const EdgeInsets.symmetric(
-          //           horizontal: 14,
-          //           vertical: 12,
-          //         ),
-          //         decoration: BoxDecoration(
-          //           color: const Color(0xFFB91C1C),
-          //           borderRadius: BorderRadius.circular(12),
-          //         ),
-          //         child: Row(
-          //           children: const [
-          //             Icon(
-          //               Icons.power_off_rounded,
-          //               color: Colors.white,
-          //               size: 22,
-          //             ),
-          //             SizedBox(width: 10),
-          //             Expanded(
-          //               child: Text(
-          //                 '🔌 CHARGING CABLE UNPLUGGED  Reported to admin',
-          //                 style: TextStyle(
-          //                   color: Colors.white,
-          //                   fontSize: 14,
-          //                   fontWeight: FontWeight.w700,
-          //                 ),
-          //               ),
-          //             ),
-          //           ],
-          //         ),
-          //       ),
-          //     ),
-          //   ),
-          // ),
-          _breakAlertOverlay(),
-
-          // Screenshot effect — alert varumbol screen quick shrink + border + dim
-          if (_flashScreenshot)
-            Positioned.fill(
-              child: IgnorePointer(
-                child: TweenAnimationBuilder<double>(
-                  tween: Tween(begin: 1.0, end: 0.92),
-                  duration: const Duration(milliseconds: 110),
-                  curve: Curves.easeOut,
-                  builder: (context, scale, child) {
-                    return Container(
-                      color: Colors.black.withValues(alpha: 0.45),
-                      alignment: Alignment.center,
-                      child: Transform.scale(
-                        scale: scale,
-                        child: Container(
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Container(
+                          width: 8,
+                          height: 8,
                           decoration: BoxDecoration(
-                            border: Border.all(color: Colors.white, width: 3),
-                            borderRadius: BorderRadius.circular(8),
+                            shape: BoxShape.circle,
+                            color: isConnected ? Colors.green : Colors.red,
                           ),
-                          child: const SizedBox.expand(),
                         ),
-                      ),
-                    );
-                  },
-                ),
+                        const SizedBox(width: 6),
+                        Text(
+                          isConnected
+                              ? 'WS LIVE CAM: ACTIVE'
+                              : 'WS LIVE CAM: NO CONN',
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 10,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                      ],
+                    ),
+                  );
+                },
               ),
             ),
-        ],
-      ),)
-    );
+            if (_phase == Phase.verifying) _verifyingOverlay(),
+            if (_phase == Phase.details) _detailsOverlay(),
+            if (_phase == Phase.monitoring)
+              (_tripCompleted ? _tripCompletedOverlay() : _monitoringOverlay()),
+            if (_phase == Phase.monitoring &&
+                !_tripCompleted &&
+                _camMode == CamMode.rear)
+              ReversingCameraOverlay(
+                key: const ValueKey('rear_camera_overlay'),
+                streamUrl: _esp32StreamUrl,
+                speed: _state.vehicleSpeed,
+                latitude: _state.gpsLat,
+                longitude: _state.gpsLng,
+                isPreviewMode: _rearManualOverride,
+                onClosePreview: () {
+                  _rearManualOverride = false;
+                  _setCamMode(CamMode.driverMonitoring);
+                },
+                enableYolo: true,
+                symbol: 'B',
+                label: 'REAR CAM ACTIVE',
+                onDetection: _onCamObjectDetected,
+              ),
 
+            // Invisible admin-exit hotspot (top-right corner). Tap 5x -> PIN.
+            Positioned(
+              top: 0,
+              right: 0,
+              child: GestureDetector(
+                behavior: HitTestBehavior.opaque,
+                onTap: _onCornerTap,
+                child: const SizedBox(width: 72, height: 72),
+              ),
+            ),
+
+            // ── Side cam overlays (monitoring phase) — full-screen ──
+            // if (_phase == Phase.monitoring &&
+            //     !_tripCompleted &&
+            //     _camMode == CamMode.left &&
+            //     _leftCamIp != null)
+            //   Positioned.fill(
+            //     child: CamDetectionPanel(
+            //       streamUrl: 'http://$_leftCamIp:86/',
+            //       label: 'LEFT CAM',
+            //       width: double.infinity,
+            //       height: double.infinity,
+            //       fullScreen: true,
+            //       onClose: () => _setCamMode(CamMode.driverMonitoring),
+            //     ),
+            //   ),
+            if (_phase == Phase.monitoring &&
+                !_tripCompleted &&
+                _camMode == CamMode.left &&
+                _leftCamIp != null)
+              ReversingCameraOverlay(
+                key: const ValueKey('left_camera_overlay'),
+                streamUrl: 'http://$_leftCamIp:86/',
+                speed: _state.vehicleSpeed,
+                latitude: _state.gpsLat,
+                longitude: _state.gpsLng,
+                isPreviewMode: _leftManualOverride,
+                onClosePreview: () {
+                  _leftManualOverride = false;
+                  _setCamMode(CamMode.driverMonitoring);
+                },
+                label: 'LEFT CAM ACTIVE',
+                symbol: 'L',
+                themeColor: Colors.redAccent,
+                enableYolo: false,
+              ),
+
+            // if (_phase == Phase.monitoring &&
+            //     !_tripCompleted &&
+            //     _camMode == CamMode.right &&
+            //     _rightCamIp != null)
+            //   Positioned.fill(
+            //     child: CamDetectionPanel(
+            //       streamUrl: 'http://$_rightCamIp:80/',
+            //       label: 'RIGHT CAM',
+            //       width: double.infinity,
+            //       height: double.infinity,
+            //       fullScreen: true,
+            //       onClose: () => _setCamMode(CamMode.driverMonitoring),
+            //     ),
+            //   ),
+            if (_phase == Phase.monitoring &&
+                !_tripCompleted &&
+                _camMode == CamMode.right &&
+                _rightCamIp != null)
+              ReversingCameraOverlay(
+                key: const ValueKey('right_camera_overlay'),
+                streamUrl: 'http://$_rightCamIp:80/',
+                speed: _state.vehicleSpeed,
+                latitude: _state.gpsLat,
+                longitude: _state.gpsLng,
+                isPreviewMode: _rightManualOverride,
+                onClosePreview: () {
+                  _rightManualOverride = false;
+                  _setCamMode(CamMode.driverMonitoring);
+                },
+                label: 'RIGHT CAM ACTIVE',
+                symbol: 'R',
+                themeColor: Colors.redAccent,
+                enableYolo: false,
+              ),
+            if (_phase == Phase.monitoring &&
+                !_tripCompleted &&
+                _camMode == CamMode.front &&
+                _frontCamIp != null)
+              ReversingCameraOverlay(
+                key: const ValueKey('front_camera_overlay'),
+                streamUrl: 'http://$_frontCamIp:84/',
+                speed: _state.vehicleSpeed,
+                latitude: _state.gpsLat,
+                longitude: _state.gpsLng,
+                isPreviewMode: _frontManualOverride,
+                onClosePreview: () {
+                  _frontManualOverride = false;
+                  _setCamMode(CamMode.driverMonitoring);
+                },
+                label: 'FRONT CAM ACTIVE',
+                symbol: 'F',
+                themeColor: Colors.orange,
+                enableYolo: true,
+                onDetection: _onCamObjectDetected,
+              ),
+
+            // ── Side cam toggle buttons (monitoring phase) ──
+            if (_phase == Phase.monitoring && !_tripCompleted)
+              Positioned(
+                left: 0,
+                top: 0,
+                bottom: 0,
+                child: Center(
+                  child: GestureDetector(
+                    onTap: () {
+                      if (_camMode == CamMode.left) {
+                        _leftManualOverride = false;
+                        _setCamMode(CamMode.driverMonitoring);
+                      } else {
+                        _leftManualOverride = true;
+                        _setCamMode(CamMode.left);
+                      }
+                    },
+                    child: Container(
+                      width: 36,
+                      height: 64,
+                      decoration: BoxDecoration(
+                        color: _camMode == CamMode.left
+                            ? Colors.redAccent.withValues(alpha: 0.85)
+                            : Colors.black54,
+                        borderRadius: const BorderRadius.only(
+                          topRight: Radius.circular(10),
+                          bottomRight: Radius.circular(10),
+                        ),
+                        border: Border.all(
+                          color: _camMode == CamMode.left
+                              ? Colors.redAccent
+                              : Colors.white24,
+                          width: 1.2,
+                        ),
+                      ),
+                      child: Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: const [
+                          Icon(
+                            Icons.chevron_left_rounded,
+                            color: Colors.white,
+                            size: 20,
+                          ),
+                          Icon(
+                            Icons.videocam_rounded,
+                            color: Colors.white,
+                            size: 14,
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            if (_phase == Phase.monitoring && !_tripCompleted)
+              Positioned(
+                right: 0,
+                top: 0,
+                bottom: 0,
+                child: Center(
+                  child: GestureDetector(
+                    onTap: () {
+                      if (_camMode == CamMode.right) {
+                        _rightManualOverride = false;
+                        _setCamMode(CamMode.driverMonitoring);
+                      } else {
+                        _rightManualOverride = true;
+                        _setCamMode(CamMode.right);
+                      }
+                    },
+                    child: Container(
+                      width: 36,
+                      height: 64,
+                      decoration: BoxDecoration(
+                        color: _camMode == CamMode.right
+                            ? Colors.redAccent.withValues(alpha: 0.85)
+                            : Colors.black54,
+                        borderRadius: const BorderRadius.only(
+                          topLeft: Radius.circular(10),
+                          bottomLeft: Radius.circular(10),
+                        ),
+                        border: Border.all(
+                          color: _camMode == CamMode.right
+                              ? Colors.redAccent
+                              : Colors.white24,
+                          width: 1.2,
+                        ),
+                      ),
+                      child: Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: const [
+                          Icon(
+                            Icons.videocam_rounded,
+                            color: Colors.white,
+                            size: 14,
+                          ),
+                          Icon(
+                            Icons.chevron_right_rounded,
+                            color: Colors.white,
+                            size: 20,
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+
+            // 👇 ESP CAM DETECTION ALERT banner — shows for 3 seconds
+            if (_camDetectionAlert != null &&
+                _camDetectionAlertAt != null &&
+                DateTime.now().difference(_camDetectionAlertAt!).inSeconds < 3)
+              Positioned(
+                bottom: 80,
+                left: 12,
+                right: 12,
+                child: Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 16,
+                    vertical: 14,
+                  ),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFDC2626).withValues(alpha: 0.95),
+                    borderRadius: BorderRadius.circular(14),
+                  ),
+                  child: Text(
+                    _camDetectionAlert!,
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 16,
+                      fontWeight: FontWeight.w800,
+                    ),
+                  ),
+                ),
+              ),
+
+            // 👇 CABLE UNPLUGGED banner — shows for 5 seconds only.
+            // if (_showCableBanner)
+            //   Positioned(
+            //   top: 0,
+            //   left: 0,
+            //   right: 0,
+            //   child: SafeArea(
+            //     child: Padding(
+            //       padding: const EdgeInsets.all(12),
+            //       child: Container(
+            //         padding: const EdgeInsets.symmetric(
+            //           horizontal: 14,
+            //           vertical: 12,
+            //         ),
+            //         decoration: BoxDecoration(
+            //           color: const Color(0xFFB91C1C),
+            //           borderRadius: BorderRadius.circular(12),
+            //         ),
+            //         child: Row(
+            //           children: const [
+            //             Icon(
+            //               Icons.power_off_rounded,
+            //               color: Colors.white,
+            //               size: 22,
+            //             ),
+            //             SizedBox(width: 10),
+            //             Expanded(
+            //               child: Text(
+            //                 '🔌 CHARGING CABLE UNPLUGGED  Reported to admin',
+            //                 style: TextStyle(
+            //                   color: Colors.white,
+            //                   fontSize: 14,
+            //                   fontWeight: FontWeight.w700,
+            //                 ),
+            //               ),
+            //             ),
+            //           ],
+            //         ),
+            //       ),
+            //     ),
+            //   ),
+            // ),
+            _breakAlertOverlay(),
+
+            // Screenshot effect — alert varumbol screen quick shrink + border + dim
+            if (_flashScreenshot)
+              Positioned.fill(
+                child: IgnorePointer(
+                  child: TweenAnimationBuilder<double>(
+                    tween: Tween(begin: 1.0, end: 0.92),
+                    duration: const Duration(milliseconds: 110),
+                    curve: Curves.easeOut,
+                    builder: (context, scale, child) {
+                      return Container(
+                        color: Colors.black.withValues(alpha: 0.45),
+                        alignment: Alignment.center,
+                        child: Transform.scale(
+                          scale: scale,
+                          child: Container(
+                            decoration: BoxDecoration(
+                              border: Border.all(color: Colors.white, width: 3),
+                              borderRadius: BorderRadius.circular(8),
+                            ),
+                            child: const SizedBox.expand(),
+                          ),
+                        ),
+                      );
+                    },
+                  ),
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
   }
 
   // ─────────────────────────────────────────────────────────
