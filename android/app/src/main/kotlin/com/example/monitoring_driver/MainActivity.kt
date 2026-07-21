@@ -20,6 +20,8 @@ import android.util.Log
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
+import android.content.BroadcastReceiver
+import android.os.PowerManager
 
 class MainActivity : FlutterActivity() {
     private val channelName = "kiosk"
@@ -28,6 +30,10 @@ class MainActivity : FlutterActivity() {
     // Keep references so we can clean up the Wi-Fi request.
     private var wifiCm: ConnectivityManager? = null
     private var wifiCallback: ConnectivityManager.NetworkCallback? = null
+
+    // Screen-off interception: immediately turn screen back on when power button is pressed
+    private var screenOffReceiver: BroadcastReceiver? = null
+    private var wakeLock: PowerManager.WakeLock? = null
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
@@ -559,9 +565,20 @@ class MainActivity : FlutterActivity() {
         }
     }
 
-    override fun onCreate(savedInstanceState: android.os.Bundle?) {
+ override fun onCreate(savedInstanceState: android.os.Bundle?) {
         super.onCreate(savedInstanceState)
-        window.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        window.addFlags(
+            android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON or
+            android.view.WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON or
+            android.view.WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or
+            android.view.WindowManager.LayoutParams.FLAG_DISMISS_KEYGUARD
+        )
+
+        // Use setTurnScreenOn for Android P+ (more reliable than window flags)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
+            setShowWhenLocked(true)
+            setTurnScreenOn(true)
+        }
 
         try {
             android.provider.Settings.System.putInt(
@@ -570,14 +587,20 @@ class MainActivity : FlutterActivity() {
                 2147483647
             )
         } catch (_: Throwable) {}
+
+        // Register a receiver that fires when screen goes off (power button pressed).
+        // It immediately acquires a wake lock to turn the screen back on.
+        registerScreenOffReceiver()
     }
 
-    override fun onResume() {
+  override fun onResume() {
         super.onResume()
-        window.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-        // Re-enter lock task mode on every resume so that after an OTA install
-        // (when the activity is cold-started by OtaRestartService) the screen
-        // is pinned again. startLockTask() is a no-op when already locked.
+        window.addFlags(
+            android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON or
+            android.view.WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON or
+            android.view.WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or
+            android.view.WindowManager.LayoutParams.FLAG_DISMISS_KEYGUARD
+        )
         try { startKiosk() } catch (_: Exception) {}
     }
 
@@ -586,9 +609,59 @@ class MainActivity : FlutterActivity() {
         try {
             wifiCallback?.let { wifiCm?.unregisterNetworkCallback(it) }
         } catch (_: Exception) {}
-
         wifiCallback = null
+
+        // Unregister screen-off receiver
+        try {
+            screenOffReceiver?.let { unregisterReceiver(it) }
+        } catch (_: Exception) {}
+        screenOffReceiver = null
+
+        // Release wake lock
+        try {
+            wakeLock?.let { if (it.isHeld) it.release() }
+        } catch (_: Exception) {}
+        wakeLock = null
+
         super.onDestroy()
+    }
+
+    // ───────────────────────────────────────────────
+    // SCREEN-OFF INTERCEPTION
+    // When the power button is pressed, Android sends ACTION_SCREEN_OFF.
+    // We catch it and immediately force the screen back on using a wake lock.
+    // This makes the screen flash off for a split second then come right back.
+    // ───────────────────────────────────────────────
+    private fun registerScreenOffReceiver() {
+        if (screenOffReceiver != null) return
+        screenOffReceiver = object : BroadcastReceiver() {
+            override fun onReceive(context: Context?, intent: Intent?) {
+                if (intent?.action == Intent.ACTION_SCREEN_OFF) {
+                    Log.i("Kiosk", "Screen OFF detected — forcing screen back ON")
+                    forceScreenOn()
+                }
+            }
+        }
+        val filter = android.content.IntentFilter(Intent.ACTION_SCREEN_OFF)
+        registerReceiver(screenOffReceiver, filter)
+    }
+
+    @Suppress("DEPRECATION")
+    private fun forceScreenOn() {
+        try {
+            val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
+            // Acquire a temporary wake lock that turns the screen on
+            val wl = pm.newWakeLock(
+                PowerManager.FULL_WAKE_LOCK or
+                PowerManager.ACQUIRE_CAUSES_WAKEUP or
+                PowerManager.ON_AFTER_RELEASE,
+                "monitoring_driver:screen_on"
+            )
+            wl.acquire(3000) // hold for 3 seconds — enough for FLAG_KEEP_SCREEN_ON to take over
+            wakeLock = wl
+        } catch (e: Throwable) {
+            Log.e("Kiosk", "forceScreenOn failed: ${e.message}")
+        }
     }
 
     override fun onNewIntent(intent: Intent) {
