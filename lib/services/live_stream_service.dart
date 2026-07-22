@@ -10,6 +10,8 @@ class LiveStreamService {
   DateTime? _lastFrameTime;
   bool _isProcessing = false;
   Timer? _reconnectTimer;
+  int _framesSent = 0;
+  DateTime? _streamingStartedAt;
 
   final ValueNotifier<bool> isConnected = ValueNotifier<bool>(false);
 
@@ -86,10 +88,17 @@ class LiveStreamService {
     final cmd = message.toString().trim();
     if (cmd == 'START') {
       _isStreaming = true;
-      debugPrint('[Stream] Live camera streaming START requested.');
+      _framesSent = 0;
+      _streamingStartedAt = DateTime.now();
+      debugPrint('[Stream] ▶ STREAMING STARTED');
     } else if (cmd == 'STOP') {
       _isStreaming = false;
-      debugPrint('[Stream] Live camera streaming STOP requested.');
+      final duration = _streamingStartedAt != null
+          ? DateTime.now().difference(_streamingStartedAt!).inSeconds
+          : 0;
+      debugPrint('[Stream] ■ STREAMING STOPPED — sent $_framesSent frames in ${duration}s');
+      _framesSent = 0;
+      _streamingStartedAt = null;
     }
   }
 
@@ -129,6 +138,10 @@ class LiveStreamService {
 
       if (jpegBytes != null && _isStreaming && _channel != null) {
         _channel!.sink.add(jpegBytes);
+        _framesSent++;
+        if (_framesSent % 25 == 1) {
+          debugPrint('[Stream] ↑ Frame #$_framesSent sent (${jpegBytes.length} bytes)');
+        }
       }
     } catch (e) {
       debugPrint('[Stream] feedFrame processing error: $e');
@@ -156,6 +169,10 @@ class LiveStreamService {
 
       if (jpegBytes != null && _isStreaming && _channel != null) {
         _channel!.sink.add(jpegBytes);
+        _framesSent++;
+        if (_framesSent % 25 == 1) {
+          debugPrint('[Stream] ↑ Frame #$_framesSent sent (${jpegBytes.length} bytes)');
+        }
       }
     } catch (e) {
       debugPrint('[Stream] feedScreenFrame processing error: $e');
