@@ -4483,7 +4483,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       children: [
         if (_vehicleRegNo != null && _vehicleRegNo!.isNotEmpty)
           Padding(
-            padding: const EdgeInsets.only(left: 14, bottom: 2),
+            padding: const EdgeInsets.only(left: 14, bottom: 1),
             child: Text(
               _vehicleRegNo!,
               style: const TextStyle(
@@ -4491,12 +4491,13 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
                 fontSize: 10,
                 fontWeight: FontWeight.w800,
                 letterSpacing: 0.5,
+                shadows: [Shadow(color: Colors.black, blurRadius: 4)],
               ),
             ),
           ),
         Container(
-          margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 2),
-          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+          margin: const EdgeInsets.symmetric(horizontal: 10),
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
           decoration: BoxDecoration(
             color: Colors.black.withValues(alpha: 0.55),
             borderRadius: BorderRadius.circular(10),
