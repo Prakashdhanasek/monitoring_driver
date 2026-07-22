@@ -740,7 +740,33 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       debugPrint('[Flow] No device_id stored. Skipping API fetch.');
       return;
     }
-    await _driversService.fetchAndCacheDrivers(deviceId);
+    final drivers = await _driversService.fetchAndCacheDrivers(deviceId);
+
+    // Extract vehicle registration number from the first driver's assigned vehicles
+    // so it's available on the verifying screen before face auth completes.
+    if (_vehicleRegNo == null || _vehicleRegNo!.isEmpty) {
+      for (final driver in drivers) {
+        final vehicles = driver['assignedVehicles'] as List<dynamic>?;
+        if (vehicles != null && vehicles.isNotEmpty) {
+          final first = vehicles.first as Map<String, dynamic>;
+          final regNo = first['vehicleRegistrationNumber'] as String?;
+          if (regNo != null && regNo.isNotEmpty) {
+            _vehicleRegNo = regNo;
+            debugPrint('[Flow] Vehicle reg from driver list: $_vehicleRegNo');
+            if (mounted) setState(() {});
+            break;
+          }
+        }
+        // Fallback to flat field
+        final regNo = driver['vehicleRegistrationNumber'] as String?;
+        if (regNo != null && regNo.isNotEmpty) {
+          _vehicleRegNo = regNo;
+          debugPrint('[Flow] Vehicle reg from driver (flat): $_vehicleRegNo');
+          if (mounted) setState(() {});
+          break;
+        }
+      }
+    }
   }
 
   Future<String?> _findEsp32IpFromArpTable() async {
@@ -4438,79 +4464,67 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
 
   // Status banner for verifying screen (network, wifi, ws live)
   Widget _verifyStatusBanner() {
-    return Container(
-      margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-      decoration: BoxDecoration(
-        color: Colors.black.withValues(alpha: 0.55),
-        borderRadius: BorderRadius.circular(10),
-      ),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-        children: [
-          // ONLINE / OFFLINE
-          Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(
-                Icons.language_rounded,
-                color: _isOnline ? const Color(0xFF22C55E) : Colors.white,
-                size: 14,
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        if (_vehicleRegNo != null && _vehicleRegNo!.isNotEmpty)
+          Padding(
+            padding: const EdgeInsets.only(left: 14, bottom: 2),
+            child: Text(
+              _vehicleRegNo!,
+              style: const TextStyle(
+                color: Colors.white,
+                fontSize: 10,
+                fontWeight: FontWeight.w800,
+                letterSpacing: 0.5,
               ),
-              const SizedBox(width: 3),
-              Text(
-                _isOnline ? 'ONLINE' : 'OFFLINE',
-                style: const TextStyle(
-                  color: Colors.white,
-                  fontSize: 8,
-                  fontWeight: FontWeight.w800,
-                  letterSpacing: 0.3,
-                ),
-              ),
-            ],
+            ),
           ),
-          Container(height: 12, width: 1, color: Colors.white24),
-          // WIFI
-          Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(
-                _isWifi ? Icons.wifi_rounded : Icons.wifi_off_rounded,
-                color: _isWifi ? const Color(0xFF22C55E) : Colors.white,
-                size: 14,
-              ),
-              const SizedBox(width: 3),
-              const Text(
-                'WIFI',
-                style: TextStyle(
-                  color: Colors.white,
-                  fontSize: 8,
-                  fontWeight: FontWeight.w800,
-                  letterSpacing: 0.3,
-                ),
-              ),
-            ],
+        Container(
+          margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 2),
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+          decoration: BoxDecoration(
+            color: Colors.black.withValues(alpha: 0.55),
+            borderRadius: BorderRadius.circular(10),
           ),
-          Container(height: 12, width: 1, color: Colors.white24),
-          // WS LIVE
-          ValueListenableBuilder<bool>(
-            valueListenable: _streamService.isConnected,
-            builder: (context, isLiveConnected, child) {
-              return Row(
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+            children: [
+              // ONLINE / OFFLINE
+              Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
                   Icon(
-                    isLiveConnected
-                        ? Icons.videocam_rounded
-                        : Icons.videocam_off_rounded,
-                    color: isLiveConnected
-                        ? const Color(0xFF22C55E)
-                        : const Color(0xFFEF4444),
+                    Icons.language_rounded,
+                    color: _isOnline ? const Color(0xFF22C55E) : Colors.white,
+                    size: 14,
+                  ),
+                  const SizedBox(width: 3),
+                  Text(
+                    _isOnline ? 'ONLINE' : 'OFFLINE',
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 8,
+                      fontWeight: FontWeight.w800,
+                      letterSpacing: 0.3,
+                    ),
+                  ),
+                ],
+              ),
+              Container(height: 12, width: 1, color: Colors.white24),
+              // WIFI
+              Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(
+                    _isWifi ? Icons.wifi_rounded : Icons.wifi_off_rounded,
+                    color: _isWifi ? const Color(0xFF22C55E) : Colors.white,
                     size: 14,
                   ),
                   const SizedBox(width: 3),
                   const Text(
-                    'LIVE STREAM',
+                    'WIFI',
                     style: TextStyle(
                       color: Colors.white,
                       fontSize: 8,
@@ -4519,14 +4533,45 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
                     ),
                   ),
                 ],
-              );
-            },
+              ),
+              Container(height: 12, width: 1, color: Colors.white24),
+              // WS LIVE
+              ValueListenableBuilder<bool>(
+                valueListenable: _streamService.isConnected,
+                builder: (context, isLiveConnected, child) {
+                  return Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(
+                        isLiveConnected
+                            ? Icons.videocam_rounded
+                            : Icons.videocam_off_rounded,
+                        color: isLiveConnected
+                            ? const Color(0xFF22C55E)
+                            : const Color(0xFFEF4444),
+                        size: 14,
+                      ),
+                      const SizedBox(width: 3),
+                      const Text(
+                        'LIVE STREAM',
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontSize: 8,
+                          fontWeight: FontWeight.w800,
+                          letterSpacing: 0.3,
+                        ),
+                      ),
+                    ],
+                  );
+                },
+              ),
+              Container(height: 12, width: 1, color: Colors.white24),
+              // BRIGHTNESS
+              _brightnessControl(),
+            ],
           ),
-          Container(height: 12, width: 1, color: Colors.white24),
-          // BRIGHTNESS
-          _brightnessControl(),
-        ],
-      ),
+        ),
+      ],
     );
   }
 
