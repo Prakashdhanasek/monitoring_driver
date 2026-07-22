@@ -7,22 +7,32 @@ import 'package:web_socket_channel/web_socket_channel.dart';
 class LiveStreamService {
   WebSocketChannel? _channel;
   bool _isStreaming = false;
-  DateTime? _lastFrameTime;
-  bool _isProcessing = false;
+  DateTime? _lastCameraFrameTime;
+  DateTime? _lastScreenFrameTime;
+  bool _isCameraProcessing = false;
+  bool _isScreenProcessing = false;
+  bool _isReconnecting = false;
   Timer? _reconnectTimer;
   int _framesSent = 0;
   DateTime? _streamingStartedAt;
+  String _deviceTabletId = '';
+
+  static const int _cameraFps = 100;  // 10 FPS
+  static const int _screenFps = 200;  // 5 FPS
 
   final ValueNotifier<bool> isConnected = ValueNotifier<bool>(false);
 
   bool get isStreaming => _isStreaming;
 
-  void _startReconnectTimer(String deviceTabletId) {
+  void _startReconnectTimer() {
+    if (_isReconnecting) return;
+    _isReconnecting = true;
     _reconnectTimer?.cancel();
     _reconnectTimer = Timer(const Duration(seconds: 5), () {
+      _isReconnecting = false;
       if (!isConnected.value) {
         debugPrint('[Stream] Reconnect timer fired. Attempting connection...');
-        connect(deviceTabletId);
+        connect(_deviceTabletId);
       }
     });
   }
@@ -39,6 +49,7 @@ class LiveStreamService {
       return;
     }
 
+    _deviceTabletId = deviceTabletId;
     _reconnectTimer?.cancel();
 
     final cleanId = deviceTabletId.trim().replaceAll(RegExp(r'[^a-zA-Z0-9]'), '');
@@ -53,10 +64,11 @@ class LiveStreamService {
       _channel!.ready.then((_) {
         debugPrint('[Stream] WebSocket connection successfully established!');
         isConnected.value = true;
+        _isReconnecting = false;
       }).catchError((err) {
         debugPrint('[Stream] WebSocket connection failed: $err');
         isConnected.value = false;
-        _startReconnectTimer(deviceTabletId);
+        _startReconnectTimer();
       });
 
       _channel!.stream.listen(
@@ -67,19 +79,19 @@ class LiveStreamService {
           debugPrint('[Stream] WebSocket connection closed by server.');
           _isStreaming = false;
           isConnected.value = false;
-          _startReconnectTimer(deviceTabletId);
+          _startReconnectTimer();
         },
         onError: (error) {
           debugPrint('[Stream] WebSocket error: $error');
           _isStreaming = false;
           isConnected.value = false;
-          _startReconnectTimer(deviceTabletId);
+          _startReconnectTimer();
         },
       );
     } catch (e) {
       debugPrint('[Stream] Error establishing connection: $e');
       isConnected.value = false;
-      _startReconnectTimer(deviceTabletId);
+      _startReconnectTimer();
     }
   }
 
@@ -104,18 +116,17 @@ class LiveStreamService {
 
   /// Feeds a raw camera frame for background compression and transmission
   void feedFrame(CameraImage image, int rotation, bool isFront) async {
-    if (!_isStreaming || _channel == null || _isProcessing) return;
+    if (!_isStreaming || _channel == null || !isConnected.value || _isCameraProcessing) return;
 
     final now = DateTime.now();
-    // Throttle to 10 FPS (1 frame per 100 milliseconds)
-    if (_lastFrameTime != null && now.difference(_lastFrameTime!).inMilliseconds < 100) {
+    if (_lastCameraFrameTime != null && now.difference(_lastCameraFrameTime!).inMilliseconds < _cameraFps) {
       return;
     }
 
     if (image.planes.length < 3) return;
 
-    _lastFrameTime = now;
-    _isProcessing = true;
+    _lastCameraFrameTime = now;
+    _isCameraProcessing = true;
 
     try {
       // Package planes and metadata to send to the background thread
@@ -146,15 +157,21 @@ class LiveStreamService {
     } catch (e) {
       debugPrint('[Stream] feedFrame processing error: $e');
     } finally {
-      _isProcessing = false;
+      _isCameraProcessing = false;
     }
   }
 
   /// Feeds a raw screen frame (RGBA bytes) for background compression and transmission
   void feedScreenFrame(Uint8List rgbaBytes, int width, int height) async {
-    if (!_isStreaming || _channel == null || _isProcessing) return;
+    if (!_isStreaming || _channel == null || !isConnected.value || _isScreenProcessing) return;
 
-    _isProcessing = true;
+    final now = DateTime.now();
+    if (_lastScreenFrameTime != null && now.difference(_lastScreenFrameTime!).inMilliseconds < _screenFps) {
+      return;
+    }
+    _lastScreenFrameTime = now;
+
+    _isScreenProcessing = true;
 
     try {
       final Map<String, dynamic> params = {
@@ -177,13 +194,13 @@ class LiveStreamService {
     } catch (e) {
       debugPrint('[Stream] feedScreenFrame processing error: $e');
     } finally {
-      _isProcessing = false;
+      _isScreenProcessing = false;
     }
   }
 
   /// Sends a text-based alert message over the WebSocket to notify web dashboard.
   void sendAlertMessage(String alertType) {
-    if (_channel != null && _isStreaming) {
+    if (_channel != null && isConnected.value) {
       final jsonMsg = '{"event": "alert", "type": "$alertType", "timestamp": "${DateTime.now().toIso8601String()}"}';
       _channel!.sink.add(jsonMsg);
       debugPrint('[Stream] Sent alert metadata over WebSocket: $jsonMsg');
