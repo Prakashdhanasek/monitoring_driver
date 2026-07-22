@@ -266,6 +266,9 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   bool _flashScreenshot = false;
   DateTime? _lastFlashAt;
 
+  // ── No-drivers auto-retry (retries fetch every 30 s while stuck) ──
+  Timer? _noDriversRetryTimer;
+
   // ── Break alert (periodic driver fatigue reminder) ──
   bool _showBreakAlert = false;
   int _breakAlertIndex = 0;
@@ -704,6 +707,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     _blindSpotTimer?.cancel();
     _breakAlertTimer?.cancel();
     _breakAlertDismissTimer?.cancel();
+    _noDriversRetryTimer?.cancel();
     _accelSub?.cancel();
     super.dispose();
   }
@@ -2235,11 +2239,20 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
 
   /// Bottom-center break alert toast — no container, just emoji + text with glance pulse.
   Widget _breakAlertOverlay() {
+    // Guard: never render outside the active monitoring phase.
+    // The overlay sits in the root Stack so without this it can bleed over
+    // the verifying / details / trip-completed screens on slower devices.
+    if (_phase != Phase.monitoring || _tripCompleted || _camMode != CamMode.driverMonitoring) {
+      if (_showBreakAlert) {
+        WidgetsBinding.instance.addPostFrameCallback((_) => _dismissBreakAlert());
+      }
+      return const SizedBox.shrink();
+    }
     // Auto-dismiss if any real alert becomes active while toast is showing.
     if (_showBreakAlert) {
       final anyAlertActive =
           _getMonitorBannerKey(_state.hasPhone, _state.hasCigarette) != null ||
-          (!_state.seatbeltBuckled && _activeBannerKey != null) ||
+          !_state.seatbeltBuckled ||
           _state.drowsinessLevel == DrowsinessLevel.drowsy ||
           _state.drowsinessLevel == DrowsinessLevel.asleep ||
           _state.distractionStatus == DistractionStatus.distracted ||
