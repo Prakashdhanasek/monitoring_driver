@@ -40,6 +40,7 @@ import 'services/sftp_upload_service.dart';
 import 'services/http_video_upload_service.dart';
 import 'services/live_stream_service.dart';
 import 'services/background_telemetry_service.dart';
+import 'package:connectivity_plus/connectivity_plus.dart';
 
 import 'services/reversing_detector_service.dart';
 import 'services/app_update_service.dart';
@@ -112,9 +113,17 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
 
   // ── Connectivity tracking ──
   bool _isOnline = true;
+  bool _isWifi = false;
   Timer? _connectivityTimer;
   Timer? _telemetryTimer;
   Timer? _sensorUiTimer;
+
+  // ── Brightness control ──
+  double _brightness = 1.0;
+
+  // ── Unverified driver: require consecutive high-speed readings ──
+  int _consecutiveHighSpeedCount = 0;
+  static const int _kHighSpeedConsecutiveRequired = 3;
 
   bool _isConnectingToEsp32 = false;
   bool _isConnectedToEsp32 = false;
@@ -405,6 +414,14 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
 
   Future<void> _checkConnectivity() async {
     try {
+      // Check WiFi status
+      final connResult = await Connectivity().checkConnectivity();
+      final wifiNow = connResult.contains(ConnectivityResult.wifi);
+      if (wifiNow != _isWifi) {
+        _isWifi = wifiNow;
+        if (mounted) setState(() {});
+      }
+
       final result = await InternetAddress.lookup(
         'proximity-driver-api.prod-app.in',
       ).timeout(const Duration(seconds: 3));
@@ -430,6 +447,15 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
         debugPrint('==================================================');
         debugPrint('[CONNECTIVITY CHANGE] Device moved to: OFFLINE');
         debugPrint('==================================================');
+      }
+      // Also update WiFi status on error
+      final connResult = await Connectivity().checkConnectivity().catchError(
+        (_) => <ConnectivityResult>[],
+      );
+      final wifiNow = connResult.contains(ConnectivityResult.wifi);
+      if (wifiNow != _isWifi) {
+        _isWifi = wifiNow;
+        if (mounted) setState(() {});
       }
     }
 
@@ -1047,7 +1073,6 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   }
 
   Future<void> _init() async {
-
     // Reset in-memory driver state to defaults
     _driverId = '—';
     _driverName = 'Driver';
@@ -2302,18 +2327,24 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     // If face not verified and vehicle is moving, report incident
     // Only when verifying screen is active (not during system initialization)
     // Wait for camera to have captured a frame (snapshot available)
+    // Require consecutive high-speed readings to avoid GPS drift false triggers
     if (_phase == Phase.verifying &&
         !_initializing &&
         _camReady &&
         _latestFrameJpeg != null &&
         _state.vehicleSpeed > 25) {
-      if (_checkCooldown('Unverified Driver')) {
-        _reportIncident('Unverified Driver', 'High', 1.0);
-        _tts.speak(AlertMessages.unverifiedDriver(_tts.currentLang));
-        debugPrint(
-          '[Flow] Vehicle moving at ${_state.vehicleSpeed.toStringAsFixed(1)} km/h without driver verification!',
-        );
+      _consecutiveHighSpeedCount++;
+      if (_consecutiveHighSpeedCount >= _kHighSpeedConsecutiveRequired) {
+        if (_checkCooldown('Unverified Driver')) {
+          _reportIncident('Unverified Driver', 'High', 1.0);
+          _tts.speak(AlertMessages.unverifiedDriver(_tts.currentLang));
+          debugPrint(
+            '[Flow] Vehicle moving at ${_state.vehicleSpeed.toStringAsFixed(1)} km/h without driver verification! (consecutive: $_consecutiveHighSpeedCount)',
+          );
+        }
       }
+    } else {
+      _consecutiveHighSpeedCount = 0;
     }
 
     final deviceId = _settings.getDeviceId();
@@ -3530,6 +3561,14 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
             _cameraLayer(),
 
             if (_phase == Phase.verifying) _verifyingOverlay(),
+            // Status banner on verifying screen (network, wifi, ws)
+            if (_phase == Phase.verifying && !_initializing)
+              Positioned(
+                top: 0,
+                left: 0,
+                right: 0,
+                child: SafeArea(child: _verifyStatusBanner()),
+              ),
             if (_phase == Phase.details) _detailsOverlay(),
             if (_phase == Phase.monitoring)
               (_tripCompleted ? _tripCompletedOverlay() : _monitoringOverlay()),
@@ -4366,7 +4405,144 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     );
   }
 
-  // ── VERIFYING ──
+  // ── Brightness control widget ──
+  Widget _brightnessControl() {
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Icon(
+          _brightness < 0.5 ? Icons.brightness_low : Icons.brightness_high,
+          color: Colors.white,
+          size: 14,
+        ),
+        SizedBox(
+          width: 60,
+          height: 14,
+          child: SliderTheme(
+            data: SliderThemeData(
+              trackHeight: 2,
+              thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 5),
+              overlayShape: const RoundSliderOverlayShape(overlayRadius: 10),
+              activeTrackColor: const Color(0xFF22C55E),
+              inactiveTrackColor: Colors.white24,
+              thumbColor: Colors.white,
+              overlayColor: Colors.white24,
+            ),
+            child: Slider(
+              value: _brightness,
+              min: 0.05,
+              max: 1.0,
+              onChanged: (v) {
+                setState(() => _brightness = v);
+                _setScreenBrightness(v);
+              },
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  void _setScreenBrightness(double value) {
+    const MethodChannel(
+      'kiosk',
+    ).invokeMethod('setBrightness', {'brightness': value});
+  }
+
+  // Status banner for verifying screen (network, wifi, ws live)
+  Widget _verifyStatusBanner() {
+    return Container(
+      margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      decoration: BoxDecoration(
+        color: Colors.black.withValues(alpha: 0.55),
+        borderRadius: BorderRadius.circular(10),
+      ),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+        children: [
+          // ONLINE / OFFLINE
+          Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(
+                Icons.language_rounded,
+                color: _isOnline ? const Color(0xFF22C55E) : Colors.white,
+                size: 14,
+              ),
+              const SizedBox(width: 3),
+              Text(
+                _isOnline ? 'ONLINE' : 'OFFLINE',
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 8,
+                  fontWeight: FontWeight.w800,
+                  letterSpacing: 0.3,
+                ),
+              ),
+            ],
+          ),
+          Container(height: 12, width: 1, color: Colors.white24),
+          // WIFI
+          Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(
+                _isWifi ? Icons.wifi_rounded : Icons.wifi_off_rounded,
+                color: _isWifi ? const Color(0xFF22C55E) : Colors.white,
+                size: 14,
+              ),
+              const SizedBox(width: 3),
+              const Text(
+                'WIFI',
+                style: TextStyle(
+                  color: Colors.white,
+                  fontSize: 8,
+                  fontWeight: FontWeight.w800,
+                  letterSpacing: 0.3,
+                ),
+              ),
+            ],
+          ),
+          Container(height: 12, width: 1, color: Colors.white24),
+          // WS LIVE
+          ValueListenableBuilder<bool>(
+            valueListenable: _streamService.isConnected,
+            builder: (context, isLiveConnected, child) {
+              return Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(
+                    isLiveConnected
+                        ? Icons.videocam_rounded
+                        : Icons.videocam_off_rounded,
+                    color: isLiveConnected
+                        ? const Color(0xFF22C55E)
+                        : const Color(0xFFEF4444),
+                    size: 14,
+                  ),
+                  const SizedBox(width: 3),
+                  const Text(
+                    'LIVE STREAM',
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontSize: 8,
+                      fontWeight: FontWeight.w800,
+                      letterSpacing: 0.3,
+                    ),
+                  ),
+                ],
+              );
+            },
+          ),
+          Container(height: 12, width: 1, color: Colors.white24),
+          // BRIGHTNESS
+          _brightnessControl(),
+        ],
+      ),
+    );
+  }
+
   Widget _verifyingOverlay() {
     // if (!_initializing && !_authEngine.isEnrolled && !_isRefreshingDrivers) {
     //   final bool noInternet = !_isOnline;
@@ -5247,13 +5423,6 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
         ? 'CAL ✓'
         : 'Calibrating ${_state.calibrationFrame}/${MonitoringEngine.kCalibrationFrames}';
     final calColor = _state.calibrated ? Colors.greenAccent : Colors.amber;
-    // WiFi/hotspot is considered active if any ESP32 camera IP was discovered
-    // (meaning the phone's hotspot is running and devices are connected)
-    final hotspotActive =
-        _leftCamIp != null ||
-        _rightCamIp != null ||
-        _frontCamIp != null ||
-        _esp32StreamUrl.isNotEmpty;
 
     return Container(
       margin: const EdgeInsets.all(12),
@@ -5320,8 +5489,8 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
                   const SizedBox(width: 3),
                   Text(
                     _isOnline ? 'ONLINE' : 'OFFLINE',
-                    style: TextStyle(
-                      color: _isOnline ? const Color(0xFF22C55E) : Colors.white,
+                    style: const TextStyle(
+                      color: Colors.white,
                       fontSize: 8,
                       fontWeight: FontWeight.w800,
                       letterSpacing: 0.3,
@@ -5335,19 +5504,15 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
                 mainAxisSize: MainAxisSize.min,
                 children: [
                   Icon(
-                    hotspotActive ? Icons.wifi_rounded : Icons.wifi_off_rounded,
-                    color: hotspotActive
-                        ? const Color(0xFF22C55E)
-                        : Colors.white,
+                    _isWifi ? Icons.wifi_rounded : Icons.wifi_off_rounded,
+                    color: _isWifi ? const Color(0xFF22C55E) : Colors.white,
                     size: 14,
                   ),
                   const SizedBox(width: 3),
-                  Text(
-                    hotspotActive ? 'WIFI' : 'NO WIFI',
+                  const Text(
+                    'WIFI',
                     style: TextStyle(
-                      color: hotspotActive
-                          ? const Color(0xFF22C55E)
-                          : Colors.white,
+                      color: Colors.white,
                       fontSize: 8,
                       fontWeight: FontWeight.w800,
                       letterSpacing: 0.3,
@@ -5369,16 +5534,14 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
                             : Icons.videocam_off_rounded,
                         color: isLiveConnected
                             ? const Color(0xFF22C55E)
-                            : Colors.white,
+                            : const Color(0xFFEF4444),
                         size: 14,
                       ),
                       const SizedBox(width: 3),
-                      Text(
-                        isLiveConnected ? 'WS LIVE' : 'WS OFF',
+                      const Text(
+                        'LIVE STREAM',
                         style: TextStyle(
-                          color: isLiveConnected
-                              ? const Color(0xFF22C55E)
-                              : Colors.white,
+                          color: Colors.white,
                           fontSize: 8,
                           fontWeight: FontWeight.w800,
                           letterSpacing: 0.3,
@@ -5388,6 +5551,9 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
                   );
                 },
               ),
+              Container(height: 12, width: 1, color: Colors.white24),
+              // BRIGHTNESS
+              _brightnessControl(),
             ],
           ),
         ],

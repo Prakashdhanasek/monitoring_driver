@@ -86,6 +86,15 @@ class MainActivity : FlutterActivity() {
                         enableMobileData()
                         result.success(true)
                     }
+                    "setBrightness" -> {
+                        val brightness = call.argument<Double>("brightness") ?: 1.0
+                        runOnUiThread {
+                            val lp = window.attributes
+                            lp.screenBrightness = brightness.toFloat()
+                            window.attributes = lp
+                        }
+                        result.success(true)
+                    }
                     else -> result.notImplemented()
                 }
             }
