@@ -119,7 +119,8 @@ class LiveStreamService {
     if (!_isStreaming || _channel == null || !isConnected.value || _isCameraProcessing) return;
 
     final now = DateTime.now();
-    if (_lastCameraFrameTime != null && now.difference(_lastCameraFrameTime!).inMilliseconds < _cameraFps) {
+    // Throttle to 25 FPS (1 frame per 40 milliseconds)
+    if (_lastFrameTime != null && now.difference(_lastFrameTime!).inMilliseconds < 40) {
       return;
     }
 
@@ -139,7 +140,7 @@ class LiveStreamService {
         'uvPix': image.planes[1].bytesPerPixel ?? 1,
         'srcW': image.width,
         'srcH': image.height,
-        'targetWidth': 320, // Low resolution to conserve network bandwidth
+        'targetWidth': 800, // Optimized HD resolution for 25 FPS smooth streaming
         'rotation': rotation,
         'isFront': isFront,
       };
@@ -178,7 +179,7 @@ class LiveStreamService {
         'rgbaBytes': rgbaBytes,
         'width': width,
         'height': height,
-        'targetWidth': 360, // Low resolution to conserve network bandwidth
+        'targetWidth': 800, // Optimized HD resolution for 25 FPS smooth streaming
       };
 
       // Offload RGBA-to-JPEG conversion to an Isolate
@@ -270,8 +271,8 @@ Uint8List? _compressFrameIsolate(Map<String, dynamic> params) {
       fixed = img.flipHorizontal(fixed);
     }
 
-    // JPEG quality 40 keeps the payload size small for IoT networks
-    return Uint8List.fromList(img.encodeJpg(fixed, quality: 40));
+    // Balanced 72% JPEG quality for high FPS low-latency streaming
+    return Uint8List.fromList(img.encodeJpg(fixed, quality: 72));
   } catch (e) {
     return null;
   }
@@ -285,9 +286,6 @@ Uint8List? _compressScreenIsolate(Map<String, dynamic> params) {
     final int height = params['height'];
 
     // Decode RGBA bytes using Image package.
-    // Since pixelRatio: 0.35 was used to capture, the image is already pre-scaled
-    // on the GPU to a perfect, lightweight resolution. We can skip resizing entirely
-    // in Dart to completely eliminate CPU overhead and lag!
     img.Image image = img.Image.fromBytes(
       width: width,
       height: height,
@@ -295,12 +293,10 @@ Uint8List? _compressScreenIsolate(Map<String, dynamic> params) {
       order: img.ChannelOrder.rgba,
     );
 
-    // JPEG quality 35 keeps the frame size very small (usually ~20-30 KB)
-    // which makes streaming over mobile networks extremely smooth.
-    return Uint8List.fromList(img.encodeJpg(image, quality: 35));
+    // Balanced 72% JPEG quality for high FPS low-latency streaming
+    return Uint8List.fromList(img.encodeJpg(image, quality: 72));
   } catch (e) {
     debugPrint('[Isolate] Screen compression error: $e');
     return null;
   }
 }
-

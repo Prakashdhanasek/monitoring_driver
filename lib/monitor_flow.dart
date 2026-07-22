@@ -1315,11 +1315,11 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     final bool isHighRes =
         _highResUntil != null && now.isBefore(_highResUntil!);
 
-    // Low-res is 0.3x (bandwidth friendly); High-res is 0.7x (evidence clarity)
-    final double pixelRatio = isHighRes ? 0.7 : 0.3;
+    // High resolution GPU screen capture (0.75x)
+    final double pixelRatio = 0.75;
 
-    // Slow FPS slightly to 6 FPS (166ms) during high-res periods to prevent network bottleneck
-    final int throttleMs = isHighRes ? 166 : 80;
+    // Fast 40ms throttle (~25 FPS smooth streaming with zero lag)
+    final int throttleMs = 40;
 
     if (_lastScreenFrameTime != null &&
         now.difference(_lastScreenFrameTime!).inMilliseconds < throttleMs) {
