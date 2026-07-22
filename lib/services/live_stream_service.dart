@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:typed_data';
 import 'package:camera/camera.dart';
 import 'package:flutter/foundation.dart';
 import 'package:image/image.dart' as img;
@@ -11,20 +12,26 @@ class LiveStreamService {
   DateTime? _lastFrameTime;
   bool _isProcessing = false;
   bool _isSending = false; // NEW: guards against queuing frames faster than the network can send them
+  bool _isReconnecting = false;
   Timer? _reconnectTimer;
+  Timer? _keepAliveTimer;
   int _framesSent = 0;
   DateTime? _streamingStartedAt;
+  String _deviceTabletId = '';
 
   final ValueNotifier<bool> isConnected = ValueNotifier<bool>(false);
 
   bool get isStreaming => _isStreaming;
 
-  void _startReconnectTimer(String deviceTabletId) {
+  void _startReconnectTimer() {
+    if (_isReconnecting) return;
+    _isReconnecting = true;
     _reconnectTimer?.cancel();
-    _reconnectTimer = Timer(const Duration(seconds: 5), () {
+    _reconnectTimer = Timer(const Duration(seconds: 2), () {
+      _isReconnecting = false;
       if (!isConnected.value) {
-        debugPrint('[Stream] Reconnect timer fired. Attempting connection...');
-        connect(deviceTabletId);
+        debugPrint('[Stream] Reconnecting...');
+        connect(_deviceTabletId);
       }
     });
   }
@@ -41,6 +48,7 @@ class LiveStreamService {
       return;
     }
 
+    _deviceTabletId = deviceTabletId;
     _reconnectTimer?.cancel();
 
     final cleanId = deviceTabletId.trim().replaceAll(RegExp(r'[^a-zA-Z0-9]'), '');
@@ -53,12 +61,14 @@ class LiveStreamService {
 
       // Check when connection handshake successfully completes
       _channel!.ready.then((_) {
-        debugPrint('[Stream] WebSocket connection successfully established!');
         isConnected.value = true;
+        _isReconnecting = false;
+        _startKeepAlive();
+        debugPrint('[Stream] WebSocket connection successfully established!');
       }).catchError((err) {
         debugPrint('[Stream] WebSocket connection failed: $err');
         isConnected.value = false;
-        _startReconnectTimer(deviceTabletId);
+        _startReconnectTimer();
       });
 
       _channel!.stream.listen(
@@ -69,46 +79,72 @@ class LiveStreamService {
           debugPrint('[Stream] WebSocket connection closed by server.');
           _isStreaming = false;
           isConnected.value = false;
-          _startReconnectTimer(deviceTabletId);
+          _keepAliveTimer?.cancel();
+          _startReconnectTimer();
         },
         onError: (error) {
           debugPrint('[Stream] WebSocket error: $error');
           _isStreaming = false;
           isConnected.value = false;
-          _startReconnectTimer(deviceTabletId);
+          _keepAliveTimer?.cancel();
+          _startReconnectTimer();
         },
       );
     } catch (e) {
       debugPrint('[Stream] Error establishing connection: $e');
       isConnected.value = false;
-      _startReconnectTimer(deviceTabletId);
+      _startReconnectTimer();
     }
+  }
+
+  /// Call this when the app resumes from background / screen-on.
+  /// Android Doze mode can silently kill the WebSocket while the app is frozen.
+  void onAppResumed() {
+    if (!isConnected.value) {
+      if (!_isReconnecting && _deviceTabletId.isNotEmpty) {
+        debugPrint('[Stream] App resumed — was disconnected, reconnecting...');
+        connect(_deviceTabletId);
+      }
+    } else {
+      // Connection appears live — send immediate ping to verify.
+      // If socket is actually dead, sink.add() will trigger onError → reconnect.
+      try {
+        _channel?.sink.add('PING');
+        debugPrint('[Stream] App resumed — ping sent to verify connection');
+      } catch (_) {}
+      // Restart keepalive from now so next ping is 30s from resume, not sooner.
+      _startKeepAlive();
+    }
+  }
+
+  void _startKeepAlive() {
+    _keepAliveTimer?.cancel();
+    _keepAliveTimer = Timer.periodic(const Duration(seconds: 30), (_) {
+      if (isConnected.value && _channel != null) {
+        try {
+          _channel!.sink.add('PING');
+          debugPrint('[Stream] ♥ Keepalive ping sent');
+        } catch (_) {}
+      }
+    });
   }
 
   /// Handles start/stop command parsing (supports JSON & plain text, case-insensitive)
   void _handleCommand(dynamic message) {
-    final strMsg = message.toString().trim();
-    debugPrint('[Stream] Received WebSocket message from server: $strMsg');
-
-    String upperCmd = strMsg.toUpperCase();
-
-    // Check if web dashboard sent JSON object (e.g. {"command":"START"} or {"action":"start"})
-    if (strMsg.startsWith('{') && strMsg.endsWith('}')) {
-      try {
-        final decoded = jsonDecode(strMsg);
-        if (decoded is Map) {
-          final val = (decoded['command'] ?? decoded['action'] ?? decoded['event'] ?? decoded['type'] ?? '').toString().trim().toUpperCase();
-          if (val.isNotEmpty) upperCmd = val;
-        }
-      } catch (_) {}
+    String cmd;
+    if (message is Uint8List) {
+      cmd = String.fromCharCodes(message).trim();
+      debugPrint('[Stream] ← Binary command (${message.length}b): "$cmd"');
+    } else {
+      cmd = message.toString().trim();
+      debugPrint('[Stream] ← Text command: "$cmd"');
     }
-
-    if (upperCmd.contains('START')) {
+    if (cmd == 'START') {
       _isStreaming = true;
       _framesSent = 0;
       _streamingStartedAt = DateTime.now();
-      debugPrint('[Stream] ▶ STREAMING STARTED (Active = true)');
-    } else if (upperCmd.contains('STOP')) {
+      debugPrint('[Stream] ▶ STREAMING STARTED');
+    } else if (cmd == 'STOP') {
       _isStreaming = false;
       final duration = _streamingStartedAt != null
           ? DateTime.now().difference(_streamingStartedAt!).inSeconds
@@ -116,6 +152,8 @@ class LiveStreamService {
       debugPrint('[Stream] ■ STREAMING STOPPED — sent $_framesSent frames in ${duration}s');
       _framesSent = 0;
       _streamingStartedAt = null;
+    } else if (cmd == 'PONG') {
+      // keepalive response — connection is alive
     }
   }
 
@@ -182,7 +220,7 @@ class LiveStreamService {
 
   /// Feeds a raw screen frame (RGBA bytes) for background compression and transmission
   void feedScreenFrame(Uint8List rgbaBytes, int width, int height) async {
-    if (!_isStreaming || _channel == null || _isProcessing || _isSending) return;
+    if (!_isStreaming || _channel == null || _isProcessing) return;
 
     _isProcessing = true;
 
@@ -194,18 +232,14 @@ class LiveStreamService {
         'targetWidth': 1280,
       };
 
+      // Offload RGBA-to-JPEG conversion to an Isolate
       final jpegBytes = await compute(_compressScreenIsolate, params);
 
       if (jpegBytes != null && _isStreaming && _channel != null) {
-        _isSending = true;
-        try {
-          _channel!.sink.add(jpegBytes);
-          _framesSent++;
-          if (_framesSent % 25 == 1) {
-            debugPrint('[Stream] ↑ Frame #$_framesSent sent (${jpegBytes.length} bytes)');
-          }
-        } finally {
-          _isSending = false;
+        _channel!.sink.add(jpegBytes);
+        _framesSent++;
+        if (_framesSent % 25 == 1) {
+          debugPrint('[Stream] ↑ Frame #$_framesSent sent (${jpegBytes.length} bytes)');
         }
       }
     } catch (e) {
@@ -228,6 +262,7 @@ class LiveStreamService {
   void dispose() {
     _isStreaming = false;
     _reconnectTimer?.cancel();
+    _keepAliveTimer?.cancel();
     _channel?.sink.close();
     _channel = null;
     isConnected.value = false;
@@ -237,13 +272,6 @@ class LiveStreamService {
 
 /// Standalone top-level function that runs inside a background isolate.
 /// Converts YUV420 camera image planes to a rotated and mirrored JPEG byte array.
-///
-/// OPTIMIZED: writes straight into a Uint8List RGB buffer using integer-only
-/// math and manual clamping, instead of calling img.Image.setPixelRgb() per
-/// pixel (which carries meaningful per-call overhead at 1280-wide resolution).
-/// This is typically several times faster than the original loop and should
-/// let you stay comfortably under your 100ms throttle window without lowering
-/// resolution or quality.
 Uint8List? _compressFrameIsolate(Map<String, dynamic> params) {
   try {
     final Uint8List yBytes = params['yBytes'];
@@ -321,6 +349,8 @@ Uint8List? _compressFrameIsolate(Map<String, dynamic> params) {
     // Quality dropped from 95 -> 85: visually near-identical on a live feed,
     // noticeably faster to encode and smaller to send. Tune to taste.
     return Uint8List.fromList(img.encodeJpg(fixed, quality: 85));
+    // Ultra-high quality JPEG encoding (quality 95 for maximum clarity)
+    return Uint8List.fromList(img.encodeJpg(fixed, quality: 95));
   } catch (e) {
     return null;
   }
@@ -333,6 +363,7 @@ Uint8List? _compressScreenIsolate(Map<String, dynamic> params) {
     final int width = params['width'];
     final int height = params['height'];
 
+    // Decode RGBA bytes using Image package.
     img.Image image = img.Image.fromBytes(
       width: width,
       height: height,
@@ -341,6 +372,8 @@ Uint8List? _compressScreenIsolate(Map<String, dynamic> params) {
     );
 
     return Uint8List.fromList(img.encodeJpg(image, quality: 85));
+    // Ultra-high quality JPEG encoding (quality 95 for maximum clarity)
+    return Uint8List.fromList(img.encodeJpg(image, quality: 95));
   } catch (e) {
     debugPrint('[Isolate] Screen compression error: $e');
     return null;

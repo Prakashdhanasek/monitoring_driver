@@ -2969,6 +2969,8 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
         c.startImageStream(_processImage);
         _streaming = true;
       }
+      // Verify WebSocket is still alive — Doze mode can silently kill it.
+      _streamService.onAppResumed();
     }
   }
 
