@@ -1,0 +1,21 @@
+name: record_linux
+description: Patched stub of record_linux that satisfies record_platform_interface 1.6.0 on Dart 3.10.4.
+version: 0.7.3
+
+environment:
+  sdk: ^3.3.0
+  flutter: ">=3.16.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  record_platform_interface: ^1.0.2
+
+flutter:
+  plugin:
+    implements: record
+    platforms:
+      linux:
+        pluginClass: RecordLinuxPlugin
+        dartPluginClass: RecordLinux
