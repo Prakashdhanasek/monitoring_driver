@@ -1993,12 +1993,16 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       );
       _streamService.sendAlertMessage(eventType);
 
-      // Check 10-minute cooldown for API syncing
+      // Check severity-based API cooldown
+      // Critical: 30s | High: 60s | Medium: 3 min
       final now = DateTime.now();
       final lastApiReport = _settings.getLastApiReportTime(eventType);
+      final int apiCooldownSeconds = _getCooldownForLabel(eventType);
       if (lastApiReport != null &&
-          now.difference(lastApiReport).inMinutes < 10) {
-        debugPrint('[Flow] API report throttled for 10 mins: $eventType');
+          now.difference(lastApiReport).inSeconds < apiCooldownSeconds) {
+        debugPrint(
+          '[Flow] API report throttled for ${apiCooldownSeconds}s: $eventType',
+        );
         return;
       }
       _settings.setLastApiReportTime(eventType, now);
@@ -2293,9 +2297,13 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     // Guard: never render outside the active monitoring phase.
     // The overlay sits in the root Stack so without this it can bleed over
     // the verifying / details / trip-completed screens on slower devices.
-    if (_phase != Phase.monitoring || _tripCompleted || _camMode != CamMode.driverMonitoring) {
+    if (_phase != Phase.monitoring ||
+        _tripCompleted ||
+        _camMode != CamMode.driverMonitoring) {
       if (_showBreakAlert) {
-        WidgetsBinding.instance.addPostFrameCallback((_) => _dismissBreakAlert());
+        WidgetsBinding.instance.addPostFrameCallback(
+          (_) => _dismissBreakAlert(),
+        );
       }
       return const SizedBox.shrink();
     }
@@ -2394,15 +2402,58 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   // ─────────────────────────────────────────────────────────
   // ALERT AUDIO & INCIDENTS
   // ─────────────────────────────────────────────────────────
+
+  // ── Severity-based cooldowns ──
+  // Critical: 30s | High: 60s | Medium: 180s
+  static const Map<String, int> _kIncidentCooldownSeconds = {
+    // Critical (every 30 seconds)
+    'Drowsiness': 30, // asleep/drowsy both use this key
+    // 'Medical Emergency': 30,
+    // High (every 1 minute)
+    'Distraction': 60,
+    // 'Unauthorized Driver': 60,
+    'Unverified Driver': 60,
+    'Overspeeding': 60,
+    // Medium (every 3 minutes)
+    'seatbelt': 180,
+    'Phone Usage': 180,
+    'Smoking': 180,
+    'Eating': 180,
+    'Drinking': 180,
+    // 'Cable Unplugged': 180,
+  };
+
+  // Voice alert intervals match severity
+  static const Map<String, int> _kVoiceCooldownSeconds = {
+    // Critical
+    'asleep': 5,
+    'drowsy': 10,
+    // High
+    'distracted': 30,
+    // 'unauthorized': 30,
+    'overspeed': 15,
+    'phone': 30,
+    'smoke': 30,
+    // Medium
+    'seatbelt': 60,
+    'eating': 60,
+    'drinking': 60,
+  };
+
+  int _getCooldownForLabel(String label) {
+    return _kIncidentCooldownSeconds[label] ?? 60; // default 60s
+  }
+
   bool _checkCooldown(String label) {
     final now = DateTime.now();
     final lastTime = _lastIncidentReportAt[label];
-    const int cooldownDuration =
-        30; // 30 seconds cooldown for UI flash and local sound
+    final int cooldownDuration = _getCooldownForLabel(label);
 
     if (lastTime == null) {
       _lastIncidentReportAt[label] = now;
-      debugPrint('[IncidentCooldown] $label first trigger. Reporting allowed.');
+      debugPrint(
+        '[IncidentCooldown] $label first trigger. Reporting allowed. (cooldown: ${cooldownDuration}s)',
+      );
       return true;
     }
 
@@ -2410,7 +2461,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     if (elapsed >= cooldownDuration) {
       _lastIncidentReportAt[label] = now;
       debugPrint(
-        '[IncidentCooldown] Cooldown expired for $label ($elapsed s elapsed). Reporting allowed.',
+        '[IncidentCooldown] Cooldown expired for $label ($elapsed s elapsed, limit: ${cooldownDuration}s). Reporting allowed.',
       );
       return true;
     }
@@ -2522,9 +2573,9 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
         soft = true;
       }
 
-      // Report incident once per 10 min
+      // Report incident with Medium severity
       if (_checkCooldown('seatbelt')) {
-        _reportIncident('Seatbelt Not Worn', 'High', 1.0);
+        _reportIncident('Seatbelt Not Worn', 'Medium', 1.0);
       }
 
       // Speak warning once immediately, then once every 1 minute if still unbuckled
@@ -2541,21 +2592,21 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     if (_state.drowsinessLevel == DrowsinessLevel.asleep) {
       loud = true;
 
-      // Use 'Drowsiness' for both asleep and drowsy so they share the 10 min API cooldown
+      // Use 'Drowsiness' for both asleep and drowsy so they share the cooldown
       if (_checkCooldown('Drowsiness')) {
-        _reportIncident('Drowsiness', 'High', 1.0);
+        _reportIncident('Drowsiness', 'Critical', 1.0);
       }
     } else if (_state.drowsinessLevel == DrowsinessLevel.drowsy) {
       soft = true;
 
       if (_checkCooldown('Drowsiness')) {
-        _reportIncident('Drowsiness', 'Medium', 0.8);
+        _reportIncident('Drowsiness', 'Critical', 0.8);
       }
     }
     if (_state.distractionStatus == DistractionStatus.distracted) {
       soft = true;
       if (_checkCooldown('Distraction')) {
-        _reportIncident('Distraction', 'Medium', 0.8);
+        _reportIncident('Distraction', 'High', 0.8);
       }
     }
 
@@ -2585,22 +2636,15 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       if (label == 'seatbelt') continue;
       loud = true;
 
-      if (_checkCooldown(label)) {
-        String eventType = label;
-        if (label == 'phone') {
-          eventType = 'Phone Usage';
-        }
-        if (label == 'cigarette') {
-          eventType = 'Smoking';
-        }
-        if (label == 'eating') {
-          eventType = 'Eating';
-        }
-        if (label == 'drinking') {
-          eventType = 'Drinking';
-        }
+      String eventType = label;
+      if (label == 'phone') eventType = 'Phone Usage';
+      if (label == 'cigarette') eventType = 'Smoking';
+      if (label == 'eating') eventType = 'Eating';
+      if (label == 'drinking') eventType = 'Drinking';
 
-        _reportIncident(eventType, 'High', obj.confidence);
+      // Severity: Phone/Smoking/Eating/Drinking = Medium
+      if (_checkCooldown(eventType)) {
+        _reportIncident(eventType, 'Medium', obj.confidence);
       }
     }
 
@@ -2617,9 +2661,8 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
 
     // --- Unified TTS Logic based on Banner Priority ---
     if (currentBannerKey != null && currentBannerKey != 'harsh') {
-      int cooldownSeconds = 30;
-      if (currentBannerKey == 'asleep' || currentBannerKey == 'drowsy')
-        cooldownSeconds = 5;
+      final int cooldownSeconds =
+          _kVoiceCooldownSeconds[currentBannerKey] ?? 30;
 
       if (_checkVoiceCooldown(
         currentBannerKey,
