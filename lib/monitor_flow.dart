@@ -1448,11 +1448,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
               _onVerified(isMatched: true);
             } else if (_state.authStatus == AuthStatus.unauthorized) {
               _capturedFace = _captureFaceJpeg(image, targetWidth: 480);
-              _onVerified(
-                isMatched: false,
-                face: faces.first,
-                image: image,
-              );
+              _onVerified(isMatched: false);
             }
           }
           break;
@@ -1485,8 +1481,8 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
             } else {
               _multiFace = 0;
               final face = faces.first;
+              // Light continuous identity check (catches a driver swap mid-trip).
               final now = DateTime.now();
-              // Continuous identity check for both registered and unknown drivers
               if (_lastAuthAttemptAt == null ||
                   now.difference(_lastAuthAttemptAt!).inMilliseconds >= 1500) {
                 _lastAuthAttemptAt = now;
@@ -1613,11 +1609,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     );
   }
 
-  Future<void> _onVerified({
-    bool isMatched = true,
-    Face? face,
-    CameraImage? image,
-  }) async {
+  Future<void> _onVerified({bool isMatched = true}) async {
     if (_phase != Phase.verifying) return;
     // Block re-entry immediately (synchronous, before any await) so the frame
     // pipeline's Phase.details case is a no-op and _onVerified cannot be
@@ -1788,18 +1780,6 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       } catch (e) {
         debugPrint('[Flow] Error resolving driver vehicle details: $e');
       }
-    } else {
-      // Temporarily enroll the Unknown Person's face for this trip
-      if (face != null && image != null) {
-        final emb = _authEngine.extractLiveEmbedding(
-          image,
-          _getCameraRotation(),
-          face.boundingBox,
-        );
-        if (emb != null) {
-          _authEngine.enrollTempUnknownFace(emb);
-        }
-      }
     }
 
     _driverId = driverId;
@@ -1845,7 +1825,6 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     _state.authDistance = -1.0;
     _state.authenticatedTrackingId = null;
     _authEngine.resetLiveAuthState();
-    _authEngine.clearTempUnknownFace();
     _authEngine.lastMatchedLabel = null;
     _driverId = '—';
     _driverName = 'Driver';
@@ -4046,60 +4025,6 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
                   ),
                 ),
               ),
-
-            // ── Floating PTT mic button ──────────────────────────────────
-            ValueListenableBuilder<bool>(
-              valueListenable: _streamService.isConnected,
-              builder: (context, connected, _) {
-                if (!connected) return const SizedBox.shrink();
-                return Positioned(
-                  bottom: 20,
-                  right: 16,
-                  child: ValueListenableBuilder<bool>(
-                    valueListenable: _streamService.isSpeaking,
-                    builder: (context, speaking, _) {
-                      return GestureDetector(
-                        onLongPressStart: (_) => _streamService.startSpeaking(),
-                        onLongPressEnd: (_) => _streamService.stopSpeaking(),
-                        child: AnimatedContainer(
-                          duration: const Duration(milliseconds: 150),
-                          width: 64,
-                          height: 64,
-                          decoration: BoxDecoration(
-                            shape: BoxShape.circle,
-                            color: speaking
-                                ? const Color(0xFF22C55E)
-                                : Colors.black.withValues(alpha: 0.65),
-                            border: Border.all(
-                              color: speaking
-                                  ? const Color(0xFF22C55E)
-                                  : Colors.white30,
-                              width: 2,
-                            ),
-                            boxShadow: [
-                              BoxShadow(
-                                color: speaking
-                                    ? const Color(0xFF22C55E).withValues(alpha: 0.5)
-                                    : Colors.black45,
-                                blurRadius: 12,
-                                spreadRadius: 2,
-                              ),
-                            ],
-                          ),
-                          child: Icon(
-                            speaking
-                                ? Icons.mic_rounded
-                                : Icons.mic_none_rounded,
-                            color: Colors.white,
-                            size: 30,
-                          ),
-                        ),
-                      );
-                    },
-                  ),
-                );
-              },
-            ),
           ],
         ),
       ),

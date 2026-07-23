@@ -250,37 +250,6 @@ class FaceAuthEngine {
     _consecutiveMiss = 0;
   }
 
-  /// Extracts live embedding for an unknown face.
-  List<double>? extractLiveEmbedding(CameraImage image, int rotation, Rect box) {
-    return _embedFaceFromCameraImage(image, rotation, box);
-  }
-
-  /// Temporarily enrolls an unknown face for the duration of a trip.
-  void enrollTempUnknownFace(List<double> embedding) {
-    clearTempUnknownFace();
-
-    _referenceEmbeddings.add(embedding);
-    _referenceLabels.add('unknown|Unknown Person');
-    isEnrolled = true;
-    lastMatchedLabel = 'unknown|Unknown Person';
-    _consecutiveMatch = kMatchFrames;
-    _consecutiveMiss = 0;
-    print('[Auth] Enrolled temporary unknown driver face for current trip.');
-  }
-
-  /// Clears temporary unknown face embeddings when trip ends.
-  void clearTempUnknownFace() {
-    for (int i = _referenceLabels.length - 1; i >= 0; i--) {
-      if (_referenceLabels[i] == 'unknown|Unknown Person') {
-        _referenceLabels.removeAt(i);
-        _referenceEmbeddings.removeAt(i);
-      }
-    }
-    if (_referenceEmbeddings.isEmpty) {
-      isEnrolled = false;
-    }
-  }
-
   Future<void> clearCache() async {
     await _storage.delete(key: _keyEmbedding);
     isEnrolled = false;
