@@ -1445,7 +1445,14 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
             }
             if (_state.authStatus == AuthStatus.authenticated) {
               _capturedFace = _captureFaceJpeg(image, targetWidth: 480);
-              _onVerified();
+              _onVerified(isMatched: true);
+            } else if (_state.authStatus == AuthStatus.unauthorized) {
+              _capturedFace = _captureFaceJpeg(image, targetWidth: 480);
+              _onVerified(
+                isMatched: false,
+                face: faces.first,
+                image: image,
+              );
             }
           }
           break;
@@ -1478,8 +1485,8 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
             } else {
               _multiFace = 0;
               final face = faces.first;
-              // Light continuous identity check (catches a driver swap mid-trip).
               final now = DateTime.now();
+              // Continuous identity check for both registered and unknown drivers
               if (_lastAuthAttemptAt == null ||
                   now.difference(_lastAuthAttemptAt!).inMilliseconds >= 1500) {
                 _lastAuthAttemptAt = now;
@@ -1606,7 +1613,11 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     );
   }
 
-  Future<void> _onVerified() async {
+  Future<void> _onVerified({
+    bool isMatched = true,
+    Face? face,
+    CameraImage? image,
+  }) async {
     if (_phase != Phase.verifying) return;
     // Block re-entry immediately (synchronous, before any await) so the frame
     // pipeline's Phase.details case is a no-op and _onVerified cannot be
@@ -1618,181 +1629,185 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     _tripCompletedAt = null;
     _tripNumber++; // trip 1 on first verify, trip 2 after a completed trip, ...
 
-    // API-driven identity only. FaceAuthEngine returns the matched label as
-    // "driverId|driverName" (built from the downloaded photo filename).
-    // Prefer the live API driver name from cache when available.
-    final label = _authEngine.lastMatchedLabel;
     String driverId = '—';
-    String driverName = 'Driver';
+    String driverName = 'Unknown Person';
 
-    if (label != null && label.isNotEmpty) {
-      if (label.contains('|')) {
-        final parts = label.split('|');
-        driverId = parts.isNotEmpty ? parts[0] : '—';
-        driverName = parts.length > 1 ? parts.sublist(1).join('|') : 'Driver';
-      } else {
-        driverId = label;
-      }
-    }
+    if (isMatched) {
+      // API-driven identity only. FaceAuthEngine returns the matched label as
+      // "driverId|driverName" (built from the downloaded photo filename).
+      // Prefer the live API driver name from cache when available.
+      final label = _authEngine.lastMatchedLabel;
+      driverName = 'Driver';
 
-    try {
-      // Fetch live API data for the licence check.
-      // fetchDriversFromApiOnly returns null on any failure — no cache fallback.
-      // If API is reachable we use its data; if offline, driver falls back to
-      // cache (which _startReverification already refreshed at trip end).
-      Map<String, dynamic>? driver;
-      bool driverFromApi = false;
-      final deviceId = _settings.getDeviceId();
-      if (deviceId != null && deviceId.isNotEmpty) {
-        final liveDrivers = await _driversService.fetchDriversFromApiOnly(
-          deviceId,
-        );
-        if (liveDrivers != null) {
-          driverFromApi = true;
-          final match = liveDrivers.firstWhere(
-            (d) => d['id']?.toString() == driverId,
-            orElse: () => <String, dynamic>{},
-          );
-          if (match.isNotEmpty) driver = match;
+      if (label != null && label.isNotEmpty) {
+        if (label.contains('|')) {
+          final parts = label.split('|');
+          driverId = parts.isNotEmpty ? parts[0] : '—';
+          driverName = parts.length > 1 ? parts.sublist(1).join('|') : 'Driver';
         } else {
-          debugPrint(
-            '[Flow] API unavailable — licence check skipped, using cache for other fields.',
-          );
+          driverId = label;
         }
       }
-      // Fall back to cache only for non-licence fields (name, language, vehicleId).
-      driver ??= _driversService.getDriverById(driverId);
-      if (driver != null && driver.isNotEmpty) {
-        // ── DEBUG: dump all API fields so we can find the exact language key ──
-        debugPrint('[Flow][DriverFields] ALL KEYS: ${driver.keys.toList()}');
-        debugPrint('[Flow][DriverFields] ALL VALUES: $driver');
 
-        final apiName = driver['fullName'] as String?;
-        if (apiName != null && apiName.isNotEmpty) {
-          driverName = apiName;
+      try {
+        // Fetch live API data for the licence check.
+        Map<String, dynamic>? driver;
+        final deviceId = _settings.getDeviceId();
+        if (deviceId != null && deviceId.isNotEmpty) {
+          final liveDrivers = await _driversService.fetchDriversFromApiOnly(
+            deviceId,
+          );
+          if (liveDrivers != null) {
+            final match = liveDrivers.firstWhere(
+              (d) => d['id']?.toString() == driverId,
+              orElse: () => <String, dynamic>{},
+            );
+            if (match.isNotEmpty) driver = match;
+          } else {
+            debugPrint(
+              '[Flow] API unavailable — licence check skipped, using cache for other fields.',
+            );
+          }
         }
-        final assignedVehiclesList =
-            driver['assignedVehicles'] as List<dynamic>?;
-        if (assignedVehiclesList != null && assignedVehiclesList.isNotEmpty) {
-          final firstVehicle =
-              assignedVehiclesList.first as Map<String, dynamic>;
-          _vehicleId = firstVehicle['vehicleId'] as String?;
-          _vehicleRegNo = firstVehicle['vehicleRegistrationNumber'] as String?;
-          // Parse overspeed threshold from API
-          final threshold = firstVehicle['overspeedThreshold'];
-          if (threshold != null) {
-            _overspeedThreshold = (threshold is num)
-                ? threshold.toDouble()
-                : (double.tryParse(threshold.toString()) ?? 0);
+        // Fall back to cache only for non-licence fields (name, language, vehicleId).
+        driver ??= _driversService.getDriverById(driverId);
+        if (driver != null && driver.isNotEmpty) {
+          debugPrint('[Flow][DriverFields] ALL KEYS: ${driver.keys.toList()}');
+          debugPrint('[Flow][DriverFields] ALL VALUES: $driver');
+
+          final apiName = driver['fullName'] as String?;
+          if (apiName != null && apiName.isNotEmpty) {
+            driverName = apiName;
+          }
+          final assignedVehiclesList =
+              driver['assignedVehicles'] as List<dynamic>?;
+          if (assignedVehiclesList != null && assignedVehiclesList.isNotEmpty) {
+            final firstVehicle =
+                assignedVehiclesList.first as Map<String, dynamic>;
+            _vehicleId = firstVehicle['vehicleId'] as String?;
+            _vehicleRegNo = firstVehicle['vehicleRegistrationNumber'] as String?;
+            // Parse overspeed threshold from API
+            final threshold = firstVehicle['overspeedThreshold'];
+            if (threshold != null) {
+              _overspeedThreshold = (threshold is num)
+                  ? threshold.toDouble()
+                  : (double.tryParse(threshold.toString()) ?? 0);
+            }
+            debugPrint(
+              '[Flow] Overspeed threshold set to: $_overspeedThreshold km/h',
+            );
+          } else {
+            _vehicleId = driver['assignedVehicleId'] as String?;
+            _vehicleRegNo = driver['vehicleRegistrationNumber'] as String?;
+          }
+
+          // Resolve preferred language from API response
+          final String? langStr =
+              (driver['preferredLanguage'] ??
+                      driver['alertLanguage'] ??
+                      driver['language'] ??
+                      driver['lang'])
+                  as String?;
+          AlertLang preferred = AlertLang.english;
+          if (langStr != null) {
+            final cleanLang = langStr.toLowerCase().trim();
+            if (cleanLang.contains('malayalam') || cleanLang == 'ml') {
+              preferred = AlertLang.malayalam;
+            } else if (cleanLang.contains('hindi') || cleanLang == 'hi') {
+              preferred = AlertLang.hindi;
+            } else if (cleanLang.contains('tamil') || cleanLang == 'ta') {
+              preferred = AlertLang.tamil;
+            } else if (cleanLang.contains('kannada') || cleanLang == 'kn') {
+              preferred = AlertLang.kannada;
+            }
           }
           debugPrint(
-            '[Flow] Overspeed threshold set to: $_overspeedThreshold km/h',
+            '[Flow] Setting voice alert language to: $preferred (from API: $langStr)',
           );
-        } else {
-          _vehicleId = driver['assignedVehicleId'] as String?;
-          _vehicleRegNo = driver['vehicleRegistrationNumber'] as String?;
-        }
+          await _tts.setLanguage(preferred);
 
-        // Resolve preferred language from API response
-        final String? langStr =
-            (driver['preferredLanguage'] ??
-                    driver['alertLanguage'] ??
-                    driver['language'] ??
-                    driver['lang'])
-                as String?;
-        AlertLang preferred = AlertLang.english;
-        if (langStr != null) {
-          final cleanLang = langStr.toLowerCase().trim();
-          if (cleanLang.contains('malayalam') || cleanLang == 'ml') {
-            preferred = AlertLang.malayalam;
-          } else if (cleanLang.contains('hindi') || cleanLang == 'hi') {
-            preferred = AlertLang.hindi;
-          } else if (cleanLang.contains('tamil') || cleanLang == 'ta') {
-            preferred = AlertLang.tamil;
-          } else if (cleanLang.contains('kannada') || cleanLang == 'kn') {
-            preferred = AlertLang.kannada;
-          }
-        }
-        debugPrint(
-          '[Flow] Setting voice alert language to: $preferred (from API: $langStr)',
-        );
-        await _tts.setLanguage(preferred);
+          // ── Licence expiry check ────────
+          final String? licenseNum = driver['licenseNumber'] as String?;
+          final String? licenseExpiryStr = driver['licenseExpiry'] as String?;
+          if (licenseExpiryStr != null) {
+            final expiry = DateTime.tryParse(licenseExpiryStr);
+            if (expiry != null) {
+              final today = DateTime.now();
+              final expiryDate = DateTime(expiry.year, expiry.month, expiry.day);
+              final todayDate = DateTime(today.year, today.month, today.day);
+              final daysLeft = expiryDate.difference(todayDate).inDays;
 
-        // ── Licence expiry check (API data preferred; cache fallback) ────────
-        final String? licenseNum = driver['licenseNumber'] as String?;
-        final String? licenseExpiryStr = driver['licenseExpiry'] as String?;
-        if (licenseExpiryStr != null) {
-          final expiry = DateTime.tryParse(licenseExpiryStr);
-          if (expiry != null) {
-            final today = DateTime.now();
-            final expiryDate = DateTime(expiry.year, expiry.month, expiry.day);
-            final todayDate = DateTime(today.year, today.month, today.day);
-            final daysLeft = expiryDate.difference(todayDate).inDays;
-
-            if (daysLeft < 0) {
-              // ── EXPIRED: dialog on verifying screen (phase already details,
-              // but no setState yet so camera view is still visible).
-              _tripNumber--; // undo trip increment — no trip started
-              _driverId = driverId;
-              _driverName = driverName;
-              await _showLicenseExpiredDialog(licenseNum ?? '—', expiry);
-              if (!mounted) return;
-              _authEngine.clearEnrollment();
-              _lastDriversRefreshAt = null;
-              setState(() {
-                _phase = Phase.verifying;
-                _state.authStatus = AuthStatus.scanning;
-              });
-              _refreshDriversOnFaceDetection();
-              return;
-            } else if (daysLeft <= 10) {
-              // ── EXPIRING SOON: dialog on verifying screen (no setState yet),
-              // then switch to welcome screen after it auto-dismisses.
-              _driverId = driverId;
-              _driverName = driverName;
-              _countdown = 3;
-              await _showLicenseExpiryWarningDialog(
-                licenseNum ?? '—',
-                expiry,
-                daysLeft,
-              );
-              // Dialog dismissed — now render the welcome/details screen.
-              if (!mounted) return;
-              if (mounted) setState(() {});
-              _tts.speak(AlertMessages.welcome(_tts.currentLang, _driverName));
-              _countdownTimer?.cancel();
-              _countdownTimer = Timer.periodic(const Duration(seconds: 1), (t) {
-                _countdown--;
-                if (_countdown <= 0) {
-                  t.cancel();
-                  _state.resetCalibration();
-                  _state.authStatus = AuthStatus.authenticated;
-                  _phase = Phase.monitoring;
-                  _monitoringStartedAt = DateTime.now();
-                  _sendTripStart();
-                  _breakAlertTimer?.cancel();
-                  _breakAlertTimer = Timer.periodic(_kBreakAlertInterval, (_) {
-                    _triggerBreakAlert();
-                  });
-                }
+              if (daysLeft < 0) {
+                _tripNumber--; // undo trip increment — no trip started
+                _driverId = driverId;
+                _driverName = driverName;
+                await _showLicenseExpiredDialog(licenseNum ?? '—', expiry);
+                if (!mounted) return;
+                _authEngine.clearEnrollment();
+                _lastDriversRefreshAt = null;
+                setState(() {
+                  _phase = Phase.verifying;
+                  _state.authStatus = AuthStatus.scanning;
+                });
+                _refreshDriversOnFaceDetection();
+                return;
+              } else if (daysLeft <= 10) {
+                _driverId = driverId;
+                _driverName = driverName;
+                _countdown = 3;
+                await _showLicenseExpiryWarningDialog(
+                  licenseNum ?? '—',
+                  expiry,
+                  daysLeft,
+                );
+                if (!mounted) return;
                 if (mounted) setState(() {});
-              });
-              return; // skip the normal flow below
+                _tts.speak(AlertMessages.welcome(_tts.currentLang, _driverName));
+                _countdownTimer?.cancel();
+                _countdownTimer = Timer.periodic(const Duration(seconds: 1), (t) {
+                  _countdown--;
+                  if (_countdown <= 0) {
+                    t.cancel();
+                    _state.resetCalibration();
+                    _state.authStatus = AuthStatus.authenticated;
+                    _phase = Phase.monitoring;
+                    _monitoringStartedAt = DateTime.now();
+                    _sendTripStart();
+                    _breakAlertTimer?.cancel();
+                    _breakAlertTimer = Timer.periodic(_kBreakAlertInterval, (_) {
+                      _triggerBreakAlert();
+                    });
+                  }
+                  if (mounted) setState(() {});
+                });
+                return;
+              }
             }
           }
         }
+      } catch (e) {
+        debugPrint('[Flow] Error resolving driver vehicle details: $e');
       }
-    } catch (e) {
-      debugPrint('[Flow] Error resolving driver vehicle details: $e');
+    } else {
+      // Temporarily enroll the Unknown Person's face for this trip
+      if (face != null && image != null) {
+        final emb = _authEngine.extractLiveEmbedding(
+          image,
+          _getCameraRotation(),
+          face.boundingBox,
+        );
+        if (emb != null) {
+          _authEngine.enrollTempUnknownFace(emb);
+        }
+      }
     }
 
     _driverId = driverId;
     _driverName = driverName;
-    // _phase is already Phase.details (set at top of _onVerified); now render it.
     _countdown = 3;
     if (mounted) setState(() {});
 
-    // Face verification voice alert.
+    // Voice alert.
     _tts.speak(AlertMessages.welcome(_tts.currentLang, _driverName));
 
     _countdownTimer?.cancel();
@@ -1830,6 +1845,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     _state.authDistance = -1.0;
     _state.authenticatedTrackingId = null;
     _authEngine.resetLiveAuthState();
+    _authEngine.clearTempUnknownFace();
     _authEngine.lastMatchedLabel = null;
     _driverId = '—';
     _driverName = 'Driver';
@@ -2042,21 +2058,11 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
         }
       }
 
-      // FIX: Never create an incident before face verification is complete.
-      // This prevents blank images and stale/random driver names from being sent.
-      // Exception: Allow if the driver is explicitly unauthorized OR if it's
-      // an "Unverified Driver" event (vehicle moving without face auth).
+      // Allow incidents to be recorded during active monitoring.
       if (_phase != Phase.monitoring && eventType != 'Unverified Driver') {
         debugPrint(
           '[Flow] Skipping incident "$eventType" — driver not verified (phase=$_phase, id=$_driverId).',
         );
-        return;
-      }
-      if (_phase == Phase.monitoring &&
-          _driverId == '—' &&
-          _state.authStatus != AuthStatus.unauthorized &&
-          eventType != 'Unverified Driver') {
-        debugPrint('[Flow] Skipping incident "$eventType" — no driver ID.');
         return;
       }
 
