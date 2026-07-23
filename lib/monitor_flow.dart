@@ -1209,6 +1209,16 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   }
 
   Future<void> _requestPermissions() async {
+    // 0. Microphone (required for push-to-talk audio)
+    try {
+      final micStatus = await Permission.microphone.status;
+      if (!micStatus.isGranted) {
+        await Permission.microphone.request();
+      }
+    } catch (e) {
+      debugPrint('[Flow] Error requesting microphone permission: $e');
+    }
+
     // 1. Storage Permissions (required to save video to public Downloads folder)
     try {
       if (Platform.isAndroid) {
