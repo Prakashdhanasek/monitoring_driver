@@ -2003,12 +2003,16 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       );
       _streamService.sendAlertMessage(eventType);
 
-      // Check 10-minute cooldown for API syncing
+      // Check severity-based API cooldown
+      // Critical: 30s | High: 60s | Medium: 3 min
       final now = DateTime.now();
       final lastApiReport = _settings.getLastApiReportTime(eventType);
+      final int apiCooldownSeconds = _getCooldownForLabel(eventType);
       if (lastApiReport != null &&
-          now.difference(lastApiReport).inMinutes < 10) {
-        debugPrint('[Flow] API report throttled for 10 mins: $eventType');
+          now.difference(lastApiReport).inSeconds < apiCooldownSeconds) {
+        debugPrint(
+          '[Flow] API report throttled for ${apiCooldownSeconds}s: $eventType',
+        );
         return;
       }
       _settings.setLastApiReportTime(eventType, now);
@@ -2303,9 +2307,13 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     // Guard: never render outside the active monitoring phase.
     // The overlay sits in the root Stack so without this it can bleed over
     // the verifying / details / trip-completed screens on slower devices.
-    if (_phase != Phase.monitoring || _tripCompleted || _camMode != CamMode.driverMonitoring) {
+    if (_phase != Phase.monitoring ||
+        _tripCompleted ||
+        _camMode != CamMode.driverMonitoring) {
       if (_showBreakAlert) {
-        WidgetsBinding.instance.addPostFrameCallback((_) => _dismissBreakAlert());
+        WidgetsBinding.instance.addPostFrameCallback(
+          (_) => _dismissBreakAlert(),
+        );
       }
       return const SizedBox.shrink();
     }
@@ -2404,15 +2412,58 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   // ─────────────────────────────────────────────────────────
   // ALERT AUDIO & INCIDENTS
   // ─────────────────────────────────────────────────────────
+
+  // ── Severity-based cooldowns ──
+  // Critical: 30s | High: 60s | Medium: 180s
+  static const Map<String, int> _kIncidentCooldownSeconds = {
+    // Critical (every 30 seconds)
+    'Drowsiness': 30, // asleep/drowsy both use this key
+    // 'Medical Emergency': 30,
+    // High (every 1 minute)
+    'Distraction': 60,
+    // 'Unauthorized Driver': 60,
+    'Unverified Driver': 60,
+    'Overspeeding': 60,
+    // Medium (every 3 minutes)
+    'seatbelt': 180,
+    'Phone Usage': 180,
+    'Smoking': 180,
+    'Eating': 180,
+    'Drinking': 180,
+    // 'Cable Unplugged': 180,
+  };
+
+  // Voice alert intervals match severity
+  static const Map<String, int> _kVoiceCooldownSeconds = {
+    // Critical
+    'asleep': 5,
+    'drowsy': 10,
+    // High
+    'distracted': 30,
+    // 'unauthorized': 30,
+    'overspeed': 15,
+    'phone': 30,
+    'smoke': 30,
+    // Medium
+    'seatbelt': 60,
+    'eating': 60,
+    'drinking': 60,
+  };
+
+  int _getCooldownForLabel(String label) {
+    return _kIncidentCooldownSeconds[label] ?? 60; // default 60s
+  }
+
   bool _checkCooldown(String label) {
     final now = DateTime.now();
     final lastTime = _lastIncidentReportAt[label];
-    const int cooldownDuration =
-        30; // 30 seconds cooldown for UI flash and local sound
+    final int cooldownDuration = _getCooldownForLabel(label);
 
     if (lastTime == null) {
       _lastIncidentReportAt[label] = now;
-      debugPrint('[IncidentCooldown] $label first trigger. Reporting allowed.');
+      debugPrint(
+        '[IncidentCooldown] $label first trigger. Reporting allowed. (cooldown: ${cooldownDuration}s)',
+      );
       return true;
     }
 
@@ -2420,7 +2471,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     if (elapsed >= cooldownDuration) {
       _lastIncidentReportAt[label] = now;
       debugPrint(
-        '[IncidentCooldown] Cooldown expired for $label ($elapsed s elapsed). Reporting allowed.',
+        '[IncidentCooldown] Cooldown expired for $label ($elapsed s elapsed, limit: ${cooldownDuration}s). Reporting allowed.',
       );
       return true;
     }
@@ -2532,9 +2583,9 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
         soft = true;
       }
 
-      // Report incident once per 10 min
+      // Report incident with Medium severity
       if (_checkCooldown('seatbelt')) {
-        _reportIncident('Seatbelt Not Worn', 'High', 1.0);
+        _reportIncident('Seatbelt Not Worn', 'Medium', 1.0);
       }
 
       // Speak warning once immediately, then once every 1 minute if still unbuckled
@@ -2551,21 +2602,21 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     if (_state.drowsinessLevel == DrowsinessLevel.asleep) {
       loud = true;
 
-      // Use 'Drowsiness' for both asleep and drowsy so they share the 10 min API cooldown
+      // Use 'Drowsiness' for both asleep and drowsy so they share the cooldown
       if (_checkCooldown('Drowsiness')) {
-        _reportIncident('Drowsiness', 'High', 1.0);
+        _reportIncident('Drowsiness', 'Critical', 1.0);
       }
     } else if (_state.drowsinessLevel == DrowsinessLevel.drowsy) {
       soft = true;
 
       if (_checkCooldown('Drowsiness')) {
-        _reportIncident('Drowsiness', 'Medium', 0.8);
+        _reportIncident('Drowsiness', 'Critical', 0.8);
       }
     }
     if (_state.distractionStatus == DistractionStatus.distracted) {
       soft = true;
       if (_checkCooldown('Distraction')) {
-        _reportIncident('Distraction', 'Medium', 0.8);
+        _reportIncident('Distraction', 'High', 0.8);
       }
     }
 
@@ -2595,22 +2646,15 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       if (label == 'seatbelt') continue;
       loud = true;
 
-      if (_checkCooldown(label)) {
-        String eventType = label;
-        if (label == 'phone') {
-          eventType = 'Phone Usage';
-        }
-        if (label == 'cigarette') {
-          eventType = 'Smoking';
-        }
-        if (label == 'eating') {
-          eventType = 'Eating';
-        }
-        if (label == 'drinking') {
-          eventType = 'Drinking';
-        }
+      String eventType = label;
+      if (label == 'phone') eventType = 'Phone Usage';
+      if (label == 'cigarette') eventType = 'Smoking';
+      if (label == 'eating') eventType = 'Eating';
+      if (label == 'drinking') eventType = 'Drinking';
 
-        _reportIncident(eventType, 'High', obj.confidence);
+      // Severity: Phone/Smoking/Eating/Drinking = Medium
+      if (_checkCooldown(eventType)) {
+        _reportIncident(eventType, 'Medium', obj.confidence);
       }
     }
 
@@ -2627,9 +2671,8 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
 
     // --- Unified TTS Logic based on Banner Priority ---
     if (currentBannerKey != null && currentBannerKey != 'harsh') {
-      int cooldownSeconds = 30;
-      if (currentBannerKey == 'asleep' || currentBannerKey == 'drowsy')
-        cooldownSeconds = 5;
+      final int cooldownSeconds =
+          _kVoiceCooldownSeconds[currentBannerKey] ?? 30;
 
       if (_checkVoiceCooldown(
         currentBannerKey,
@@ -2985,18 +3028,18 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   }
 
   // ─────────────────────────────────────────────────────────
-  // HIDDEN ADMIN EXIT (top-right corner tapped 5x within 3s -> PIN)
+  // HIDDEN ADMIN EXIT (top-right corner double-tapped -> PIN)
   // ─────────────────────────────────────────────────────────
   void _onCornerTap() {
     final now = DateTime.now();
     if (_firstExitTapAt == null ||
-        now.difference(_firstExitTapAt!).inSeconds > 3) {
+        now.difference(_firstExitTapAt!).inMilliseconds > 2000) {
       _firstExitTapAt = now;
       _exitTaps = 1;
     } else {
       _exitTaps++;
     }
-    if (_exitTaps >= 5) {
+    if (_exitTaps >= 2) {
       _exitTaps = 0;
       _firstExitTapAt = null;
       _showExitPinDialog();
@@ -3354,38 +3397,103 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
 
   void _showExitPinDialog() {
     final controller = TextEditingController();
+    String? errorMessage;
     showDialog<void>(
       context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Admin Exit'),
-        content: TextField(
-          controller: controller,
-          keyboardType: TextInputType.number,
-          obscureText: true,
-          autofocus: true,
-          decoration: const InputDecoration(hintText: 'Enter admin PIN'),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx),
-            child: const Text('Cancel'),
-          ),
-          TextButton(
-            onPressed: () {
-              final pin = controller.text;
-              Navigator.pop(ctx);
+      builder: (ctx) {
+        return StatefulBuilder(
+          builder: (dialogContext, setDialogState) {
+            void verifyAndSubmit(String pin) {
               if (pin == kAdminPin) {
+                Navigator.pop(ctx);
                 Kiosk.stop();
+                if (mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(
+                      content: Text('Admin exit successful. Kiosk mode disabled.'),
+                      backgroundColor: Colors.green,
+                    ),
+                  );
+                }
               } else if (pin == '0000') {
+                Navigator.pop(ctx);
                 _openEspScannerScreen();
               } else if (pin == '1111') {
+                Navigator.pop(ctx);
                 _openTtsInstall();
+              } else {
+                setDialogState(() {
+                  errorMessage = 'Incorrect 4-digit PIN';
+                });
               }
-            },
-            child: const Text('Exit'),
-          ),
-        ],
-      ),
+            }
+
+            return AlertDialog(
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(16),
+              ),
+              title: const Row(
+                children: [
+                  Icon(Icons.admin_panel_settings, color: Colors.blueAccent),
+                  SizedBox(width: 8),
+                  Text('Admin Exit'),
+                ],
+              ),
+              content: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text(
+                    'Enter 4-digit admin PIN:',
+                    style: TextStyle(fontSize: 14, fontWeight: FontWeight.w500),
+                  ),
+                  const SizedBox(height: 12),
+                  TextField(
+                    controller: controller,
+                    keyboardType: TextInputType.number,
+                    obscureText: true,
+                    autofocus: true,
+                    maxLength: 4,
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(
+                      fontSize: 24,
+                      letterSpacing: 8,
+                      fontWeight: FontWeight.bold,
+                    ),
+                    inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+                    decoration: InputDecoration(
+                      hintText: '••••',
+                      counterText: '',
+                      errorText: errorMessage,
+                      border: const OutlineInputBorder(),
+                    ),
+                    onChanged: (val) {
+                      if (errorMessage != null) {
+                        setDialogState(() {
+                          errorMessage = null;
+                        });
+                      }
+                      if (val.length == 4) {
+                        verifyAndSubmit(val);
+                      }
+                    },
+                  ),
+                ],
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(ctx),
+                  child: const Text('Cancel'),
+                ),
+                ElevatedButton(
+                  onPressed: () => verifyAndSubmit(controller.text),
+                  child: const Text('Exit'),
+                ),
+              ],
+            );
+          },
+        );
+      },
     );
   }
 
@@ -3630,14 +3738,15 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
                 onDetection: _onCamObjectDetected,
               ),
 
-            // Invisible admin-exit hotspot (top-right corner). Tap 5x -> PIN.
+            // Invisible admin-exit hotspot (top-right corner). Double tap -> PIN.
             Positioned(
               top: 0,
               right: 0,
               child: GestureDetector(
                 behavior: HitTestBehavior.opaque,
+                onDoubleTap: _showExitPinDialog,
                 onTap: _onCornerTap,
-                child: const SizedBox(width: 72, height: 72),
+                child: const SizedBox(width: 90, height: 90),
               ),
             ),
 
