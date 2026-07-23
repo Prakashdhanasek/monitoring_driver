@@ -1,9 +1,12 @@
 import 'dart:async';
-import 'dart:convert';
+import 'dart:io';
 import 'dart:typed_data';
+import 'package:audioplayers/audioplayers.dart';
 import 'package:camera/camera.dart';
 import 'package:flutter/foundation.dart';
 import 'package:image/image.dart' as img;
+import 'package:path_provider/path_provider.dart';
+import 'package:record/record.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 
 class LiveStreamService {
@@ -19,7 +22,17 @@ class LiveStreamService {
   DateTime? _streamingStartedAt;
   String _deviceTabletId = '';
 
+  // ─── Audio ───────────────────────────────────────────
+  final AudioRecorder _recorder = AudioRecorder();
+  final AudioPlayer _audioPlayer = AudioPlayer();
+  bool _isSpeaking = false;
+  StreamSubscription<Uint8List>? _audioSub;
+  // Buffer for incoming WebM chunks — assembled and played once stream ends
+  final List<Uint8List> _audioBuffer = [];
+  Timer? _audioFlushTimer;
+
   final ValueNotifier<bool> isConnected = ValueNotifier<bool>(false);
+  final ValueNotifier<bool> isSpeaking = ValueNotifier<bool>(false);
 
   bool get isStreaming => _isStreaming;
 
@@ -64,6 +77,7 @@ class LiveStreamService {
         isConnected.value = true;
         _isReconnecting = false;
         _startKeepAlive();
+        _initAudioPlayer();
         debugPrint('[Stream] WebSocket connection successfully established!');
       }).catchError((err) {
         debugPrint('[Stream] WebSocket connection failed: $err');
@@ -129,22 +143,33 @@ class LiveStreamService {
     });
   }
 
-  /// Handles start/stop command parsing (supports JSON & plain text, case-insensitive)
+  /// Handles commands from the backend.
+  /// Binary: 0x03 prefix = admin audio (WebM/Opus). Text: START / STOP / PONG.
   void _handleCommand(dynamic message) {
-    String cmd;
+    // Binary message: admin audio has 0x03 prefix
     if (message is Uint8List) {
-      cmd = String.fromCharCodes(message).trim();
-      debugPrint('[Stream] ← Binary command (${message.length}b): "$cmd"');
-    } else {
-      cmd = message.toString().trim();
-      debugPrint('[Stream] ← Text command: "$cmd"');
+      if (message.isNotEmpty && message[0] == 0x03) {
+        final audio = message.sublist(1);
+        if (audio.isEmpty) {
+          // End-of-transmission signal from backend — flush immediately
+          _audioFlushTimer?.cancel();
+          _flushAudioBuffer();
+        } else {
+          _playIncomingAudio(audio);
+        }
+      }
+      return;
     }
-    if (cmd == 'START') {
+
+    // Plain-text commands
+    final raw = message.toString().trim();
+    debugPrint('[Stream] ← Command: "$raw"');
+    if (raw == 'START') {
       _isStreaming = true;
       _framesSent = 0;
       _streamingStartedAt = DateTime.now();
       debugPrint('[Stream] ▶ STREAMING STARTED');
-    } else if (cmd == 'STOP') {
+    } else if (raw == 'STOP') {
       _isStreaming = false;
       final duration = _streamingStartedAt != null
           ? DateTime.now().difference(_streamingStartedAt!).inSeconds
@@ -152,8 +177,105 @@ class LiveStreamService {
       debugPrint('[Stream] ■ STREAMING STOPPED — sent $_framesSent frames in ${duration}s');
       _framesSent = 0;
       _streamingStartedAt = null;
-    } else if (cmd == 'PONG') {
+    } else if (raw == 'PONG') {
       // keepalive response — connection is alive
+    }
+  }
+
+  // ─── Audio: Init player (no-op — AudioPlayer initialises lazily) ──────
+  void _initAudioPlayer() {
+    debugPrint('[Audio] AudioPlayer ready (WebM/Opus)');
+  }
+
+  // ─── Audio: Buffer incoming WebM/Opus chunks, play once stream ends ──────
+  // Backend sends WebM as a stream of chunks (header + clusters).
+  // We accumulate all chunks and play the assembled file 300ms after the last chunk.
+  void _playIncomingAudio(Uint8List bytes) {
+    if (bytes.isEmpty) return;
+    _audioBuffer.add(bytes);
+    debugPrint('[Audio] ▶ Buffered chunk (${bytes.length} bytes, total: ${_audioBuffer.length})');
+    // Reset flush timer — play 2s after last chunk arrives (chunks can be ~1s apart)
+    _audioFlushTimer?.cancel();
+    _audioFlushTimer = Timer(const Duration(milliseconds: 2000), _flushAudioBuffer);
+  }
+
+  Future<void> _flushAudioBuffer() async {
+    if (_audioBuffer.isEmpty) return;
+    // Concatenate all chunks into one WebM file
+    final totalBytes = _audioBuffer.fold<int>(0, (sum, c) => sum + c.length);
+    final assembled = Uint8List(totalBytes);
+    int offset = 0;
+    for (final chunk in _audioBuffer) {
+      assembled.setRange(offset, offset + chunk.length, chunk);
+      offset += chunk.length;
+    }
+    _audioBuffer.clear();
+    try {
+      final tempDir = await getTemporaryDirectory();
+      final tempFile = File('${tempDir.path}/admin_audio_${DateTime.now().millisecondsSinceEpoch}.webm');
+      await tempFile.writeAsBytes(assembled);
+      await _audioPlayer.play(DeviceFileSource(tempFile.path));
+      debugPrint('[Audio] ✅ Playing assembled admin audio ($totalBytes bytes)');
+    } catch (e) {
+      debugPrint('[Audio] Playback error: $e');
+    }
+  }
+
+  // ─── Audio: Send driver voice ──────────────────────────
+  // Protocol: binary frame — [0x02][complete AAC/M4A bytes]
+  // aacLc used (opus requires Android API 29+; aacLc works on all versions).
+  String? _recordingPath;
+
+  /// Start recording driver mic to a temp file.
+  Future<void> startSpeaking() async {
+    if (_isSpeaking || !isConnected.value) return;
+    try {
+      final hasPermission = await _recorder.hasPermission();
+      if (!hasPermission) {
+        debugPrint('[Audio] Mic permission denied');
+        return;
+      }
+      final tempDir = await getTemporaryDirectory();
+      _recordingPath = '${tempDir.path}/driver_audio_${DateTime.now().millisecondsSinceEpoch}.m4a';
+      await _recorder.start(
+        const RecordConfig(
+          encoder: AudioEncoder.aacLc,
+          sampleRate: 16000,
+          numChannels: 1,
+          androidConfig: AndroidRecordConfig(
+            audioSource: AndroidAudioSource.voiceCommunication,
+          ),
+        ),
+        path: _recordingPath!,
+      );
+      _isSpeaking = true;
+      isSpeaking.value = true;
+      debugPrint('[Audio] 🎙 Driver speaking started — recording to file');
+    } catch (e) {
+      debugPrint('[Audio] startSpeaking error: $e');
+    }
+  }
+
+  /// Stop recording and send the complete audio file as one binary frame.
+  Future<void> stopSpeaking() async {
+    if (!_isSpeaking) return;
+    _isSpeaking = false;
+    isSpeaking.value = false;
+    try {
+      final path = await _recorder.stop();
+      debugPrint('[Audio] 🎙 Driver speaking stopped');
+      if (path == null || !isConnected.value || _channel == null) return;
+      final bytes = await File(path).readAsBytes();
+      if (bytes.isEmpty) return;
+      final frame = Uint8List(bytes.length + 1);
+      frame[0] = 0x02;
+      frame.setRange(1, frame.length, bytes);
+      _channel!.sink.add(frame);
+      debugPrint('[Audio] 📤 Sent complete audio — ${bytes.length} bytes');
+      // Clean up temp file
+      try { await File(path).delete(); } catch (_) {}
+    } catch (e) {
+      debugPrint('[Audio] stopSpeaking error: $e');
     }
   }
 
@@ -263,9 +385,15 @@ class LiveStreamService {
     _isStreaming = false;
     _reconnectTimer?.cancel();
     _keepAliveTimer?.cancel();
+    _audioFlushTimer?.cancel();
+    _audioBuffer.clear();
+    _recorder.dispose();
+    _audioPlayer.dispose();
+    _audioSub?.cancel();
     _channel?.sink.close();
     _channel = null;
     isConnected.value = false;
+    isSpeaking.value = false;
     debugPrint('[Stream] Disposed.');
   }
 }
@@ -346,11 +474,7 @@ Uint8List? _compressFrameIsolate(Map<String, dynamic> params) {
       fixed = img.flipHorizontal(fixed);
     }
 
-    // Quality dropped from 95 -> 85: visually near-identical on a live feed,
-    // noticeably faster to encode and smaller to send. Tune to taste.
     return Uint8List.fromList(img.encodeJpg(fixed, quality: 85));
-    // Ultra-high quality JPEG encoding (quality 95 for maximum clarity)
-    return Uint8List.fromList(img.encodeJpg(fixed, quality: 95));
   } catch (e) {
     return null;
   }
@@ -362,8 +486,8 @@ Uint8List? _compressScreenIsolate(Map<String, dynamic> params) {
     final Uint8List rgbaBytes = params['rgbaBytes'];
     final int width = params['width'];
     final int height = params['height'];
+    final int targetWidth = params['targetWidth'];
 
-    // Decode RGBA bytes using Image package.
     img.Image image = img.Image.fromBytes(
       width: width,
       height: height,
@@ -371,9 +495,11 @@ Uint8List? _compressScreenIsolate(Map<String, dynamic> params) {
       order: img.ChannelOrder.rgba,
     );
 
+    if (image.width > targetWidth) {
+      image = img.copyResize(image, width: targetWidth);
+    }
+
     return Uint8List.fromList(img.encodeJpg(image, quality: 85));
-    // Ultra-high quality JPEG encoding (quality 95 for maximum clarity)
-    return Uint8List.fromList(img.encodeJpg(image, quality: 95));
   } catch (e) {
     debugPrint('[Isolate] Screen compression error: $e');
     return null;

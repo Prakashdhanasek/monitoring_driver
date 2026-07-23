@@ -66,6 +66,7 @@ dependencies:
   android_intent_plus: ^5.0.0
   package_info_plus: ^9.0.0
   web_socket_channel: ^3.0.3
+  record: 5.1.2
   # HTTP MJPEG streaming is handled by custom widget in views/mjpeg_stream_widget.dart
 
 
@@ -135,3 +136,8 @@ flutter:
   #
   # For details regarding fonts from package dependencies,
   # see https://flutter.dev/to/font-from-package
+
+
+dependency_overrides:
+  record_linux:
+    path: packages/record_linux_patched

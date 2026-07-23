@@ -4040,6 +4040,60 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
                   ),
                 ),
               ),
+
+            // ── Floating PTT mic button ──────────────────────────────────
+            ValueListenableBuilder<bool>(
+              valueListenable: _streamService.isConnected,
+              builder: (context, connected, _) {
+                if (!connected) return const SizedBox.shrink();
+                return Positioned(
+                  bottom: 20,
+                  right: 16,
+                  child: ValueListenableBuilder<bool>(
+                    valueListenable: _streamService.isSpeaking,
+                    builder: (context, speaking, _) {
+                      return GestureDetector(
+                        onLongPressStart: (_) => _streamService.startSpeaking(),
+                        onLongPressEnd: (_) => _streamService.stopSpeaking(),
+                        child: AnimatedContainer(
+                          duration: const Duration(milliseconds: 150),
+                          width: 64,
+                          height: 64,
+                          decoration: BoxDecoration(
+                            shape: BoxShape.circle,
+                            color: speaking
+                                ? const Color(0xFF22C55E)
+                                : Colors.black.withValues(alpha: 0.65),
+                            border: Border.all(
+                              color: speaking
+                                  ? const Color(0xFF22C55E)
+                                  : Colors.white30,
+                              width: 2,
+                            ),
+                            boxShadow: [
+                              BoxShadow(
+                                color: speaking
+                                    ? const Color(0xFF22C55E).withValues(alpha: 0.5)
+                                    : Colors.black45,
+                                blurRadius: 12,
+                                spreadRadius: 2,
+                              ),
+                            ],
+                          ),
+                          child: Icon(
+                            speaking
+                                ? Icons.mic_rounded
+                                : Icons.mic_none_rounded,
+                            color: Colors.white,
+                            size: 30,
+                          ),
+                        ),
+                      );
+                    },
+                  ),
+                );
+              },
+            ),
           ],
         ),
       ),
