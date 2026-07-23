@@ -182,9 +182,20 @@ class LiveStreamService {
     }
   }
 
-  // ─── Audio: Init player (no-op — AudioPlayer initialises lazily) ──────
+  // ─── Audio: Init player ──────────────────────────────────────────────────
   void _initAudioPlayer() {
-    debugPrint('[Audio] AudioPlayer ready (WebM/Opus)');
+    // Force loudspeaker + max volume so admin voice is loud even when
+    // VOICE_COMMUNICATION source is active (which normally routes to earpiece).
+    _audioPlayer.setAudioContext(AudioContext(
+      android: AudioContextAndroid(
+        isSpeakerphoneOn: true,
+        contentType: AndroidContentType.speech,
+        usageType: AndroidUsageType.media,
+        audioFocus: AndroidAudioFocus.gain,
+      ),
+    ));
+    _audioPlayer.setVolume(1.0);
+    debugPrint('[Audio] AudioPlayer ready — loudspeaker forced');
   }
 
   // ─── Audio: Buffer incoming WebM/Opus chunks, play once stream ends ──────
@@ -214,6 +225,7 @@ class LiveStreamService {
       final tempDir = await getTemporaryDirectory();
       final tempFile = File('${tempDir.path}/admin_audio_${DateTime.now().millisecondsSinceEpoch}.webm');
       await tempFile.writeAsBytes(assembled);
+      await _audioPlayer.setVolume(1.0);
       await _audioPlayer.play(DeviceFileSource(tempFile.path));
       debugPrint('[Audio] ✅ Playing assembled admin audio ($totalBytes bytes)');
     } catch (e) {
