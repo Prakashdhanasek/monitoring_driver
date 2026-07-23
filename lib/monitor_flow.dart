@@ -3029,7 +3029,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     } else {
       _exitTaps++;
     }
-    if (_exitTaps >= 5) {
+    if (_exitTaps >= 2) {
       _exitTaps = 0;
       _firstExitTapAt = null;
       _showExitPinDialog();
