@@ -3018,12 +3018,12 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   }
 
   // ─────────────────────────────────────────────────────────
-  // HIDDEN ADMIN EXIT (top-right corner tapped 5x within 3s -> PIN)
+  // HIDDEN ADMIN EXIT (top-right corner double-tapped -> PIN)
   // ─────────────────────────────────────────────────────────
   void _onCornerTap() {
     final now = DateTime.now();
     if (_firstExitTapAt == null ||
-        now.difference(_firstExitTapAt!).inSeconds > 3) {
+        now.difference(_firstExitTapAt!).inMilliseconds > 2000) {
       _firstExitTapAt = now;
       _exitTaps = 1;
     } else {
@@ -3387,38 +3387,103 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
 
   void _showExitPinDialog() {
     final controller = TextEditingController();
+    String? errorMessage;
     showDialog<void>(
       context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Admin Exit'),
-        content: TextField(
-          controller: controller,
-          keyboardType: TextInputType.number,
-          obscureText: true,
-          autofocus: true,
-          decoration: const InputDecoration(hintText: 'Enter admin PIN'),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx),
-            child: const Text('Cancel'),
-          ),
-          TextButton(
-            onPressed: () {
-              final pin = controller.text;
-              Navigator.pop(ctx);
+      builder: (ctx) {
+        return StatefulBuilder(
+          builder: (dialogContext, setDialogState) {
+            void verifyAndSubmit(String pin) {
               if (pin == kAdminPin) {
+                Navigator.pop(ctx);
                 Kiosk.stop();
+                if (mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(
+                      content: Text('Admin exit successful. Kiosk mode disabled.'),
+                      backgroundColor: Colors.green,
+                    ),
+                  );
+                }
               } else if (pin == '0000') {
+                Navigator.pop(ctx);
                 _openEspScannerScreen();
               } else if (pin == '1111') {
+                Navigator.pop(ctx);
                 _openTtsInstall();
+              } else {
+                setDialogState(() {
+                  errorMessage = 'Incorrect 4-digit PIN';
+                });
               }
-            },
-            child: const Text('Exit'),
-          ),
-        ],
-      ),
+            }
+
+            return AlertDialog(
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(16),
+              ),
+              title: const Row(
+                children: [
+                  Icon(Icons.admin_panel_settings, color: Colors.blueAccent),
+                  SizedBox(width: 8),
+                  Text('Admin Exit'),
+                ],
+              ),
+              content: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text(
+                    'Enter 4-digit admin PIN:',
+                    style: TextStyle(fontSize: 14, fontWeight: FontWeight.w500),
+                  ),
+                  const SizedBox(height: 12),
+                  TextField(
+                    controller: controller,
+                    keyboardType: TextInputType.number,
+                    obscureText: true,
+                    autofocus: true,
+                    maxLength: 4,
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(
+                      fontSize: 24,
+                      letterSpacing: 8,
+                      fontWeight: FontWeight.bold,
+                    ),
+                    inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+                    decoration: InputDecoration(
+                      hintText: '••••',
+                      counterText: '',
+                      errorText: errorMessage,
+                      border: const OutlineInputBorder(),
+                    ),
+                    onChanged: (val) {
+                      if (errorMessage != null) {
+                        setDialogState(() {
+                          errorMessage = null;
+                        });
+                      }
+                      if (val.length == 4) {
+                        verifyAndSubmit(val);
+                      }
+                    },
+                  ),
+                ],
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(ctx),
+                  child: const Text('Cancel'),
+                ),
+                ElevatedButton(
+                  onPressed: () => verifyAndSubmit(controller.text),
+                  child: const Text('Exit'),
+                ),
+              ],
+            );
+          },
+        );
+      },
     );
   }
 
@@ -3663,14 +3728,15 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
                 onDetection: _onCamObjectDetected,
               ),
 
-            // Invisible admin-exit hotspot (top-right corner). Tap 5x -> PIN.
+            // Invisible admin-exit hotspot (top-right corner). Double tap -> PIN.
             Positioned(
               top: 0,
               right: 0,
               child: GestureDetector(
                 behavior: HitTestBehavior.opaque,
+                onDoubleTap: _showExitPinDialog,
                 onTap: _onCornerTap,
-                child: const SizedBox(width: 72, height: 72),
+                child: const SizedBox(width: 90, height: 90),
               ),
             ),
 
