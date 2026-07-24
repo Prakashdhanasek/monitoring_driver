@@ -1,4 +1,5 @@
 import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_tts/flutter_tts.dart';
 
 enum AlertLang { english, hindi, malayalam, tamil, kannada }
@@ -26,9 +27,55 @@ class TtsService {
       await _tts.awaitSpeakCompletion(true);
       _ready = true;
       debugPrint('[TTS] Ready.');
+
+      // Pre-download all language voice packs at startup
+      _preloadAllLanguages();
     } catch (e) {
       debugPrint('[TTS] init error: $e');
     }
+  }
+
+  /// Triggers Google TTS engine to check and download voice data for all
+  /// supported languages. Uses Android's TextToSpeech.Engine.ACTION_CHECK_TTS_DATA
+  /// via a platform channel, and also synthesizes a short phrase in each language
+  /// to force the engine to fetch network voices if local ones are missing.
+  Future<void> _preloadAllLanguages() async {
+    // Step 1: Fire the Android TTS check/install intent via platform channel
+    try {
+      const platform = MethodChannel('kiosk');
+      await platform.invokeMethod('installTtsData');
+      debugPrint('[TTS] Triggered TTS data install intent');
+    } catch (e) {
+      debugPrint('[TTS] installTtsData channel not available: $e');
+    }
+
+    // Step 2: Synthesize a short phrase in each language to force network voice download
+    final savedVolume = 0.0; // mute during preload
+    await _tts.setVolume(savedVolume);
+    for (final entry in _langCodes.entries) {
+      final code = entry.value;
+      try {
+        final available = await _tts.isLanguageAvailable(code);
+        if (available == true) {
+          await _tts.setLanguage(code);
+          // Speak a real word (not just space) to trigger actual voice synthesis
+          await _tts.speak('.');
+          await Future.delayed(const Duration(milliseconds: 500));
+          await _tts.stop();
+          debugPrint('[TTS] Preloaded voice for: $code');
+        } else {
+          debugPrint('[TTS] $code not available on this device');
+        }
+      } catch (e) {
+        debugPrint('[TTS] Preload error for $code: $e');
+      }
+    }
+    // Restore volume and language
+    await _tts.setVolume(1.0);
+    await _tts.setLanguage(_langCodes[_lang]!);
+    debugPrint(
+      '[TTS] All languages preloaded. Restored to: ${_langCodes[_lang]}',
+    );
   }
 
   Future<void> setLanguage(AlertLang lang) async {
@@ -55,18 +102,22 @@ class TtsService {
       // installed, causing a silent "No local or network voice found" failure.
       final voices = await _tts.getVoices as List?;
       final langPrefix = code.split('-').first.toLowerCase(); // e.g. "ml"
-      final hasVoice = voices?.any((v) {
-        final locale = (v['locale'] ?? '').toString().toLowerCase();
-        return locale.startsWith(langPrefix);
-      }) ?? false;
+      final hasVoice =
+          voices?.any((v) {
+            final locale = (v['locale'] ?? '').toString().toLowerCase();
+            return locale.startsWith(langPrefix);
+          }) ??
+          false;
 
       if (hasVoice) {
         await _tts.setLanguage(code);
         _lang = lang;
         debugPrint('[TTS] Language set to $code');
       } else {
-        debugPrint('[TTS] $code has no installed voice pack — falling back to en-US. '
-            'Install voices: Settings → General Management → Text-to-speech → Google → Language → Download $code');
+        debugPrint(
+          '[TTS] $code has no installed voice pack — falling back to en-US. '
+          'Install voices: Settings → General Management → Text-to-speech → Google → Language → Download $code',
+        );
         _lang = AlertLang.english;
         await _tts.setLanguage('en-US');
       }
