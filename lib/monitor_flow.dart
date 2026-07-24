@@ -257,7 +257,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   bool _unauthorizedTripStop = false;
   DateTime? _tripCompletedAt;
   DateTime? _noFaceSince;
-  static const int _kTripEndSeconds = 30;
+  static const int _kTripEndSeconds = 600; // 10 minutes
 
   // Hidden admin-exit gesture (top-right corner x5 -> PIN -> leave kiosk).
   int _exitTaps = 0;
@@ -2385,18 +2385,20 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     if (deviceId == null || deviceId.isEmpty) {
       return;
     }
-    // Only attempt to send telemetry if online
-    if (!_isOnline) {
-      debugPrint('[Telemetry] Skipping location telemetry (Device is offline)');
-      return;
-    }
 
+    // Send telemetry (queues locally if offline)
     await _telemetryService.sendLocationTelemetry(
       deviceTabletId: deviceId,
       latitude: _state.gpsLat,
       longitude: _state.gpsLng,
       speed: _state.vehicleSpeed,
+      isOnline: _isOnline,
     );
+
+    // Sync queued telemetry when back online
+    if (_isOnline && _telemetryService.pendingCount > 0) {
+      _telemetryService.syncPendingTelemetry();
+    }
   }
 
   // ─────────────────────────────────────────────────────────
@@ -3400,7 +3402,9 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
                 if (mounted) {
                   ScaffoldMessenger.of(context).showSnackBar(
                     const SnackBar(
-                      content: Text('Admin exit successful. Kiosk mode disabled.'),
+                      content: Text(
+                        'Admin exit successful. Kiosk mode disabled.',
+                      ),
                       backgroundColor: Colors.green,
                     ),
                   );
@@ -3832,8 +3836,9 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
                 onDetection: _onCamObjectDetected,
               ),
 
-            // ── Side cam toggle buttons (monitoring phase) ──
-            if (_phase == Phase.monitoring && !_tripCompleted)
+            // ── Side cam toggle buttons (monitoring + verifying phase) ──
+            if ((_phase == Phase.monitoring && !_tripCompleted) ||
+                (_phase == Phase.verifying && !_initializing))
               Positioned(
                 left: 0,
                 top: 0,
@@ -3886,7 +3891,8 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
                   ),
                 ),
               ),
-            if (_phase == Phase.monitoring && !_tripCompleted)
+            if ((_phase == Phase.monitoring && !_tripCompleted) ||
+                (_phase == Phase.verifying && !_initializing))
               Positioned(
                 right: 0,
                 top: 0,
@@ -4073,7 +4079,9 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
                             boxShadow: [
                               BoxShadow(
                                 color: speaking
-                                    ? const Color(0xFF22C55E).withValues(alpha: 0.5)
+                                    ? const Color(
+                                        0xFF22C55E,
+                                      ).withValues(alpha: 0.5)
                                     : Colors.black45,
                                 blurRadius: 12,
                                 spreadRadius: 2,
@@ -4750,6 +4758,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
             ],
           ),
         ),
+        _esp32StatusBanner(),
       ],
     );
   }
@@ -5198,7 +5207,10 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
           _esp32StatusBanner(),
           // _deviceMotionCard(),
           const SizedBox(height: 10),
-          if (_noFaceSince != null && !_tripCompleted) _noDriverCountdown(),
+          if (_noFaceSince != null &&
+              !_tripCompleted &&
+              DateTime.now().difference(_noFaceSince!).inSeconds >= 10)
+            _noDriverCountdown(),
           if (_unauthorizedStart != null && !_tripCompleted)
             _unauthorizedDriverCountdown(),
           const Spacer(),
@@ -5512,6 +5524,9 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   Widget _noDriverCountdown() {
     final elapsed = DateTime.now().difference(_noFaceSince!).inSeconds;
     final remaining = (_kTripEndSeconds - elapsed).clamp(0, _kTripEndSeconds);
+    final mins = remaining ~/ 60;
+    final secs = remaining % 60;
+    final timeStr = mins > 0 ? '${mins}m ${secs}s' : '${secs}s';
     return Container(
       margin: const EdgeInsets.fromLTRB(12, 0, 12, 0),
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
@@ -5530,7 +5545,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
               border: Border.all(color: const Color(0xFFF59E0B), width: 2),
             ),
             child: Text(
-              '$remaining',
+              mins > 0 ? '${mins}m' : '${secs}s',
               style: const TextStyle(
                 color: Colors.white,
                 fontSize: 14,
@@ -5552,7 +5567,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
                   ),
                 ),
                 Text(
-                  'Ending Trip $_tripNumber in ${remaining}s',
+                  'Ending Trip $_tripNumber in $timeStr',
                   style: const TextStyle(
                     color: Color(0xFFFCD34D),
                     fontSize: 11,

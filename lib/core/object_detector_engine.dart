@@ -296,6 +296,7 @@ class ObjectDetectorEngine {
     // final hasSeatbelt = result.detectedObjects.any(
     //   (o) => o.label == 'seatbelt',
     // );
+
     if (hasSeatbelt) {
       state.seatbeltBuckled = true;
       state.lastSeatbeltDetected = now;
@@ -396,6 +397,8 @@ void _yoloIsolateEntryPoint(IsolateInitMessage initMessage) async {
     );
 
     // ── Pre-allocated buffers ──────────────────────────────────────────────
+
+
     final isQuantizedA =
         inA.type == TensorType.uint8 || inA.type == TensorType.int8;
     final isQuantizedB =
@@ -480,6 +483,7 @@ void _yoloIsolateEntryPoint(IsolateInitMessage initMessage) async {
         }
 
         // ── Run Model B (eating/drinking) every 3rd frame ──────────────────
+        
         List<DetectedObject> detectionsB = [];
         if (frameCount % 3 == 0) {
           _fastConvertImage(
