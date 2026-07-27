@@ -278,6 +278,9 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   // ── No-drivers auto-retry (retries fetch every 30 s while stuck) ──
   Timer? _noDriversRetryTimer;
 
+  // Keeps live stream fed while phone camera is paused (ESP cam mode)
+  Timer? _espCamStreamTimer;
+
   // ── Break alert (periodic driver fatigue reminder) ──
   bool _showBreakAlert = false;
   int _breakAlertIndex = 0;
@@ -734,6 +737,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     _breakAlertTimer?.cancel();
     _breakAlertDismissTimer?.cancel();
     _noDriversRetryTimer?.cancel();
+    _espCamStreamTimer?.cancel();
     _accelSub?.cancel();
     super.dispose();
   }
@@ -1347,15 +1351,11 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
 
     final now = DateTime.now();
 
-    // Check if we are currently inside an active incident window
-    final bool isHighRes =
-        _highResUntil != null && now.isBefore(_highResUntil!);
+    // 0.75x pixel ratio — good balance of quality vs bandwidth
+    const double pixelRatio = 0.75;
 
-    // High resolution GPU screen capture (0.75x)
-    final double pixelRatio = 0.75;
-
-    // Fast 40ms throttle (~25 FPS smooth streaming with zero lag)
-    final int throttleMs = 40;
+    // 40ms throttle = ~25 FPS
+    const int throttleMs = 40;
 
     if (_lastScreenFrameTime != null &&
         now.difference(_lastScreenFrameTime!).inMilliseconds < throttleMs) {
@@ -4131,21 +4131,40 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     final nowMonitoring = mode == CamMode.driverMonitoring;
     _camMode = mode;
 
-    // Only stop recording when opening FRONT cam overlay (same port 84 conflict).
-    // Rear/left/right use different ports — no conflict with front cam recording.
-    final needsStopRecording = mode == CamMode.front;
-    if (needsStopRecording && _ffmpegRecorderService.isRecording) {
+    // Stop recording whenever switching to any ESP cam overlay view.
+    // ESP32-CAM only supports ONE HTTP client at a time — the FFmpeg recorder
+    // holds the connection, so the MjpegStreamWidget would get stuck if we
+    // don't release it first.
+    if (!nowMonitoring && _ffmpegRecorderService.isRecording) {
       await _ffmpegRecorderService.stopRecording();
       debugPrint(
-        '[CamMode] Recorder STOPPED — releasing front cam stream for overlay',
+        '[CamMode] Recorder STOPPED — releasing ESP cam stream for overlay ($mode)',
       );
-    } else if (nowMonitoring &&
-        _frontCamConnected &&
-        _frontCamStreamUrl.isNotEmpty &&
-        _phase == Phase.monitoring &&
-        !_ffmpegRecorderService.isRecording) {
-      _ffmpegRecorderService.startRecording(_frontCamStreamUrl);
-      debugPrint('[CamMode] Recorder RESTARTED — back to front cam monitoring');
+    } else if (nowMonitoring && _phase == Phase.monitoring && !_ffmpegRecorderService.isRecording) {
+      // Restart recording on whichever cam is available, preferring front cam.
+      if (_frontCamConnected && _frontCamStreamUrl.isNotEmpty) {
+        _ffmpegRecorderService.startRecording(_frontCamStreamUrl);
+        debugPrint('[CamMode] Recorder RESTARTED — front cam monitoring');
+      } else if (_esp32StreamUrl.isNotEmpty) {
+        _ffmpegRecorderService.startRecording(_esp32StreamUrl);
+        debugPrint('[CamMode] Recorder RESTARTED — rear cam monitoring');
+      }
+    }
+
+    // While in ESP cam mode the phone camera is paused, so _processImage never
+    // fires and the live stream goes silent. Drive screen captures with a timer
+    // so the admin dashboard still sees the ESP cam view.
+    if (!nowMonitoring) {
+      _espCamStreamTimer?.cancel();
+      _espCamStreamTimer = Timer.periodic(
+        const Duration(milliseconds: 40), // ~25 FPS — matches screen capture throttle
+        (_) => _captureAndSendScreen(),
+      );
+      debugPrint('[CamMode] ESP cam stream timer STARTED for live stream');
+    } else {
+      _espCamStreamTimer?.cancel();
+      _espCamStreamTimer = null;
+      debugPrint('[CamMode] ESP cam stream timer STOPPED — phone cam resumes');
     }
     final c = _camera;
     if (c != null && c.value.isInitialized) {
