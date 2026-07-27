@@ -27,6 +27,9 @@ class FaceAuthEngine {
 
   List<String> _referenceLabels = [];
 
+  // Session-scoped embedding for Unknown Driver (or active trip baseline)
+  List<double>? activeTripEmbedding;
+
   bool isEnrolled = false;
 
   // Last successfully matched folder label.
@@ -44,6 +47,18 @@ class FaceAuthEngine {
   static const int kMissFrames = 5;
 
   // ── Public API ─────────────────────────────────────────────────────────────
+
+  void setActiveTripEmbedding(List<double>? embedding) {
+    activeTripEmbedding = embedding;
+  }
+
+  List<double>? extractLiveEmbedding(
+    CameraImage image,
+    int rotation,
+    Rect boundingBox,
+  ) {
+    return _embedFaceFromCameraImage(image, rotation, boundingBox);
+  }
 
   Future<void> initialize() async {
     await _loadFaceNetModel();
@@ -102,39 +117,25 @@ class FaceAuthEngine {
       state.authDistance = -1.0;
       return;
     }
-    // Model is ready but NO drivers enrolled (API data missing / incorrect).
-    // Never authorize a random face -> show unauthorized.
-    if (!isEnrolled || _referenceEmbeddings.isEmpty) {
+
+    final bool hasUnknownTripEmbedding = (activeTripEmbedding != null);
+
+    // Model is ready but NO drivers enrolled AND no unknown trip embedding active.
+    if ((!isEnrolled || _referenceEmbeddings.isEmpty) && !hasUnknownTripEmbedding) {
       state.authStatus = AuthStatus.unauthorized;
       state.authDistance = -1.0;
       return;
     }
 
-    // ── BIOMETRIC CONTINUITY CHECK ──────────────────────────────────────────
-    // If we already authorized this exact tracking ID, we KNOW it is the exact same
-    // physical driver (MLKit tracks optical flow). We can skip FaceNet completely!
-    // This allows them to put on sunglasses, hats, or masks without getting kicked out.
-    if (state.authStatus == AuthStatus.authenticated &&
-        face.trackingId != null &&
-        face.trackingId == state.authenticatedTrackingId) {
-      // Refresh the continuous match state
-      _consecutiveMatch = kMatchFrames;
-      _consecutiveMiss = 0;
-      return; // Skip heavy FaceNet embedding
-    }
-
     // ── HEAD ANGLE LENIENCY FOR AUTHENTICATED DRIVER ─────────────────────────
     // If the driver is already authenticated, check head angle before doing verification.
-    // Head turns (yaw), pitch, and roll shifts shouldn't trigger unauthorized states instantly,
-    // but we must increment misses so a new person doesn't stay authenticated indefinitely.
+    // Extreme head turns (yaw, pitch, roll) skip FaceNet for this frame without penalizing.
     if (state.authStatus == AuthStatus.authenticated) {
       final yaw = face.headEulerAngleY ?? 0.0;
       final pitch = face.headEulerAngleX ?? 0.0;
       final roll = face.headEulerAngleZ ?? 0.0;
 
-      if (yaw.abs() > 25.0 || pitch.abs() > 25.0 || roll.abs() > 25.0) {
-        // Driver is looking away (e.g. checking mirrors). Skip FaceNet for this frame.
-        // We DO NOT increment misses here so they don't get kicked out to unauthorized.
+      if (yaw.abs() > 35.0 || pitch.abs() > 35.0 || roll.abs() > 35.0) {
         return;
       }
     }
@@ -151,43 +152,48 @@ class FaceAuthEngine {
       return;
     }
 
-    // Find minimum distance across all enrolled reference faces
+    // Find minimum distance across enrolled reference faces or active unknown trip embedding
     double minDist = double.infinity;
     int bestIdx = -1;
+    String? bestLabel;
 
-    for (int i = 0; i < _referenceEmbeddings.length; i++) {
-      final label = _referenceLabels[i];
-      if (activeDriverId != null && activeDriverId.isNotEmpty && activeDriverId != '—') {
-        final parts = label.split('|');
-        final refId = parts.isNotEmpty ? parts[0] : '';
-        if (refId != activeDriverId) {
-          continue; // Skip templates belonging to other drivers
+    if (activeTripEmbedding != null) {
+      minDist = _euclidean(activeTripEmbedding!, liveEmbedding);
+      bestLabel = '—|Unknown Driver';
+    } else {
+      for (int i = 0; i < _referenceEmbeddings.length; i++) {
+        final label = _referenceLabels[i];
+        if (activeDriverId != null &&
+            activeDriverId.isNotEmpty &&
+            activeDriverId != '—') {
+          final parts = label.split('|');
+          final refId = parts.isNotEmpty ? parts[0] : '';
+          if (refId != activeDriverId) {
+            continue; // Skip templates belonging to other drivers
+          }
+        }
+
+        final d = _euclidean(_referenceEmbeddings[i], liveEmbedding);
+        if (d < minDist) {
+          minDist = d;
+          bestIdx = i;
         }
       }
-
-      final d = _euclidean(_referenceEmbeddings[i], liveEmbedding);
-      if (d < minDist) {
-        minDist = d;
-        bestIdx = i;
+      if (bestIdx >= 0 && bestIdx < _referenceLabels.length) {
+        bestLabel = _referenceLabels[bestIdx];
       }
     }
 
     state.authDistance = minDist;
-
-    final String? bestLabel =
-        (bestIdx >= 0 && bestIdx < _referenceLabels.length)
-        ? _referenceLabels[bestIdx]
-        : null;
 
     print(
       '[AuthDBG] minDist=$minDist bestLabel=$bestLabel '
       'threshold=$kAuthThreshold',
     );
 
-    // Use a looser threshold once authenticated to prevent false rejections
-    // due to lighting changes or slight head movements during the trip.
+    // Use a strict threshold during monitoring so a different person is detected as Driver Changed.
     final double effectiveThreshold = (state.authStatus == AuthStatus.authenticated)
-        ? kAuthThreshold + 0.25 // e.g., 0.95 + 0.25 = 1.20
+        ? kAuthThreshold + 0.05
         : kAuthThreshold;
 
     if (minDist < effectiveThreshold) {
@@ -224,6 +230,7 @@ class FaceAuthEngine {
     isEnrolled = false;
     _referenceEmbeddings = [];
     _referenceLabels = [];
+    activeTripEmbedding = null;
     lastMatchedLabel = null;
     _consecutiveMatch = 0;
     _consecutiveMiss = 0;
@@ -231,6 +238,7 @@ class FaceAuthEngine {
   }
 
   void resetLiveAuthState() {
+    activeTripEmbedding = null;
     lastMatchedLabel = null;
     _consecutiveMatch = 0;
     _consecutiveMiss = 0;
@@ -245,6 +253,7 @@ class FaceAuthEngine {
     isEnrolled = false;
     _referenceEmbeddings = [];
     _referenceLabels = [];
+    activeTripEmbedding = null;
     lastMatchedLabel = null;
     _consecutiveMatch = 0;
     _consecutiveMiss = 0;
@@ -255,6 +264,7 @@ class FaceAuthEngine {
     isEnrolled = false;
     _referenceEmbeddings = [];
     _referenceLabels = [];
+    activeTripEmbedding = null;
     lastMatchedLabel = null;
     _consecutiveMatch = 0;
     _consecutiveMiss = 0;

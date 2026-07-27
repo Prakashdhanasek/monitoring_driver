@@ -174,8 +174,11 @@ class DriversService {
 
       for (final photo in facePhotos) {
         final photoPath = photo['photoPath'] as String?;
-        final driverId = driver['id'] as String? ?? 'unknown';
-        final driverName = driver['fullName'] as String? ?? 'Driver';
+        final driverId = driver['id']?.toString() ?? driver['driverId']?.toString() ?? 'unknown';
+        final rawName = driver['fullName'] ?? driver['name'] ?? driver['driverName'] ?? driver['nameEn'];
+        final driverName = (rawName != null && rawName.toString().trim().isNotEmpty)
+            ? rawName.toString().trim()
+            : 'Driver';
 
         if (photoPath == null) continue;
 

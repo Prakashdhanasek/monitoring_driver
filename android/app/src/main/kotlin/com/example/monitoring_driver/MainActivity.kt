@@ -95,6 +95,40 @@ class MainActivity : FlutterActivity() {
                         }
                         result.success(true)
                     }
+                    "installTtsData" -> {
+                        try {
+                            var ttsEngine: android.speech.tts.TextToSpeech? = null
+                            ttsEngine = android.speech.tts.TextToSpeech(applicationContext) { status ->
+                                if (status == android.speech.tts.TextToSpeech.SUCCESS) {
+                                    val tts = ttsEngine ?: return@TextToSpeech
+                                    val locales = listOf(
+                                        java.util.Locale("en", "US"),
+                                        java.util.Locale("hi", "IN"),
+                                        java.util.Locale("ml", "IN"),
+                                        java.util.Locale("ta", "IN"),
+                                        java.util.Locale("kn", "IN"),
+                                    )
+                                    // Synthesize silently to force voice data download
+                                    val params = android.os.Bundle()
+                                    params.putFloat(android.speech.tts.TextToSpeech.Engine.KEY_PARAM_VOLUME, 0f)
+                                    for (locale in locales) {
+                                        val avail = tts.isLanguageAvailable(locale)
+                                        Log.i("TTS", "Preload ${locale.language}-${locale.country}: avail=$avail")
+                                        tts.setLanguage(locale)
+                                        tts.speak(".", android.speech.tts.TextToSpeech.QUEUE_ADD, params, "preload_${locale.language}")
+                                    }
+                                    android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+                                        tts.stop()
+                                        tts.shutdown()
+                                        Log.i("TTS", "Preload complete — engine shut down")
+                                    }, 3000)
+                                }
+                            }
+                        } catch (e: Exception) {
+                            Log.e("TTS", "installTtsData error: ${e.message}")
+                        }
+                        result.success(true)
+                    }
                     else -> result.notImplemented()
                 }
             }

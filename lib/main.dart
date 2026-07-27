@@ -16,6 +16,7 @@ void main() async {
   await Hive.openBox('settingsBox');
   await Hive.openBox('driversBox');
   await Hive.openBox('incidentsBox');
+  await Hive.openBox('telemetry_queue');
 
   // Start GPS tracking and telemetry immediately (before driver auth)
   await BackgroundTelemetryService.instance.start();

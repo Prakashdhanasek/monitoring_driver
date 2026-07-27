@@ -13,20 +13,29 @@ class LiveStreamService {
   WebSocketChannel? _channel;
   bool _isStreaming = false;
   DateTime? _lastFrameTime;
+  DateTime? _lastScreenFrameTime;
   bool _isProcessing = false;
-  bool _isSending = false; // NEW: guards against queuing frames faster than the network can send them
+  bool _isSending = false; // Guards against queuing frames faster than the network can send them
   bool _isReconnecting = false;
   Timer? _reconnectTimer;
   Timer? _keepAliveTimer;
+  Timer? _qualityTimer;
   int _framesSent = 0;
   DateTime? _streamingStartedAt;
   String _deviceTabletId = '';
+
+  // ─── Adaptive JPEG quality ────────────────────────────
+  // Tracks dropped frames (blocked by _isSending) vs total attempts every 3s.
+  // Drop rate > 30% → quality 40 | 10–30% → quality 60 | < 10% → quality 80
+  int _jpegQuality = 80;
+  int _frameAttempts = 0;
+  int _droppedFrames = 0;
+  
 
   // ─── Audio ───────────────────────────────────────────
   final AudioRecorder _recorder = AudioRecorder();
   final AudioPlayer _audioPlayer = AudioPlayer();
   bool _isSpeaking = false;
-  StreamSubscription<Uint8List>? _audioSub;
   // Buffer for incoming WebM chunks — assembled and played once stream ends
   final List<Uint8List> _audioBuffer = [];
   Timer? _audioFlushTimer;
@@ -56,13 +65,20 @@ class LiveStreamService {
       return;
     }
 
-    if (isConnected.value) {
-      debugPrint('[Stream] Already connected. Skipping connect request.');
+    // Guard: skip if already connected OR a reconnect attempt is in progress
+    if (isConnected.value || _isReconnecting) {
+      debugPrint('[Stream] Already connected/reconnecting. Skipping connect request.');
       return;
     }
 
     _deviceTabletId = deviceTabletId;
     _reconnectTimer?.cancel();
+
+    // Fix: close old channel before creating a new one to prevent zombie connections
+    _channel?.sink.close();
+    _channel = null;
+    _isProcessing = false; // reset in case isolate was mid-flight
+    _isSending = false;
 
     final cleanId = deviceTabletId.trim().replaceAll(RegExp(r'[^a-zA-Z0-9]'), '');
     final wsUrl =
@@ -76,7 +92,11 @@ class LiveStreamService {
       _channel!.ready.then((_) {
         isConnected.value = true;
         _isReconnecting = false;
+        _jpegQuality = 80;
+        _frameAttempts = 0;
+        _droppedFrames = 0;
         _startKeepAlive();
+        _startQualityTimer();
         _initAudioPlayer();
         debugPrint('[Stream] WebSocket connection successfully established!');
       }).catchError((err) {
@@ -94,6 +114,7 @@ class LiveStreamService {
           _isStreaming = false;
           isConnected.value = false;
           _keepAliveTimer?.cancel();
+          _qualityTimer?.cancel();
           _startReconnectTimer();
         },
         onError: (error) {
@@ -101,6 +122,7 @@ class LiveStreamService {
           _isStreaming = false;
           isConnected.value = false;
           _keepAliveTimer?.cancel();
+          _qualityTimer?.cancel();
           _startReconnectTimer();
         },
       );
@@ -143,6 +165,33 @@ class LiveStreamService {
     });
   }
 
+  void _startQualityTimer() {
+    _qualityTimer?.cancel();
+    _qualityTimer = Timer.periodic(const Duration(seconds: 3), (_) {
+      if (_frameAttempts == 0) return;
+      final dropRate = _droppedFrames / _frameAttempts;
+      final int newQuality;
+      if (dropRate > 0.30) {
+        newQuality = 40; // poor network
+      } else if (dropRate > 0.10) {
+        newQuality = 60; // medium network
+      } else {
+        newQuality = 80; // good network
+      }
+      if (newQuality != _jpegQuality) {
+        debugPrint(
+          '[Stream] Quality: $_jpegQuality → $newQuality '
+          '(drop rate: ${(dropRate * 100).toStringAsFixed(0)}% '
+          'over $_frameAttempts frames)',
+        );
+        _jpegQuality = newQuality;
+      }
+      // Reset window counters
+      _frameAttempts = 0;
+      _droppedFrames = 0;
+    });
+  }
+
   /// Handles commands from the backend.
   /// Binary: 0x03 prefix = admin audio (WebM/Opus). Text: START / STOP / PONG.
   void _handleCommand(dynamic message) {
@@ -182,9 +231,20 @@ class LiveStreamService {
     }
   }
 
-  // ─── Audio: Init player (no-op — AudioPlayer initialises lazily) ──────
+  // ─── Audio: Init player ──────────────────────────────────────────────────
   void _initAudioPlayer() {
-    debugPrint('[Audio] AudioPlayer ready (WebM/Opus)');
+    // Force loudspeaker + max volume so admin voice is loud even when
+    // VOICE_COMMUNICATION source is active (which normally routes to earpiece).
+    _audioPlayer.setAudioContext(AudioContext(
+      android: AudioContextAndroid(
+        isSpeakerphoneOn: true,
+        contentType: AndroidContentType.speech,
+        usageType: AndroidUsageType.media,
+        audioFocus: AndroidAudioFocus.gain,
+      ),
+    ));
+    _audioPlayer.setVolume(1.0);
+    debugPrint('[Audio] AudioPlayer ready — loudspeaker forced');
   }
 
   // ─── Audio: Buffer incoming WebM/Opus chunks, play once stream ends ──────
@@ -214,8 +274,13 @@ class LiveStreamService {
       final tempDir = await getTemporaryDirectory();
       final tempFile = File('${tempDir.path}/admin_audio_${DateTime.now().millisecondsSinceEpoch}.webm');
       await tempFile.writeAsBytes(assembled);
+      await _audioPlayer.setVolume(1.0);
       await _audioPlayer.play(DeviceFileSource(tempFile.path));
       debugPrint('[Audio] ✅ Playing assembled admin audio ($totalBytes bytes)');
+      // Clean up temp file after a delay (give player time to read it)
+      Future.delayed(const Duration(seconds: 30), () {
+        tempFile.delete().catchError((_) {});
+      });
     } catch (e) {
       debugPrint('[Audio] Playback error: $e');
     }
@@ -312,6 +377,7 @@ class LiveStreamService {
         'targetWidth': 1280,
         'rotation': rotation,
         'isFront': isFront,
+        'quality': _jpegQuality,
       };
 
       // Offload YUV-to-JPEG conversion to an Isolate
@@ -340,9 +406,24 @@ class LiveStreamService {
     }
   }
 
-  /// Feeds a raw screen frame (RGBA bytes) for background compression and transmission
+  /// Feeds a raw screen frame (RGBA bytes) for background compression and transmission.
+  /// JPEG quality is auto-adjusted based on network drop rate (80 / 60 / 40).
   void feedScreenFrame(Uint8List rgbaBytes, int width, int height) async {
-    if (!_isStreaming || _channel == null || _isProcessing) return;
+    if (!_isStreaming || _channel == null) return; // not streaming — don't count
+
+    // Internal 40ms throttle (~25 FPS) — guards against direct callers flooding
+    final now = DateTime.now();
+    if (_lastScreenFrameTime != null &&
+        now.difference(_lastScreenFrameTime!).inMilliseconds < 40) {
+      return;
+    }
+
+    _frameAttempts++;
+    if (_isProcessing || _isSending) {
+      _droppedFrames++;
+      return;
+    }
+    _lastScreenFrameTime = now;
 
     _isProcessing = true;
 
@@ -352,16 +433,22 @@ class LiveStreamService {
         'width': width,
         'height': height,
         'targetWidth': 1280,
+        'quality': _jpegQuality,
       };
 
       // Offload RGBA-to-JPEG conversion to an Isolate
       final jpegBytes = await compute(_compressScreenIsolate, params);
 
       if (jpegBytes != null && _isStreaming && _channel != null) {
-        _channel!.sink.add(jpegBytes);
-        _framesSent++;
-        if (_framesSent % 25 == 1) {
-          debugPrint('[Stream] ↑ Frame #$_framesSent sent (${jpegBytes.length} bytes)');
+        _isSending = true;
+        try {
+          _channel!.sink.add(jpegBytes);
+          _framesSent++;
+          if (_framesSent % 25 == 1) {
+            debugPrint('[Stream] ↑ Frame #$_framesSent sent (${jpegBytes.length} bytes) quality=$_jpegQuality');
+          }
+        } finally {
+          _isSending = false;
         }
       }
     } catch (e) {
@@ -385,11 +472,11 @@ class LiveStreamService {
     _isStreaming = false;
     _reconnectTimer?.cancel();
     _keepAliveTimer?.cancel();
+    _qualityTimer?.cancel();
     _audioFlushTimer?.cancel();
     _audioBuffer.clear();
     _recorder.dispose();
     _audioPlayer.dispose();
-    _audioSub?.cancel();
     _channel?.sink.close();
     _channel = null;
     isConnected.value = false;
@@ -474,19 +561,21 @@ Uint8List? _compressFrameIsolate(Map<String, dynamic> params) {
       fixed = img.flipHorizontal(fixed);
     }
 
-    return Uint8List.fromList(img.encodeJpg(fixed, quality: 85));
+    return Uint8List.fromList(img.encodeJpg(fixed, quality: params['quality'] as int? ?? 80));
   } catch (e) {
     return null;
   }
 }
 
 /// Converts raw RGBA bytes of the widget screen into a compressed JPEG byte array.
+/// Accepts a [quality] parameter (1–100) for adaptive network quality control.
 Uint8List? _compressScreenIsolate(Map<String, dynamic> params) {
   try {
     final Uint8List rgbaBytes = params['rgbaBytes'];
     final int width = params['width'];
     final int height = params['height'];
     final int targetWidth = params['targetWidth'];
+    final int quality = (params['quality'] as int?) ?? 80;
 
     img.Image image = img.Image.fromBytes(
       width: width,
@@ -499,7 +588,7 @@ Uint8List? _compressScreenIsolate(Map<String, dynamic> params) {
       image = img.copyResize(image, width: targetWidth);
     }
 
-    return Uint8List.fromList(img.encodeJpg(image, quality: 85));
+    return Uint8List.fromList(img.encodeJpg(image, quality: quality));
   } catch (e) {
     debugPrint('[Isolate] Screen compression error: $e');
     return null;
