@@ -39,6 +39,7 @@ class LiveStreamService {
   // Buffer for incoming WebM chunks — assembled and played once stream ends
   final List<Uint8List> _audioBuffer = [];
   Timer? _audioFlushTimer;
+  bool _waitingForPong = false; // true after PING sent; false once PONG received
 
   final ValueNotifier<bool> isConnected = ValueNotifier<bool>(false);
   final ValueNotifier<bool> isSpeaking = ValueNotifier<bool>(false);
@@ -155,13 +156,20 @@ class LiveStreamService {
 
   void _startKeepAlive() {
     _keepAliveTimer?.cancel();
-    _keepAliveTimer = Timer.periodic(const Duration(seconds: 30), (_) {
-      if (isConnected.value && _channel != null) {
-        try {
-          _channel!.sink.add('PING');
-          debugPrint('[Stream] ♥ Keepalive ping sent');
-        } catch (_) {}
+    _waitingForPong = false;
+    _keepAliveTimer = Timer.periodic(const Duration(seconds: 10), (_) {
+      if (!isConnected.value || _channel == null) return;
+      // If still waiting for the previous PONG, the connection is a zombie
+      if (_waitingForPong) {
+        debugPrint('[Stream] \u2717 No PONG since last PING \u2014 zombie connection, forcing reconnect');
+        _forceReconnect();
+        return;
       }
+      try {
+        _channel!.sink.add('PING');
+        _waitingForPong = true;
+        debugPrint('[Stream] \u2665 Keepalive ping sent');
+      } catch (_) {}
     });
   }
 
@@ -195,6 +203,16 @@ class LiveStreamService {
   /// Handles commands from the backend.
   /// Binary: 0x03 prefix = admin audio (WebM/Opus). Text: START / STOP / PONG.
   void _handleCommand(dynamic message) {
+    // ── RAW SOCKET LOG ──────────────────────────────────────────────────────
+    if (message is Uint8List) {
+      debugPrint('[Socket RAW] binary (${message.length} bytes) '
+          'first4=${message.take(4).map((b) => '0x${b.toRadixString(16).padLeft(2, '0')}').join(' ')}');
+    } else {
+      debugPrint('[Socket RAW] text → "${message.toString()}" '
+          'codeUnits=${message.toString().codeUnits.take(8).toList()}');
+    }
+    // ────────────────────────────────────────────────────────────────────────
+
     // Binary message: admin audio has 0x03 prefix
     if (message is Uint8List) {
       if (message.isNotEmpty && message[0] == 0x03) {
@@ -226,8 +244,9 @@ class LiveStreamService {
       debugPrint('[Stream] ■ STREAMING STOPPED — sent $_framesSent frames in ${duration}s');
       _framesSent = 0;
       _streamingStartedAt = null;
-    } else if (raw == 'PONG') {
-      // keepalive response — connection is alive
+    } else if (raw.toUpperCase() == 'PONG') {
+      _waitingForPong = false;
+      debugPrint('[Stream] ♥ PONG received — connection confirmed alive');
     }
   }
 
@@ -467,9 +486,25 @@ class LiveStreamService {
     }
   }
 
+  /// Force-closes a zombie connection and immediately triggers a reconnect.
+  /// Called when a keepalive tick detects no PONG since the last PING.
+  void _forceReconnect() {
+    debugPrint('[Stream] _forceReconnect() called \u2014 clearing stale state');
+    _isStreaming = false;
+    _waitingForPong = false;
+    _keepAliveTimer?.cancel();
+    _qualityTimer?.cancel();
+    try { _channel?.sink.close(); } catch (_) {}
+    _channel = null;
+    isConnected.value = false;
+    _isReconnecting = false; // clear so reconnect timer is allowed to fire
+    _startReconnectTimer();
+  }
+
   /// Closes the connection and stops streaming
   void dispose() {
     _isStreaming = false;
+    _waitingForPong = false;
     _reconnectTimer?.cancel();
     _keepAliveTimer?.cancel();
     _qualityTimer?.cancel();
