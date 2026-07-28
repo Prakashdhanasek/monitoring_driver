@@ -191,9 +191,27 @@ class FaceAuthEngine {
       'threshold=$kAuthThreshold',
     );
 
-    // Use a strict threshold during monitoring so a different person is detected as Driver Changed.
+    // During active monitoring when the driver is ALREADY authenticated:
+    // Protect the authenticated driver from false "Driver Changed" alarms.
+    if (state.authStatus == AuthStatus.authenticated) {
+      final bool isSameTrackingId = (state.authenticatedTrackingId != null &&
+          face.trackingId == state.authenticatedTrackingId);
+
+      // If it's the exact same face tracking ID OR the distance is mild (< 0.65),
+      // it's the same verified driver turning head / looking away. Keep authenticated!
+      if (isSameTrackingId || minDist < 0.65) {
+        _consecutiveMatch++;
+        _consecutiveMiss = 0;
+        lastMatchedLabel = bestLabel;
+        if (state.authenticatedTrackingId == null) {
+          state.authenticatedTrackingId = face.trackingId;
+        }
+        return;
+      }
+    }
+
     final double effectiveThreshold = (state.authStatus == AuthStatus.authenticated)
-        ? kAuthThreshold + 0.05
+        ? 0.65
         : kAuthThreshold;
 
     if (minDist < effectiveThreshold) {
@@ -211,11 +229,10 @@ class FaceAuthEngine {
       _consecutiveMatch = 0;
       lastMatchedLabel = null;
 
-      // Once authenticated, we allow a small buffer of consecutive misses (e.g., 8 frames)
-      // to prevent false alarms from temporary mismatches, shadows, or sunglasses.
-      // A different person replacing the driver will consistently mismatch.
+      // Only flag AuthStatus.unauthorized if a distinct DIFFERENT person (minDist >= 0.65 and new trackingId)
+      // persists for at least 15 consecutive frames (~1.5s).
       final requiredMisses = (state.authStatus == AuthStatus.authenticated)
-          ? 5
+          ? 15
           : 3;
 
       if (_consecutiveMiss >= requiredMisses) {

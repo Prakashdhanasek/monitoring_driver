@@ -265,15 +265,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   static const int _kTripEndSeconds = 30; // 10 minutes
 
   bool _isDriverChangedActive() {
-    if (_state.authStatus != AuthStatus.unauthorized) return false;
-    if (_lastDriverChangedReportAt != null) {
-      final elapsedSinceReport =
-          DateTime.now().difference(_lastDriverChangedReportAt!).inSeconds;
-      if (elapsedSinceReport < 300) {
-        return false; // 5-minute (300s) cooldown active
-      }
-    }
-    return true;
+    return _state.authStatus == AuthStatus.unauthorized;
   }
 
   // Hidden admin-exit gesture (top-right corner x5 -> PIN -> leave kiosk).
@@ -1672,13 +1664,13 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       // "driverId|driverName" (built from the downloaded photo filename).
       // Prefer the live API driver name from cache when available.
       final label = _authEngine.lastMatchedLabel;
-      driverName = 'Driver';
+      driverName = '';
 
       if (label != null && label.isNotEmpty) {
         if (label.contains('|')) {
           final parts = label.split('|');
           driverId = parts.isNotEmpty ? parts[0] : '—';
-          driverName = parts.length > 1 ? parts.sublist(1).join('|') : 'Driver';
+          driverName = parts.length > 1 ? parts.sublist(1).join('|') : '';
         } else {
           driverId = label;
         }
@@ -2088,20 +2080,22 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
         return;
       }
 
-      final String? effectiveDriverId =
-          (_state.authStatus == AuthStatus.unauthorized ||
+      final bool isDriverChangedEvent =
+          (eventType == 'Driver Changed' || eventType == 'Unauthorized Driver');
+
+      final String? effectiveDriverId = (isDriverChangedEvent ||
+              _state.isUnknownDriver ||
               _driverId == '—' ||
-              _driverId.isEmpty ||
-              _state.isUnknownDriver)
+              _driverId.isEmpty)
           ? null
           : _driverId;
-      final effectiveDriverName =
-          (_state.authStatus == AuthStatus.unauthorized ||
+
+      final String effectiveDriverName = (isDriverChangedEvent ||
+              _state.isUnknownDriver ||
+              _driverName.isEmpty ||
               _driverName == 'Driver' ||
               _driverName == 'Unknown Person' ||
-              _driverName == 'Unknown Driver' ||
-              _driverName.isEmpty ||
-              _state.isUnknownDriver)
+              _driverName == 'Unknown Driver')
           ? 'Unknown Driver'
           : _driverName;
 
@@ -2428,86 +2422,30 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   // ALERT AUDIO & INCIDENTS
   // ─────────────────────────────────────────────────────────
 
-  // ── Severity-based cooldowns ──
-  // Critical: 30s | High: 60s | Medium: 180s
-  static const Map<String, int> _kIncidentCooldownSeconds = {
-    // Critical (every 30 seconds)
-    'Drowsiness': 30, // asleep/drowsy both use this key
-    // 'Medical Emergency': 30,
-    // High (every 1 minute)
-    'Distraction': 60,
-    // 'Unauthorized Driver': 60,
-    'Unverified Driver': 60,
-    'Overspeeding': 60,
-    // Medium (every 3 minutes)
-    'seatbelt': 180,
-    'Phone Usage': 180,
-    'Smoking': 180,
-    'Eating': 180,
-    'Drinking': 180,
-    // 'Cable Unplugged': 180,
-  };
-
   // Voice alert intervals match severity
   static const Map<String, int> _kVoiceCooldownSeconds = {
-    // Critical
     'asleep': 5,
     'drowsy': 10,
-    // High
     'distracted': 30,
-    // 'unauthorized': 30,
     'overspeed': 15,
     'phone': 30,
     'smoke': 30,
-    // Medium
     'seatbelt': 60,
     'eating': 60,
     'drinking': 60,
   };
 
   int _getCooldownForLabel(String label) {
-    return _kIncidentCooldownSeconds[label] ?? 60; // default 60s
+    return _alertSettingsService.getIntervalSecs(label);
   }
 
   bool _checkCooldown(String label) {
-    final now = DateTime.now();
-    final lastTime = _lastIncidentReportAt[label];
-    final int cooldownDuration = _getCooldownForLabel(label);
-
-    if (lastTime == null) {
-      _lastIncidentReportAt[label] = now;
-      debugPrint(
-        '[IncidentCooldown] $label first trigger. Reporting allowed. (cooldown: ${cooldownDuration}s)',
-      );
-      return true;
-    }
-
-    final elapsed = now.difference(lastTime).inSeconds;
-    if (elapsed >= cooldownDuration) {
-      _lastIncidentReportAt[label] = now;
-      debugPrint(
-        '[IncidentCooldown] Cooldown expired for $label ($elapsed s elapsed, limit: ${cooldownDuration}s). Reporting allowed.',
-      );
-      return true;
-    }
-
-    final remainingSeconds = cooldownDuration - elapsed;
-    final remainingMinutes = (remainingSeconds / 60).floor();
-    final remSecs = remainingSeconds % 60;
-
-    // Throttle logs to once every 10 seconds to avoid spamming the console
-    final lastLogTime = _lastCooldownLogAt[label];
-    if (lastLogTime == null || now.difference(lastLogTime).inSeconds >= 10) {
-      _lastCooldownLogAt[label] = now;
-      final String timeStr = remainingMinutes > 0
-          ? '$remainingMinutes min $remSecs sec'
-          : '$remainingSeconds sec';
-      debugPrint(
-        '[IncidentCooldown] $label API report blocked (Cooldown active). '
-        'Remaining time: $timeStr ($elapsed s elapsed since last report).',
-      );
-    }
-    return false;
+    final lastTime = _settings.getLastApiReportTime(label);
+    return _alertSettingsService.shouldReportApi(
+      eventType: label,
+      currentSpeedKmh: _state.vehicleSpeed,
+      lastReportTime: lastTime,
+    );
   }
 
   bool _checkVoiceCooldown(String label, Duration duration) {
@@ -2525,45 +2463,20 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     final phone = _state.hasPhone;
     final smoke = _state.hasCigarette;
 
-    bool loud = false;
-    bool soft = false;
-
     // ── DRIVER CHANGED ALERT ─────────────────────────────────────────
     if (_state.authStatus == AuthStatus.unauthorized &&
         _phase == Phase.monitoring &&
         !_tripCompleted) {
-      if (_isDriverChangedActive()) {
-        _unauthorizedStart ??= now;
-
-        // Speak TTS voice alert IMMEDIATELY when Driver Changed banner appears on screen
-        if (_checkVoiceCooldown('driver_changed', const Duration(seconds: 30))) {
-          _tts.speak(AlertMessages.unauthorized(_tts.currentLang));
-          _playAlert('audio/alert_loud.mp3');
-        }
-
-        if (now.difference(_unauthorizedStart!).inSeconds >=
-            _kUnauthorizedTimeoutSeconds) {
-          if (currentImage != null) {
-            final jpeg = _captureFaceJpeg(currentImage, targetWidth: 240);
-            if (jpeg != null) {
-              _latestFrameJpeg = jpeg;
-            }
+      if (_checkCooldown('Driver Changed')) {
+        if (currentImage != null) {
+          final jpeg = _captureFaceJpeg(currentImage, targetWidth: 240);
+          if (jpeg != null) {
+            _latestFrameJpeg = jpeg;
           }
-
-          // Report driver changed incident to dashboard without stopping the trip
-          _reportIncident('Driver Changed', 'High', 1.0);
-
-          // Start 5-minute (300s) cooldown after reporting
-          _lastDriverChangedReportAt = now;
-          _unauthorizedStart = null;
         }
-      } else {
-        _unauthorizedStart = null;
-      }
-    } else {
-      _unauthorizedStart = null;
-      if (_state.authStatus == AuthStatus.authenticated) {
-        _lastDriverChangedReportAt = null;
+
+        // Report driver changed incident dynamically controlled by API intervalSecs and speedThresholdKmh
+        _reportIncident('Driver Changed', 'High', 1.0);
       }
     }
 
@@ -2597,11 +2510,6 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
         _seatbeltPhaseStart = now;
       }
 
-      // Play beep during beep phase (uses global 3s cooldown below)
-      if (_seatbeltInBeepPhase) {
-        soft = true;
-      }
-
       // Report incident with Medium severity
       if (_checkCooldown('seatbelt')) {
         _reportIncident('Seatbelt Not Worn', 'Medium', 1.0);
@@ -2619,21 +2527,16 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       _lastVoiceAlertAt.remove('seatbelt');
     }
     if (_state.drowsinessLevel == DrowsinessLevel.asleep) {
-      loud = true;
-
       // Use 'Drowsiness' for both asleep and drowsy so they share the cooldown
       if (_checkCooldown('Drowsiness')) {
         _reportIncident('Drowsiness', 'Critical', 1.0);
       }
     } else if (_state.drowsinessLevel == DrowsinessLevel.drowsy) {
-      soft = true;
-
       if (_checkCooldown('Drowsiness')) {
         _reportIncident('Drowsiness', 'Critical', 0.8);
       }
     }
     if (_state.distractionStatus == DistractionStatus.distracted) {
-      soft = true;
       if (_checkCooldown('Distraction')) {
         _reportIncident('Distraction', 'High', 0.8);
       }
@@ -2641,7 +2544,6 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
 
     // ── OVERSPEED ALERT ──────────────────────────────────────
     if (_overspeedThreshold > 0 && _state.vehicleSpeed > _overspeedThreshold) {
-      loud = true;
       if (_checkCooldown('Overspeeding')) {
         _reportIncident('Overspeeding', 'High', 1.0);
       }
@@ -2663,7 +2565,6 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       final threshold = reportThresholds[label];
       if (threshold == null || obj.confidence <= threshold) continue;
       if (label == 'seatbelt') continue;
-      loud = true;
 
       String eventType = label;
       if (label == 'phone') eventType = 'Phone Usage';
@@ -2690,8 +2591,9 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
 
     // --- Unified TTS Logic based on Banner Priority ---
     if (currentBannerKey != null && currentBannerKey != 'harsh') {
-      final int cooldownSeconds =
-          _kVoiceCooldownSeconds[currentBannerKey] ?? 30;
+      final int apiInterval =
+          _alertSettingsService.getIntervalSecs(currentBannerKey);
+      final int cooldownSeconds = apiInterval < 30 ? 30 : apiInterval;
 
       if (_checkVoiceCooldown(
         currentBannerKey,
@@ -2715,7 +2617,6 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
         } else if (currentBannerKey == 'unauthorized') {
           voice = AlertMessages.unauthorized(_tts.currentLang);
         }
-
         if (voice.isNotEmpty) {
           _tts.speak(voice);
         }
@@ -2726,16 +2627,6 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     _prevDrowsy = _state.drowsinessLevel;
     _prevDistract = _state.distractionStatus;
     _prevAuthSound = _state.authStatus;
-
-    if (!loud && !soft) return;
-
-    // Global cooldown so sounds don't overlap / spam.
-    if (_lastSoundAt != null &&
-        now.difference(_lastSoundAt!).inMilliseconds < 3000) {
-      return;
-    }
-    _lastSoundAt = now;
-    _playAlert(loud ? 'audio/alert_loud.mp3' : 'audio/alert_soft.mp3');
   }
 
   Future<void> _playAlert(String assetPath) async {
@@ -5092,17 +4983,16 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
                   style: TextStyle(color: Color(0xFF6B7280), fontSize: 15),
                 ),
                 const SizedBox(height: 4),
-                Text(
-                  (_driverName.isNotEmpty && _driverName != 'Driver')
-                      ? _driverName
-                      : 'Driver',
-                  textAlign: TextAlign.center,
-                  style: const TextStyle(
-                    color: Color(0xFF111827),
-                    fontSize: 26,
-                    fontWeight: FontWeight.w700,
+                if (_driverName.isNotEmpty && _driverName != 'Driver')
+                  Text(
+                    _driverName,
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(
+                      color: Color(0xFF111827),
+                      fontSize: 26,
+                      fontWeight: FontWeight.w700,
+                    ),
                   ),
-                ),
                 // const SizedBox(height: 14),
                 // Container(
                 //   padding: const EdgeInsets.symmetric(
@@ -6195,6 +6085,9 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     } else if (_state.authStatus == AuthStatus.multipleFaces) {
       bg = const Color(0xFFEA580C);
       text = '⚠  MULTIPLE PEOPLE DETECTED ';
+    } else if (_state.faceCount == 0 && _phase == Phase.monitoring) {
+      bg = const Color(0xFF7F1D1D);
+      text = '⚠  DRIVER NOT DETECTED';
     }
 
     if (bg == null || text == null) return const SizedBox.shrink();
@@ -6231,6 +6124,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       return 'distracted';
     if (_isDriverChangedActive()) return 'unauthorized';
     if (_state.authStatus == AuthStatus.multipleFaces) return 'multiple_faces';
+    if (_state.faceCount == 0 && _phase == Phase.monitoring) return 'no_driver';
     return null;
   }
 

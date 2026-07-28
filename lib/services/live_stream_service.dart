@@ -234,10 +234,14 @@ class LiveStreamService {
     if (raw == 'START') {
       _isStreaming = true;
       _framesSent = 0;
+      _audioBuffer.clear();
+      _audioFlushTimer?.cancel();
       _streamingStartedAt = DateTime.now();
       debugPrint('[Stream] ▶ STREAMING STARTED');
     } else if (raw == 'STOP') {
       _isStreaming = false;
+      _audioBuffer.clear();
+      _audioFlushTimer?.cancel();
       final duration = _streamingStartedAt != null
           ? DateTime.now().difference(_streamingStartedAt!).inSeconds
           : 0;
@@ -282,6 +286,10 @@ class LiveStreamService {
     if (_audioBuffer.isEmpty) return;
     // Concatenate all chunks into one WebM file
     final totalBytes = _audioBuffer.fold<int>(0, (sum, c) => sum + c.length);
+    if (totalBytes < 4) {
+      _audioBuffer.clear();
+      return;
+    }
     final assembled = Uint8List(totalBytes);
     int offset = 0;
     for (final chunk in _audioBuffer) {
@@ -289,6 +297,13 @@ class LiveStreamService {
       offset += chunk.length;
     }
     _audioBuffer.clear();
+
+    // Verify EBML/WebM magic bytes (0x1A 0x45 0xDF 0xA3) to avoid playing random binary noise
+    if (assembled[0] != 0x1A || assembled[1] != 0x45) {
+      debugPrint('[Audio] ❌ Discarding invalid audio buffer (not WebM header: ${assembled.take(4).toList()})');
+      return;
+    }
+
     try {
       final tempDir = await getTemporaryDirectory();
       final tempFile = File('${tempDir.path}/admin_audio_${DateTime.now().millisecondsSinceEpoch}.webm');

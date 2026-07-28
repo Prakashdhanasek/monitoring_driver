@@ -93,15 +93,28 @@ class IncidentAlertSettingsService {
     if (type.contains('phone')) {
       _settingsMap['phone'] = setting;
       _settingsMap['phone usage'] = setting;
+    } else if (type.contains('drowsi') || type.contains('drowsiness')) {
+      _settingsMap['drowsiness'] = setting;
+      _settingsMap['asleep'] = setting;
+      _settingsMap['drowsy'] = setting;
+    } else if (type.contains('distraction') || type.contains('distracted')) {
+      _settingsMap['distraction'] = setting;
+      _settingsMap['distracted'] = setting;
     } else if (type.contains('overspeed')) {
       _settingsMap['overspeeding'] = setting;
+      _settingsMap['overspeed'] = setting;
     } else if (type.contains('seatbelt')) {
       _settingsMap['seatbelt'] = setting;
+      _settingsMap['seatbelt not worn'] = setting;
     } else if (type.contains('smoke') || type.contains('smoking')) {
       _settingsMap['smoking'] = setting;
       _settingsMap['smoke'] = setting;
+      _settingsMap['cigarette'] = setting;
     } else if (type.contains('driver changed')) {
       _settingsMap['driver changed'] = setting;
+    } else if (type.contains('unauthorized')) {
+      _settingsMap['unauthorized driver'] = setting;
+      _settingsMap['unauthorized'] = setting;
     }
   }
 
