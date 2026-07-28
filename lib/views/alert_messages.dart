@@ -45,7 +45,7 @@ class AlertMessages {
 
   static String phone(AlertLang lang) => _pick(
     lang,
-    en: 'Phone usage detected. Please avoid using your phone while driving.',
+    en: 'Please avoid phone while driving.',
     hi: 'कृपया गाड़ी चलाते समय फोन का उपयोग न करें।',
     ml: 'വാഹനം ഓടിക്കുമ്പോൾ ഫോൺ ഉപയോഗിക്കരുത്.',
     ta: 'ஓட்டும்போது ஃபோனைப் பயன்படுத்த வேண்டாம்.',
@@ -54,7 +54,7 @@ class AlertMessages {
 
   static String cigarette(AlertLang lang) => _pick(
     lang,
-    en: 'Smoking detected.',
+    en: 'No smoking while driving.',
     hi: 'गाड़ी चलाते समय धूम्रपान न करें।',
     ml: 'വാഹനം ഓടിക്കുമ്പോൾ പുകവലിക്കരുത്.',
     ta: 'ஓட்டும்போது புகைபிடிக்க வேண்டாம்.',
@@ -81,21 +81,12 @@ class AlertMessages {
 
   static String unauthorized(AlertLang lang) => _pick(
     lang,
-    en: 'Driver change detected.',
-    hi: 'चालक परिवर्तन का पता चला।',
-    ml: 'ഡ്രൈവർ മാറ്റം കണ്ടെത്തി.',
-    ta: 'ஓட்டுநர் மாற்றம் கண்டறியப்பட்டது.',
-    kn: 'ചಾಲക ಬದಲಾವಣೆ ಪತ್ತೆಯಾಗಿದೆ.',
+    en: 'Driver changed.',
+    hi: 'चालक बदल गया।',
+    ml: 'ഡ്രൈവർ മാറി.',
+    ta: 'ஓட்டுநர் மாறினார்.',
+    kn: 'ಚಾಲಕ ಬದಲಾಗಿದ್ದಾರೆ.',
   );
-
-  // static String noDriverDetected(AlertLang lang) => _pick(
-  //   lang,
-  //   en: 'Driver not detected.',
-  //   hi: 'चालक का पता नहीं चला।',
-  //   ml: 'ഡ്രൈവറെ കണ്ടെത്തിയില്ല.',
-  //   ta: 'ஓட்டுநர் கண்டறியப்படவில்லை.',
-  //   kn: 'ಚಾಲಕ ಪತ್ತೆಯಾಗಿಲ್ಲ.',
-  // );
 
   static String unverifiedDriver(AlertLang lang) => _pick(
     lang,
@@ -108,7 +99,7 @@ class AlertMessages {
 
   static String drowsy(AlertLang lang) => _pick(
     lang,
-    en: 'Drowsiness detected. Please stay alert.',
+    en: 'You appear tired. Please stay alert.',
     hi: 'आप थके हुए लग रहे हैं। कृपया सतर्क रहें।',
     ml: 'നിങ്ങൾ ക്ഷീണിതനായി കാണപ്പെടുന്നു. ജാഗ്രത പാലിക്കുക.',
     ta: 'நீங்கள் சோர்வாக இருக்கிறீர்கள். எச்சரிக்கையாக இருங்கள்.',
@@ -117,7 +108,7 @@ class AlertMessages {
 
   static String distraction(AlertLang lang) => _pick(
     lang,
-    en: 'Driver distraction detected. Please focus on the road.',
+    en: 'Please keep your eyes on the road.',
     hi: 'कृपया अपनी नज़र सड़क पर रखें।',
     ml: 'ദയവായി റോഡിൽ ശ്രദ്ധിക്കുക.',
     ta: 'சாலையில் கவனம் செலுத்துங்கள்.',
@@ -135,7 +126,7 @@ class AlertMessages {
 
   static String seatbelt(AlertLang lang) => _pick(
     lang,
-    en: 'Please wear your seatbelt.',
+    en: 'Seat belt not detected. Please wear your seat belt.',
     hi: 'सीट बेल्ट नहीं लगी है। कृपया सीट बेल्ट लगाएं।',
     ml: 'സീറ്റ് ബെൽറ്റ് ധരിച്ചിട്ടില്ല. ദയവായി സീറ്റ് ബെൽറ്റ് ധരിക്കുക.',
     ta: 'சீட் பெல்ட் அணியவில்லை. சீட் பெல்ட்டை அணியுங்கள்.',

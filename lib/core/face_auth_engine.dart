@@ -128,14 +128,14 @@ class FaceAuthEngine {
     }
 
     // ── HEAD ANGLE LENIENCY FOR AUTHENTICATED DRIVER ─────────────────────────
-    // If the driver is already authenticated, check head angle before doing verification.
-    // Extreme head turns (yaw, pitch, roll) skip FaceNet for this frame without penalizing.
+    // If the driver is already authenticated, skip FaceNet for head turns (yaw, pitch, roll > 22°)
+    // so checking mirrors or turning head never triggers false unauthorized states.
     if (state.authStatus == AuthStatus.authenticated) {
       final yaw = face.headEulerAngleY ?? 0.0;
       final pitch = face.headEulerAngleX ?? 0.0;
       final roll = face.headEulerAngleZ ?? 0.0;
 
-      if (yaw.abs() > 35.0 || pitch.abs() > 35.0 || roll.abs() > 35.0) {
+      if (yaw.abs() > 22.0 || pitch.abs() > 22.0 || roll.abs() > 22.0) {
         return;
       }
     }
@@ -191,27 +191,9 @@ class FaceAuthEngine {
       'threshold=$kAuthThreshold',
     );
 
-    // During active monitoring when the driver is ALREADY authenticated:
-    // Protect the authenticated driver from false "Driver Changed" alarms.
-    if (state.authStatus == AuthStatus.authenticated) {
-      final bool isSameTrackingId = (state.authenticatedTrackingId != null &&
-          face.trackingId == state.authenticatedTrackingId);
-
-      // If it's the exact same face tracking ID OR the distance is mild (< 0.65),
-      // it's the same verified driver turning head / looking away. Keep authenticated!
-      if (isSameTrackingId || minDist < 0.65) {
-        _consecutiveMatch++;
-        _consecutiveMiss = 0;
-        lastMatchedLabel = bestLabel;
-        if (state.authenticatedTrackingId == null) {
-          state.authenticatedTrackingId = face.trackingId;
-        }
-        return;
-      }
-    }
-
+    // For authenticated driver, require >1.02 distance to prevent false alarms while driving
     final double effectiveThreshold = (state.authStatus == AuthStatus.authenticated)
-        ? 0.65
+        ? kAuthThreshold + 0.07 // 0.95 + 0.07 = 1.02
         : kAuthThreshold;
 
     if (minDist < effectiveThreshold) {
@@ -229,11 +211,8 @@ class FaceAuthEngine {
       _consecutiveMatch = 0;
       lastMatchedLabel = null;
 
-      // Only flag AuthStatus.unauthorized if a distinct DIFFERENT person (minDist >= 0.65 and new trackingId)
-      // persists for at least 15 consecutive frames (~1.5s).
-      final requiredMisses = (state.authStatus == AuthStatus.authenticated)
-          ? 15
-          : 3;
+      // Ultra-fast & accurate driver swap: 3 consecutive mismatches (>1.02 distance)
+      final requiredMisses = (state.authStatus == AuthStatus.authenticated) ? 3 : 2;
 
       if (_consecutiveMiss >= requiredMisses) {
         state.authStatus = AuthStatus.unauthorized;
