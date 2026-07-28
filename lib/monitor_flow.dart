@@ -274,6 +274,8 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     return true;
   }
 
+  //static const int _kTripEndSeconds = 600; // 10 minutes
+  // static const int _kTripEndSeconds = 60; // 1 minutes
   // Hidden admin-exit gesture (top-right corner x5 -> PIN -> leave kiosk).
   int _exitTaps = 0;
   DateTime? _firstExitTapAt;
@@ -372,6 +374,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     _syncTimer = Timer.periodic(const Duration(seconds: 30), (_) {
       _syncIncidentsTask();
       _triggerVideoUpload();
+      _syncTripsTask();
       // _maybeReReportCable();
     });
 
@@ -499,8 +502,8 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     }
     _apiCooldownSeconds = map;
   }
- 
- 
+
+
   Future<void> _checkConnectivity() async {
     try {
       // Check WiFi status
@@ -529,6 +532,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
           _triggerVideoUpload();
           _fetchIncidentIntervals();
 
+          _syncTripsTask();
         }
       }
     } catch (_) {
@@ -777,6 +781,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       }
       _syncTimer = Timer.periodic(const Duration(seconds: 30), (_) {
         _syncIncidentsTask();
+        _syncTripsTask();
       });
       _connectivityTimer = Timer.periodic(const Duration(seconds: 5), (_) {
         _checkConnectivity();
@@ -2019,69 +2024,64 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   // }
 
   Future<void> _sendTripStart() async {
+    final deviceId = _settings.getDeviceId();
+    if (deviceId == null || deviceId.isEmpty) return;
     try {
-      final deviceId = _settings.getDeviceId();
-      if (deviceId == null || deviceId.isEmpty) return;
-
       final trip = await _tripService.startTrip(
         deviceTabletId: deviceId,
         driverId: _driverId == '—' ? null : _driverId,
         gpsLatitude: _state.gpsLat,
         gpsLongitude: _state.gpsLng,
         startedAt: DateTime.now().toUtc(),
+        appVersion: _appVersion.replaceFirst('v', ''),
       );
 
-      // if (trip != null &&
-      //     trip.geofenceCenterLatitude != null &&
-      //     trip.geofenceCenterLongitude != null &&
-      //     trip.geofenceRadiusMeters != null) {
-      //   _boundaryLat = trip.geofenceCenterLatitude;
-      //   _boundaryLng = trip.geofenceCenterLongitude;
-      //   _boundaryRadiusM = trip.geofenceRadiusMeters!.toDouble();
-      //   _boundaryViolationReported = false; // re-arm for this trip
-      //   debugPrint('[Boundary] Geofence set: '
-      //       '($_boundaryLat, $_boundaryLng) r=${_boundaryRadiusM}m '
-      //       '"${trip.geofenceName}"');
-      // } else {
-      //   // No geofence returned — disable the check for this trip.
-      //   _boundaryLat = null;
-      //   _boundaryLng = null;
-      //   _boundaryRadiusM = null;
-      //   debugPrint('[Boundary] No geofence in trip-start response.');
-      // }
       if (trip != null) {
+        // Online success — use response data
         _tripId = trip.id;
         _vehicleId ??= trip.vehicleId;
-         if (trip.vehicleRegistrationNumber != null &&
-            trip.vehicleRegistrationNumber!.isNotEmpty) {
-          _vehicleRegNo = trip.vehicleRegistrationNumber;
-          debugPrint('[Flow] Vehicle reg from trip-start: $_vehicleRegNo');
+        if (trip.geofenceCenterLatitude != null &&
+            trip.geofenceCenterLongitude != null &&
+            trip.geofenceRadiusMeters != null) {
+          _boundaryLat = trip.geofenceCenterLatitude;
+          _boundaryLng = trip.geofenceCenterLongitude;
+          _boundaryRadiusM = trip.geofenceRadiusMeters!.toDouble();
+          _geofenceId = trip.geofenceId;
+          _vehicleId ??= trip.vehicleId;
+          _boundaryViolationReported = false;
+          debugPrint(
+            '[Boundary] Geofence set: ($_boundaryLat, $_boundaryLng) '
+            'r=${_boundaryRadiusM}m id=$_geofenceId',
+          );
+        } else {
+          _boundaryLat = null;
+          _boundaryLng = null;
+          _boundaryRadiusM = null;
+          _geofenceId = null;
+          debugPrint('[Boundary] No geofence in trip-start response.');
         }
-        if (mounted) setState(() {});
-      }
-      if (trip != null &&
-          trip.geofenceCenterLatitude != null &&
-          trip.geofenceCenterLongitude != null &&
-          trip.geofenceRadiusMeters != null) {
-        _boundaryLat = trip.geofenceCenterLatitude;
-        _boundaryLng = trip.geofenceCenterLongitude;
-        _boundaryRadiusM = trip.geofenceRadiusMeters!.toDouble();
-        _geofenceId = trip.geofenceId;
-        _vehicleId ??= trip.vehicleId;
-        _boundaryViolationReported = false;
-        debugPrint(
-          '[Boundary] Geofence set: ($_boundaryLat, $_boundaryLng) '
-          'r=${_boundaryRadiusM}m id=$_geofenceId',
-        );
       } else {
-        _boundaryLat = null;
-        _boundaryLng = null;
-        _boundaryRadiusM = null;
-        _geofenceId = null;
-        debugPrint('[Boundary] No geofence in trip-start response.');
+        // API returned null (offline or server error) — queue for retry
+        debugPrint('[Flow] Trip start API failed — queuing for offline sync');
+        _tripService.queueTripStart(
+          deviceTabletId: deviceId,
+          driverId: _driverId == '—' ? null : _driverId,
+          gpsLatitude: _state.gpsLat,
+          gpsLongitude: _state.gpsLng,
+          startedAt: DateTime.now().toUtc(),
+          appVersion: _appVersion.replaceFirst('v', ''),
+        );
       }
     } catch (e) {
-      debugPrint('[Flow] Failed to send trip start: $e');
+      debugPrint('[Flow] Failed to send trip start: $e — queuing for offline sync');
+      _tripService.queueTripStart(
+        deviceTabletId: deviceId,
+        driverId: _driverId == '—' ? null : _driverId,
+        gpsLatitude: _state.gpsLat,
+        gpsLongitude: _state.gpsLng,
+        startedAt: DateTime.now().toUtc(),
+        appVersion: _appVersion.replaceFirst('v', ''),
+      );
     }
   }
 
@@ -2221,20 +2221,24 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   }
 
   Future<void> _sendTripEnd() async {
-    try {
-      final deviceId = _settings.getDeviceId();
-      if (deviceId == null || deviceId.isEmpty) return;
+    final deviceId = _settings.getDeviceId();
+    if (deviceId == null || deviceId.isEmpty) return;
 
-      await _tripService.endTrip(
-        deviceTabletId: deviceId,
-        gpsLatitude: _state.gpsLat,
-        gpsLongitude: _state.gpsLng,
-        distanceKm: 0,
-        endedAt: DateTime.now().toUtc(),
-      );
-      _tripId = null;
-    } catch (e) {
-      debugPrint('[Flow] Failed to send trip end: $e');
+    // Always queue first — guarantees trip end is never lost even if offline
+    _tripService.queueTripEnd(
+      deviceTabletId: deviceId,
+      gpsLatitude: _state.gpsLat,
+      gpsLongitude: _state.gpsLng,
+      distanceKm: 0,
+      endedAt: DateTime.now().toUtc(),
+    );
+    _tripId = null;
+
+    // Attempt immediate sync if online
+    if (_isOnline) {
+      await _tripService.syncPendingTrips();
+    } else {
+      debugPrint('[Flow] Trip end queued — device offline, will sync when back online');
     }
   }
 
@@ -2450,6 +2454,12 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       '[Flow] Triggering sync of pending incidents (connection: ONLINE)...',
     );
     await _incidentsService.syncPendingIncidents();
+  }
+
+  void _syncTripsTask() {
+    if (!_isOnline || _tripService.pendingCount == 0) return;
+    debugPrint('[Flow] Syncing ${_tripService.pendingCount} pending trip event(s)...');
+    _tripService.syncPendingTrips();
   }
 
   Future<void> _sendTelemetryTask() async {
