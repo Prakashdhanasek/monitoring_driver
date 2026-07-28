@@ -215,6 +215,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   DistractionStatus _prevDistract = DistractionStatus.forward;
   AuthStatus _prevAuthSound = AuthStatus.scanning;
   final Map<String, DateTime> _lastIncidentReportAt = {};
+    Map<String, int> _apiCooldownSeconds = {};
   final Map<String, DateTime> _lastVoiceAlertAt = {};
   final Map<String, DateTime> _lastCooldownLogAt = {};
   String? _activeBannerKey;
@@ -350,6 +351,8 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     _tts.init();
     WakelockPlus.enable();
     _loadAppVersion();
+        _fetchIncidentIntervals();   // ← add this
+
     _init();
 
     _syncTimer = Timer.periodic(const Duration(seconds: 30), (_) {
@@ -415,6 +418,75 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     }
   }
 
+ /// Loads per-incident interval settings from the API and maps the API's
+  /// incidentType names onto the event-type keys this app uses internally.
+  Future<void> _fetchIncidentIntervals() async {
+    try {
+      final res = await http
+          .get(
+            Uri.parse(
+              'https://proximity-driver-api.prod-app.in/api/settings/incident-alerts',
+            ),
+          )
+          .timeout(const Duration(seconds: 10));
+      if (res.statusCode == 200 && res.body.isNotEmpty) {
+        final decoded = jsonDecode(res.body);
+        if (decoded is List) {
+          _applyIncidentIntervals(decoded);
+          debugPrint('[Flow] Incident intervals from API: $_apiCooldownSeconds');
+        }
+      }
+    } catch (e) {
+      debugPrint('[Flow] Failed to fetch incident intervals: $e');
+    }
+  }
+
+  void _applyIncidentIntervals(List<dynamic> list) {
+    final map = <String, int>{};
+    for (final item in list) {
+      if (item is! Map<String, dynamic>) continue;
+      final type = item['incidentType'] as String?;
+      final rawSecs = item['intervalSecs'];
+      if (type == null || rawSecs == null) continue;
+      final int secs = rawSecs is num
+          ? rawSecs.toInt()
+          : (int.tryParse(rawSecs.toString()) ?? 60);
+
+      // Map API incidentType → the label keys used inside the app.
+      switch (type) {
+        case 'Drowsiness':
+          map['Drowsiness'] = secs;
+          break;
+        case 'Distraction':
+          map['Distraction'] = secs;
+          break;
+        case 'Overspeed':
+          map['Overspeeding'] = secs; // code uses 'Overspeeding'
+          break;
+        case 'Phone Usage':
+          map['Phone Usage'] = secs;
+          break;
+        case 'Smoking':
+          map['Smoking'] = secs;
+          break;
+        case 'Seatbelt Not Worn':
+          map['Seatbelt Not Worn'] = secs;
+          map['seatbelt'] = secs; // _checkCooldown uses the 'seatbelt' key
+          break;
+        case 'Unauthorized Driver':
+          map['Unauthorized Driver'] = secs;
+          break;
+        case 'Unverified Driver':
+          map['Unverified Driver'] = secs;
+          break;
+        default:
+          map[type] = secs; // Cable Unplugged, Driver Changed, future types
+      }
+    }
+    _apiCooldownSeconds = map;
+  }
+ 
+ 
   Future<void> _checkConnectivity() async {
     try {
       // Check WiFi status
@@ -441,6 +513,8 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
         if (_isOnline) {
           _syncIncidentsTask();
           _triggerVideoUpload();
+          _fetchIncidentIntervals();
+
         }
       }
     } catch (_) {
@@ -1954,6 +2028,12 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       if (trip != null) {
         _tripId = trip.id;
         _vehicleId ??= trip.vehicleId;
+         if (trip.vehicleRegistrationNumber != null &&
+            trip.vehicleRegistrationNumber!.isNotEmpty) {
+          _vehicleRegNo = trip.vehicleRegistrationNumber;
+          debugPrint('[Flow] Vehicle reg from trip-start: $_vehicleRegNo');
+        }
+        if (mounted) setState(() {});
       }
       if (trip != null &&
           trip.geofenceCenterLatitude != null &&
@@ -2453,7 +2533,10 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   };
 
   int _getCooldownForLabel(String label) {
-    return _kIncidentCooldownSeconds[label] ?? 60; // default 60s
+    return _apiCooldownSeconds[label] ??
+        _kIncidentCooldownSeconds[label] ??
+        60;
+    // return _kIncidentCooldownSeconds[label] ?? 60; // default 60s
   }
 
   bool _checkCooldown(String label) {
@@ -4683,20 +4766,52 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       mainAxisSize: MainAxisSize.min,
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        if (_vehicleRegNo != null && _vehicleRegNo!.isNotEmpty)
-          Padding(
-            padding: const EdgeInsets.only(left: 14, bottom: 1),
-            child: Text(
-              _vehicleRegNo!,
-              style: const TextStyle(
-                color: Colors.white,
-                fontSize: 10,
-                fontWeight: FontWeight.w800,
-                letterSpacing: 0.5,
-                shadows: [Shadow(color: Colors.black, blurRadius: 4)],
-              ),
-            ),
+        // if (_vehicleRegNo != null && _vehicleRegNo!.isNotEmpty)
+        //   Padding(
+        //     padding: const EdgeInsets.only(left: 14, bottom: 1),
+        //     child: Text(
+        //       _vehicleRegNo!,
+        //       style: const TextStyle(
+        //         color: Colors.white,
+        //         fontSize: 10,
+        //         fontWeight: FontWeight.w800,
+        //         letterSpacing: 0.5,
+        //         shadows: [Shadow(color: Colors.black, blurRadius: 4)],
+        //       ),
+        //     ),
+        //   ),
+
+        // ── Reg number (left) + app version (right) on the same top line ──
+        Padding(
+          padding: const EdgeInsets.only(left: 14, right: 14, bottom: 1),
+          child: Row(
+            children: [
+              if (_vehicleRegNo != null && _vehicleRegNo!.isNotEmpty)
+                Text(
+                  _vehicleRegNo!,
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 10,
+                    fontWeight: FontWeight.w800,
+                    letterSpacing: 0.5,
+                    shadows: [Shadow(color: Colors.black, blurRadius: 4)],
+                  ),
+                ),
+              const Spacer(),
+              if (_appVersion.isNotEmpty)
+                Text(
+                  _appVersion,
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 10,
+                    fontWeight: FontWeight.w800,
+                    letterSpacing: 0.5,
+                    shadows: [Shadow(color: Colors.black, blurRadius: 4)],
+                  ),
+                ),
+            ],
           ),
+        ),
         Container(
           margin: const EdgeInsets.symmetric(horizontal: 10),
           padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
@@ -5221,6 +5336,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   // ── MONITORING ──
   Widget _monitoringOverlay() {
     return SafeArea(
+      top: true,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
@@ -5232,6 +5348,24 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
           //   ),
           // ),
           // _cableUnpluggedBanner(),
+          // _monitorStatusBar(),
+          // _cableUnpluggedBanner(),
+          // ── Vehicle registration number (same style as verifying screen) ──
+          if (_vehicleRegNo != null && _vehicleRegNo!.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.only(left: 14, top:2, bottom:0),
+              child: Text(
+                _vehicleRegNo!,
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 10,
+                  fontWeight: FontWeight.w800,
+                  letterSpacing: 0.5,
+                  height: 1.0,
+                  shadows: [Shadow(color: Colors.black, blurRadius: 4)],
+                ),
+              ),
+            ),
           _monitorStatusBar(),
           _esp32StatusBanner(),
           // _deviceMotionCard(),
@@ -5248,8 +5382,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
           _monitorBanner(),
           // _monitorDiag(),
         ],
-      ),
-    );
+      ));
   }
 
   // Widget _cableUnpluggedBanner() {
@@ -5728,7 +5861,6 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
             ],
           ),
           const SizedBox(height: 6),
-          // Bottom row: internet (globe) + wifi/hotspot + WS live stream
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceEvenly,
             children: [
