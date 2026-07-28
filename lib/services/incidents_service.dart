@@ -11,6 +11,10 @@ class IncidentsService {
   static const String _apiUrl = '$_apiBase/api/incidents';
   static const String _evidenceUrl = '$_apiBase/api/incidents/evidence';
 
+  // Give up on an incident after this many rejections from the server
+  // (e.g. repeated evidence-verification failures) instead of retrying forever.
+  static const int _maxSyncAttempts = 2;
+
   Box get _box => Hive.box(_boxName);
 
   // Sync concurrency guard
@@ -223,16 +227,19 @@ class IncidentsService {
              }
 
             // Clean up payload: replace empty string or 'string' placeholder with null
-            decoded.forEach((key, value) {
+            decoded.forEach((mapKey, value) {
               if (value is String) {
                 final clean = value.trim();
                 if (clean.isEmpty || clean.toLowerCase() == 'string') {
-                  decoded[key] = null;
+                  decoded[mapKey] = null;
                 }
               }
             });
 
-            final String finalBody = jsonEncode(decoded);
+            // _syncAttempts is bookkeeping local to this device; never send it upstream.
+            final Map<String, dynamic> outgoing = Map.of(decoded)
+              ..remove('_syncAttempts');
+            final String finalBody = jsonEncode(outgoing);
 
             debugPrint('--------------------------------------------------');
             debugPrint('[API REQUEST] POST -> $url');
@@ -259,9 +266,26 @@ class IncidentsService {
               );
               _box.delete(key);
             } else {
-              debugPrint(
-                '[EVENT SYNC FAILURE] ✗ Failed to move offline event $key ($eventType) online. Status: ${response.statusCode}',
-              );
+              // The server responded (as opposed to a network/timeout error below),
+              // so this is a real rejection, e.g. evidence-verification failure.
+              // Count attempts and give up after _maxSyncAttempts so a permanently
+              // rejected incident doesn't get retried forever on every sync cycle.
+              final int attempts = (decoded['_syncAttempts'] as int? ?? 0) + 1;
+              if (attempts >= _maxSyncAttempts) {
+                debugPrint(
+                  '[EVENT SYNC DROPPED] ✗ Giving up on offline event $key ($eventType) '
+                  'after $attempts failed attempts. Status: ${response.statusCode}. '
+                  'Body: ${response.body}',
+                );
+                _box.delete(key);
+              } else {
+                decoded['_syncAttempts'] = attempts;
+                _box.put(key, jsonEncode(decoded));
+                debugPrint(
+                  '[EVENT SYNC FAILURE] ✗ Failed to move offline event $key ($eventType) '
+                  'online. Status: ${response.statusCode}. Attempt $attempts/$_maxSyncAttempts.',
+                );
+              }
             }
           } catch (e) {
             debugPrint(
