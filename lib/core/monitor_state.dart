@@ -25,6 +25,7 @@ class MonitorState {
   AuthStatus authStatus = AuthStatus.scanning;
   double authDistance = -1.0;
   int? authenticatedTrackingId;
+  bool isUnknownDriver = false;
   int faceCount = 0;
   bool seatbeltBuckled = false;
   DateTime? lastSeatbeltDetected;
@@ -146,6 +147,7 @@ double vehicleSpeed = 0.0;
 
   void resetCalibration() {
     calibrated = false;
+    isUnknownDriver = false;
     calibrationFrame = 0;
     calibrationEarValues.clear();
     earBaseline = 0.28;

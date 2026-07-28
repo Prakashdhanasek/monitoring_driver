@@ -81,11 +81,11 @@ class AlertMessages {
 
   static String unauthorized(AlertLang lang) => _pick(
     lang,
-    en: 'Unauthorized driver detected.',
-    hi: 'अनधिकृत चालक का पता चला।',
-    ml: 'അനധികൃത ഡ്രൈവറെ കണ്ടെത്തി.',
-    ta: 'அங்கீகரிக்கப்படாத ஓட்டுநர் கண்டறியப்பட்டார்.',
-    kn: 'ಅನಧಿಕೃತ ಚಾಲಕ ಪತ್ತೆಯಾಗಿದೆ.',
+    en: 'Driver changed.',
+    hi: 'चालक बदल गया।',
+    ml: 'ഡ്രൈവർ മാറി.',
+    ta: 'ஓட்டுநர் மாறினார்.',
+    kn: 'ಚಾಲಕ ಬದಲಾಗಿದ್ದಾರೆ.',
   );
 
   static String unverifiedDriver(AlertLang lang) => _pick(
