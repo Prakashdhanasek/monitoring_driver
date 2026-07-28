@@ -1933,6 +1933,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
         gpsLatitude: _state.gpsLat,
         gpsLongitude: _state.gpsLng,
         startedAt: DateTime.now().toUtc(),
+        appVersion: _appVersion.replaceFirst('v', ''),
       );
 
       if (trip != null) {
@@ -1968,6 +1969,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
           gpsLatitude: _state.gpsLat,
           gpsLongitude: _state.gpsLng,
           startedAt: DateTime.now().toUtc(),
+          appVersion: _appVersion.replaceFirst('v', ''),
         );
       }
     } catch (e) {
@@ -1978,6 +1980,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
         gpsLatitude: _state.gpsLat,
         gpsLongitude: _state.gpsLng,
         startedAt: DateTime.now().toUtc(),
+        appVersion: _appVersion.replaceFirst('v', ''),
       );
     }
   }

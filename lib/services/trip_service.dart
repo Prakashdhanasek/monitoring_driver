@@ -27,6 +27,7 @@ class TripService {
     required double gpsLatitude,
     required double gpsLongitude,
     required DateTime startedAt,
+    String? appVersion,
   }) {
     final body = <String, dynamic>{
       'type': 'start',
@@ -35,6 +36,7 @@ class TripService {
       'gpsLatitude': gpsLatitude,
       'gpsLongitude': gpsLongitude,
       'startedAt': startedAt.toUtc().toIso8601String(),
+      if (appVersion != null && appVersion.isNotEmpty) 'appVersion': appVersion,
     };
     final key = 'trip_${DateTime.now().microsecondsSinceEpoch}';
     _box.put(key, jsonEncode(body));
@@ -165,21 +167,21 @@ class TripService {
     required double gpsLatitude,
     required double gpsLongitude,
     required DateTime startedAt,
+    String? appVersion,
   }) async {
     final url = Uri.parse('$_baseUrl$_startTripPath');
-    final body = {
+    final body = <String, dynamic>{
       'deviceTabletId': deviceTabletId,
       if (driverId != null && driverId.isNotEmpty) 'driverId': driverId,
       'gpsLatitude': gpsLatitude,
       'gpsLongitude': gpsLongitude,
       'startedAt': startedAt.toUtc().toIso8601String(),
+      if (appVersion != null && appVersion.isNotEmpty) 'appVersion': appVersion,
     };
 
     try {
-      debugPrint('--------------------------------------------------');
-      debugPrint('[TripService] START TRIP POST -> $url');
-      debugPrint('[TripService] PAYLOAD: ${jsonEncode(body)}');
-      debugPrint('--------------------------------------------------');
+      debugPrint('[TripService] API REQUEST trip/start POST $url');
+      debugPrint('[TripService] API REQUEST body: ${jsonEncode(body)}');
 
       final response = await http
           .post(
@@ -189,10 +191,8 @@ class TripService {
       )
           .timeout(const Duration(seconds: 15));
 
-      debugPrint('--------------------------------------------------');
-      debugPrint('[TripService] START RESPONSE: ${response.statusCode}');
-      debugPrint('[TripService] START BODY: ${response.body}');
-      debugPrint('--------------------------------------------------');
+      debugPrint('[TripService] API RESPONSE trip/start status=${response.statusCode}');
+      debugPrint('[TripService] API RESPONSE trip/start body=${response.body}');
 
       // Only parse on a successful status with a non-empty body.
       if (response.statusCode >= 200 &&
@@ -202,7 +202,7 @@ class TripService {
       }
       return null;
     } catch (e) {
-      debugPrint('[TripService] START ERROR: $e');
+      debugPrint('[TripService] API REQUEST trip/start FAILED: $e');
       return null;
     }
   }
@@ -224,10 +224,8 @@ class TripService {
     };
 
     try {
-      debugPrint('--------------------------------------------------');
-      debugPrint('[TripService] END TRIP POST -> $url');
-      debugPrint('[TripService] PAYLOAD: ${jsonEncode(body)}');
-      debugPrint('--------------------------------------------------');
+      debugPrint('[TripService] API REQUEST trip/end POST $url');
+      debugPrint('[TripService] API REQUEST body: ${jsonEncode(body)}');
 
       final response = await http
           .post(
@@ -237,12 +235,10 @@ class TripService {
           )
           .timeout(const Duration(seconds: 15));
 
-      debugPrint('--------------------------------------------------');
-      debugPrint('[TripService] END RESPONSE: ${response.statusCode}');
-      debugPrint('[TripService] END BODY: ${response.body}');
-      debugPrint('--------------------------------------------------');
+      debugPrint('[TripService] API RESPONSE trip/end status=${response.statusCode}');
+      debugPrint('[TripService] API RESPONSE trip/end body=${response.body}');
     } catch (e) {
-      debugPrint('[TripService] END ERROR: $e');
+      debugPrint('[TripService] API REQUEST trip/end FAILED: $e');
     }
   }
 }
