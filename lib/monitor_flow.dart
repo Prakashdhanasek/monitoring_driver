@@ -2026,10 +2026,24 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   Future<void> _sendTripStart() async {
     final deviceId = _settings.getDeviceId();
     if (deviceId == null || deviceId.isEmpty) return;
+
+    final String? effectiveDriverId =
+        (_driverId == '—' || _driverId.isEmpty || _state.isUnknownDriver)
+            ? null
+            : _driverId;
+    final String effectiveDriverName =
+        (_state.isUnknownDriver ||
+                _driverName == 'Unknown Driver' ||
+                _driverName.isEmpty ||
+                _driverName == 'Driver')
+            ? 'Unknown Driver'
+            : _driverName;
+
     try {
       final trip = await _tripService.startTrip(
         deviceTabletId: deviceId,
-        driverId: _driverId == '—' ? null : _driverId,
+        driverId: effectiveDriverId,
+        driverName: effectiveDriverName,
         gpsLatitude: _state.gpsLat,
         gpsLongitude: _state.gpsLng,
         startedAt: DateTime.now().toUtc(),
@@ -2065,7 +2079,8 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
         debugPrint('[Flow] Trip start API failed — queuing for offline sync');
         _tripService.queueTripStart(
           deviceTabletId: deviceId,
-          driverId: _driverId == '—' ? null : _driverId,
+          driverId: effectiveDriverId,
+          driverName: effectiveDriverName,
           gpsLatitude: _state.gpsLat,
           gpsLongitude: _state.gpsLng,
           startedAt: DateTime.now().toUtc(),
@@ -2073,10 +2088,13 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
         );
       }
     } catch (e) {
-      debugPrint('[Flow] Failed to send trip start: $e — queuing for offline sync');
+      debugPrint(
+        '[Flow] Failed to send trip start: $e — queuing for offline sync',
+      );
       _tripService.queueTripStart(
         deviceTabletId: deviceId,
-        driverId: _driverId == '—' ? null : _driverId,
+        driverId: effectiveDriverId,
+        driverName: effectiveDriverName,
         gpsLatitude: _state.gpsLat,
         gpsLongitude: _state.gpsLng,
         startedAt: DateTime.now().toUtc(),

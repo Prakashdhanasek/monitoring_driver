@@ -24,6 +24,7 @@ class TripService {
   void queueTripStart({
     required String deviceTabletId,
     String? driverId,
+    String? driverName,
     required double gpsLatitude,
     required double gpsLongitude,
     required DateTime startedAt,
@@ -32,7 +33,12 @@ class TripService {
     final body = <String, dynamic>{
       'type': 'start',
       'deviceTabletId': deviceTabletId,
-      if (driverId != null && driverId.isNotEmpty) 'driverId': driverId,
+      'driverId': (driverId != null && driverId.isNotEmpty && driverId != '—')
+          ? driverId
+          : null,
+      'driverName': (driverName != null && driverName.isNotEmpty)
+          ? driverName
+          : ((driverId == null || driverId == '—') ? 'Unknown Driver' : null),
       'gpsLatitude': gpsLatitude,
       'gpsLongitude': gpsLongitude,
       'startedAt': startedAt.toUtc().toIso8601String(),
@@ -164,6 +170,7 @@ class TripService {
   Future<TripStartResponseModel?> startTrip({
     required String deviceTabletId,
     String? driverId,
+    String? driverName,
     required double gpsLatitude,
     required double gpsLongitude,
     required DateTime startedAt,
@@ -172,7 +179,12 @@ class TripService {
     final url = Uri.parse('$_baseUrl$_startTripPath');
     final body = <String, dynamic>{
       'deviceTabletId': deviceTabletId,
-      if (driverId != null && driverId.isNotEmpty) 'driverId': driverId,
+      'driverId': (driverId != null && driverId.isNotEmpty && driverId != '—')
+          ? driverId
+          : null,
+      'driverName': (driverName != null && driverName.isNotEmpty)
+          ? driverName
+          : ((driverId == null || driverId == '—') ? 'Unknown Driver' : null),
       'gpsLatitude': gpsLatitude,
       'gpsLongitude': gpsLongitude,
       'startedAt': startedAt.toUtc().toIso8601String(),
