@@ -192,6 +192,8 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   DateTime? _lastAuthAttemptAt;
   bool _faceWasPresentLastFrame = false;
   DateTime? _lastDriversRefreshAt;
+  DateTime?
+  _unmatchedFaceSince; // tracks how long a face is present but not matching
 
   // Verified driver
   String _driverName = '';
@@ -215,7 +217,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   DistractionStatus _prevDistract = DistractionStatus.forward;
   AuthStatus _prevAuthSound = AuthStatus.scanning;
   final Map<String, DateTime> _lastIncidentReportAt = {};
-    Map<String, int> _apiCooldownSeconds = {};
+  Map<String, int> _apiCooldownSeconds = {};
   final Map<String, DateTime> _lastVoiceAlertAt = {};
   final Map<String, DateTime> _lastCooldownLogAt = {};
   String? _activeBannerKey;
@@ -265,8 +267,9 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   bool _isDriverChangedActive() {
     if (_state.authStatus != AuthStatus.unauthorized) return false;
     if (_lastDriverChangedReportAt != null) {
-      final elapsedSinceReport =
-          DateTime.now().difference(_lastDriverChangedReportAt!).inSeconds;
+      final elapsedSinceReport = DateTime.now()
+          .difference(_lastDriverChangedReportAt!)
+          .inSeconds;
       if (elapsedSinceReport < 300) {
         return false; // 5-minute (300s) cooldown active
       }
@@ -367,7 +370,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     _tts.init();
     WakelockPlus.enable();
     _loadAppVersion();
-        _fetchIncidentIntervals();   // ← add this
+    _fetchIncidentIntervals(); // ← add this
 
     _init();
 
@@ -435,7 +438,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     }
   }
 
- /// Loads per-incident interval settings from the API and maps the API's
+  /// Loads per-incident interval settings from the API and maps the API's
   /// incidentType names onto the event-type keys this app uses internally.
   Future<void> _fetchIncidentIntervals() async {
     try {
@@ -450,7 +453,9 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
         final decoded = jsonDecode(res.body);
         if (decoded is List) {
           _applyIncidentIntervals(decoded);
-          debugPrint('[Flow] Incident intervals from API: $_apiCooldownSeconds');
+          debugPrint(
+            '[Flow] Incident intervals from API: $_apiCooldownSeconds',
+          );
         }
       }
     } catch (e) {
@@ -502,7 +507,6 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     }
     _apiCooldownSeconds = map;
   }
-
 
   Future<void> _checkConnectivity() async {
     try {
@@ -1547,18 +1551,31 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
               );
             }
             if (_state.authStatus == AuthStatus.authenticated) {
+              _unmatchedFaceSince = null;
               _capturedFace = _captureFaceJpeg(image, targetWidth: 480);
               _onVerified(isMatched: true);
             } else if (_state.authStatus == AuthStatus.unauthorized) {
-              _capturedFace = _captureFaceJpeg(image, targetWidth: 480);
-              final embedding = _authEngine.extractLiveEmbedding(
-                image,
-                _getCameraRotation(),
-                faces.first.boundingBox,
-              );
-              _authEngine.setActiveTripEmbedding(embedding);
-              _onVerified(isMatched: false);
+              // Face present but doesn't match. Wait 10 seconds before
+              // proceeding as Unknown Driver — gives registered drivers
+              // time to get a good match under poor lighting/angles.
+              _unmatchedFaceSince ??= DateTime.now();
+              if (DateTime.now().difference(_unmatchedFaceSince!).inSeconds >=
+                  10) {
+                _unmatchedFaceSince = null;
+                _capturedFace = _captureFaceJpeg(image, targetWidth: 480);
+                final embedding = _authEngine.extractLiveEmbedding(
+                  image,
+                  _getCameraRotation(),
+                  faces.first.boundingBox,
+                );
+                _authEngine.setActiveTripEmbedding(embedding);
+                _onVerified(isMatched: false);
+              }
+            } else {
+              _unmatchedFaceSince = null;
             }
+          } else {
+            _unmatchedFaceSince = null;
           }
           break;
 
@@ -1590,10 +1607,12 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
             } else {
               _multiFace = 0;
               final face = faces.first;
-              // Light continuous identity check (catches a driver swap mid-trip).
+              // Continuous identity check — detects a genuine driver swap.
+              // Threshold 1.10: same driver stays below 1.05, different person exceeds 1.10.
+              // Check every 1s × 4 consecutive misses = ~4s detection time.
               final now = DateTime.now();
               if (_lastAuthAttemptAt == null ||
-                  now.difference(_lastAuthAttemptAt!).inMilliseconds >= 100) {
+                  now.difference(_lastAuthAttemptAt!).inMilliseconds >= 1000) {
                 _lastAuthAttemptAt = now;
                 _authEngine.processAuth(
                   face,
@@ -1755,11 +1774,13 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       // Immediately resolve actual driver name from local cache prior to any UI render
       final cachedDriver = _driversService.getDriverById(driverId);
       if (cachedDriver != null && cachedDriver.isNotEmpty) {
-        final rawCachedName = cachedDriver['fullName'] ??
+        final rawCachedName =
+            cachedDriver['fullName'] ??
             cachedDriver['name'] ??
             cachedDriver['driverName'] ??
             cachedDriver['nameEn'];
-        if (rawCachedName != null && rawCachedName.toString().trim().isNotEmpty) {
+        if (rawCachedName != null &&
+            rawCachedName.toString().trim().isNotEmpty) {
           driverName = rawCachedName.toString().trim();
         }
       }
@@ -1793,7 +1814,11 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
           debugPrint('[Flow][DriverFields] ALL KEYS: ${driver.keys.toList()}');
           debugPrint('[Flow][DriverFields] ALL VALUES: $driver');
 
-          final rawApiName = driver['fullName'] ?? driver['name'] ?? driver['driverName'] ?? driver['nameEn'];
+          final rawApiName =
+              driver['fullName'] ??
+              driver['name'] ??
+              driver['driverName'] ??
+              driver['nameEn'];
           if (rawApiName != null && rawApiName.toString().trim().isNotEmpty) {
             driverName = rawApiName.toString().trim();
           }
@@ -1803,7 +1828,8 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
             final firstVehicle =
                 assignedVehiclesList.first as Map<String, dynamic>;
             _vehicleId = firstVehicle['vehicleId'] as String?;
-            _vehicleRegNo = firstVehicle['vehicleRegistrationNumber'] as String?;
+            _vehicleRegNo =
+                firstVehicle['vehicleRegistrationNumber'] as String?;
             // Parse overspeed threshold from API
             final threshold = firstVehicle['overspeedThreshold'];
             if (threshold != null) {
@@ -1851,7 +1877,11 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
             final expiry = DateTime.tryParse(licenseExpiryStr);
             if (expiry != null) {
               final today = DateTime.now();
-              final expiryDate = DateTime(expiry.year, expiry.month, expiry.day);
+              final expiryDate = DateTime(
+                expiry.year,
+                expiry.month,
+                expiry.day,
+              );
               final todayDate = DateTime(today.year, today.month, today.day);
               final daysLeft = expiryDate.difference(todayDate).inDays;
 
@@ -2256,11 +2286,11 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     if (_isOnline) {
       await _tripService.syncPendingTrips();
     } else {
-      debugPrint('[Flow] Trip end queued — device offline, will sync when back online');
+      debugPrint(
+        '[Flow] Trip end queued — device offline, will sync when back online',
+      );
     }
   }
-
-
 
   Future<String?> _generateIncidentVideo(
     List<Uint8List> frames,
@@ -2476,7 +2506,9 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
 
   void _syncTripsTask() {
     if (!_isOnline || _tripService.pendingCount == 0) return;
-    debugPrint('[Flow] Syncing ${_tripService.pendingCount} pending trip event(s)...');
+    debugPrint(
+      '[Flow] Syncing ${_tripService.pendingCount} pending trip event(s)...',
+    );
     _tripService.syncPendingTrips();
   }
 
@@ -2578,9 +2610,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   };
 
   int _getCooldownForLabel(String label) {
-    return _apiCooldownSeconds[label] ??
-        _kIncidentCooldownSeconds[label] ??
-        60;
+    return _apiCooldownSeconds[label] ?? _kIncidentCooldownSeconds[label] ?? 60;
     // return _kIncidentCooldownSeconds[label] ?? 60; // default 60s
   }
 
@@ -4261,7 +4291,9 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       debugPrint(
         '[CamMode] Recorder STOPPED — releasing ESP cam stream for overlay ($mode)',
       );
-    } else if (nowMonitoring && _phase == Phase.monitoring && !_ffmpegRecorderService.isRecording) {
+    } else if (nowMonitoring &&
+        _phase == Phase.monitoring &&
+        !_ffmpegRecorderService.isRecording) {
       // Restart recording on whichever cam is available, preferring front cam.
       if (_frontCamConnected && _frontCamStreamUrl.isNotEmpty) {
         _ffmpegRecorderService.startRecording(_frontCamStreamUrl);
@@ -4278,7 +4310,9 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     if (!nowMonitoring) {
       _espCamStreamTimer?.cancel();
       _espCamStreamTimer = Timer.periodic(
-        const Duration(milliseconds: 40), // ~25 FPS — matches screen capture throttle
+        const Duration(
+          milliseconds: 40,
+        ), // ~25 FPS — matches screen capture throttle
         (_) => _captureAndSendScreen(),
       );
       debugPrint('[CamMode] ESP cam stream timer STARTED for live stream');
@@ -5390,7 +5424,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
           // ── Vehicle registration number (same style as verifying screen) ──
           if (_vehicleRegNo != null && _vehicleRegNo!.isNotEmpty)
             Padding(
-              padding: const EdgeInsets.only(left: 14, top:2, bottom:0),
+              padding: const EdgeInsets.only(left: 14, top: 2, bottom: 0),
               child: Text(
                 _vehicleRegNo!,
                 style: const TextStyle(
@@ -5407,8 +5441,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
           _esp32StatusBanner(),
           // _deviceMotionCard(),
           const SizedBox(height: 10),
-          if (_noFaceSince != null && !_tripCompleted)
-            _noDriverCountdown(),
+          if (_noFaceSince != null && !_tripCompleted) _noDriverCountdown(),
           if (_unauthorizedStart != null && !_tripCompleted)
             _unauthorizedDriverCountdown(),
           const Spacer(),
@@ -5417,7 +5450,8 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
           _monitorBanner(),
           // _monitorDiag(),
         ],
-      ));
+      ),
+    );
   }
 
   // Widget _cableUnpluggedBanner() {

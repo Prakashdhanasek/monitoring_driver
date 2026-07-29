@@ -78,7 +78,9 @@ class TripService {
     _isSyncing = true;
     try {
       final keys = _box.keys.toList()..sort(); // chronological order
-      debugPrint('[TripService] Syncing ${keys.length} pending trip event(s)...');
+      debugPrint(
+        '[TripService] Syncing ${keys.length} pending trip event(s)...',
+      );
       for (final key in keys) {
         final String? jsonBody = _box.get(key);
         if (jsonBody == null) {
@@ -90,7 +92,9 @@ class TripService {
           final type = decoded['type'] as String?;
           final payload = Map<String, dynamic>.from(decoded)..remove('type');
           final url = Uri.parse(
-            type == 'start' ? '$_baseUrl$_startTripPath' : '$_baseUrl$_endTripPath',
+            type == 'start'
+                ? '$_baseUrl$_startTripPath'
+                : '$_baseUrl$_endTripPath',
           );
           debugPrint('[TripService] Syncing trip $type → $url');
           final response = await http
@@ -103,20 +107,28 @@ class TripService {
           debugPrint('[TripService] Sync $type → ${response.statusCode}');
           if (response.statusCode >= 200 && response.statusCode < 300) {
             await _box.delete(key);
-            debugPrint('[TripService] ✓ Trip $type synced and removed from queue');
+            debugPrint(
+              '[TripService] ✓ Trip $type synced and removed from queue',
+            );
           } else if (response.statusCode == 404) {
             // Trip not found on server — already closed/timed-out or start was lost.
             // Discard so it doesn't block the queue forever.
             await _box.delete(key);
-            debugPrint('[TripService] 404 trip $type — stale event discarded from queue');
+            debugPrint(
+              '[TripService] 404 trip $type — stale event discarded from queue',
+            );
           } else if (response.statusCode >= 500) {
             // Server crash — stop and retry next cycle
-            debugPrint('[TripService] Server error ${response.statusCode} — will retry later');
+            debugPrint(
+              '[TripService] Server error ${response.statusCode} — will retry later',
+            );
             break;
           } else {
             // Other client error (400, 422, etc.) — discard, retrying won't help
             await _box.delete(key);
-            debugPrint('[TripService] Client error ${response.statusCode} for trip $type — discarded');
+            debugPrint(
+              '[TripService] Client error ${response.statusCode} for trip $type — discarded',
+            );
           }
         } catch (e) {
           debugPrint('[TripService] Network error during sync: $e — stopping');
@@ -197,13 +209,15 @@ class TripService {
 
       final response = await http
           .post(
-        url,
-        headers: {'Content-Type': 'application/json', 'accept': '*/*'},
-        body: jsonEncode(body),
-      )
+            url,
+            headers: {'Content-Type': 'application/json', 'accept': '*/*'},
+            body: jsonEncode(body),
+          )
           .timeout(const Duration(seconds: 15));
 
-      debugPrint('[TripService] API RESPONSE trip/start status=${response.statusCode}');
+      debugPrint(
+        '[TripService] API RESPONSE trip/start status=${response.statusCode}',
+      );
       debugPrint('[TripService] API RESPONSE trip/start body=${response.body}');
 
       // Only parse on a successful status with a non-empty body.
@@ -247,7 +261,9 @@ class TripService {
           )
           .timeout(const Duration(seconds: 15));
 
-      debugPrint('[TripService] API RESPONSE trip/end status=${response.statusCode}');
+      debugPrint(
+        '[TripService] API RESPONSE trip/end status=${response.statusCode}',
+      );
       debugPrint('[TripService] API RESPONSE trip/end body=${response.body}');
     } catch (e) {
       debugPrint('[TripService] API REQUEST trip/end FAILED: $e');
