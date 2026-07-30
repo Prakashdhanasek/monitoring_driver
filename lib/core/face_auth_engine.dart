@@ -63,41 +63,56 @@ class FaceAuthEngine {
   Future<void> initialize() async {
     await _loadFaceNetModel();
 
+    // Check if new photos were downloaded from API that haven't been enrolled yet
+    bool shouldEnrollDownloaded = false;
     try {
-      final stored = await _storage.read(key: _keyEmbedding);
-      if (stored != null) {
-        final decoded = jsonDecode(stored);
-
-        if (decoded is Map) {
-          _referenceEmbeddings = (decoded['embeddings'] as List)
-              .map<List<double>>((e) => List<double>.from(e as List))
-              .toList();
-
-          _referenceLabels = (decoded['labels'] as List)
-              .map<String>((e) => e.toString())
-              .toList();
-        } else if (decoded is List) {
-          _referenceEmbeddings = decoded
-              .map<List<double>>((e) => List<double>.from(e as List))
-              .toList();
-
-          _referenceLabels = List<String>.filled(
-            _referenceEmbeddings.length,
-            'unknown',
-          );
-        }
-
-        if (_referenceEmbeddings.isNotEmpty) {
-          isEnrolled = true;
-          print(
-            '[Auth] MobileFaceNet embeddings loaded from secure storage '
-                '(${_referenceEmbeddings.length} faces).',
-          );
-          return;
+      final appDir = await _getVisibleDirectory();
+      final downloadedDir = Directory('${appDir.path}/downloaded_faces');
+      if (await downloadedDir.exists()) {
+        final count = downloadedDir.listSync().whereType<File>().length;
+        if (count > 0) {
+          shouldEnrollDownloaded = true;
         }
       }
-    } catch (e) {
-      print('[Auth] Storage read error: $e');
+    } catch (_) {}
+
+    if (!shouldEnrollDownloaded) {
+      try {
+        final stored = await _storage.read(key: _keyEmbedding);
+        if (stored != null) {
+          final decoded = jsonDecode(stored);
+
+          if (decoded is Map) {
+            _referenceEmbeddings = (decoded['embeddings'] as List)
+                .map<List<double>>((e) => List<double>.from(e as List))
+                .toList();
+
+            _referenceLabels = (decoded['labels'] as List)
+                .map<String>((e) => e.toString())
+                .toList();
+          } else if (decoded is List) {
+            _referenceEmbeddings = decoded
+                .map<List<double>>((e) => List<double>.from(e as List))
+                .toList();
+
+            _referenceLabels = List<String>.filled(
+              _referenceEmbeddings.length,
+              'unknown',
+            );
+          }
+
+          if (_referenceEmbeddings.isNotEmpty) {
+            isEnrolled = true;
+            print(
+              '[Auth] MobileFaceNet embeddings loaded from secure storage '
+              '(${_referenceEmbeddings.length} faces).',
+            );
+            return;
+          }
+        }
+      } catch (e) {
+        print('[Auth] Storage read error: $e');
+      }
     }
 
     await _enrollFromReferencePhotos();
@@ -192,13 +207,10 @@ class FaceAuthEngine {
           'threshold=$kAuthThreshold',
     );
 
-    // For authenticated driver, require >1.10 distance to detect a real driver swap.
-    // A genuinely DIFFERENT person will consistently exceed 1.10.
-    // The same driver under varying conditions (lighting, angles) stays below 1.05.
+    // Instant driver swap detection threshold
     final double effectiveThreshold =
-    (state.authStatus == AuthStatus.authenticated)
-        ? kAuthThreshold +
-        0.15 // 0.95 + 0.15 = 1.10
+        (state.authStatus == AuthStatus.authenticated)
+        ? kAuthThreshold + 0.05 // 0.95 + 0.05 = 1.00
         : kAuthThreshold;
 
     if (minDist < effectiveThreshold) {
@@ -216,11 +228,8 @@ class FaceAuthEngine {
       _consecutiveMatch = 0;
       lastMatchedLabel = null;
 
-      // Require 4 consecutive mismatches (>1.10) for authenticated → unauthorized.
-      // At 1s check interval, this means ~4 seconds to detect a real driver swap.
-      final requiredMisses = (state.authStatus == AuthStatus.authenticated)
-          ? 4
-          : 2;
+      // Instant driver swap: 2 consecutive mismatches trigger unauthorized (<0.3s)
+      final requiredMisses = 2;
 
       if (_consecutiveMiss >= requiredMisses) {
         state.authStatus = AuthStatus.unauthorized;
@@ -330,50 +339,48 @@ class FaceAuthEngine {
           final inputImage = InputImage.fromFilePath(file.path);
           final faces = await tempDetector.processImage(inputImage);
 
+          List<double>? embedding;
           if (faces.isNotEmpty) {
-            final face = faces.first;
-            final embedding = _embedFaceFromJpeg(imageBytes, face.boundingBox);
+            embedding = _embedFaceFromJpeg(imageBytes, faces.first.boundingBox);
+          } else {
+            print('[Auth] ML Kit detected 0 faces in $fileName — using full image fallback.');
+            embedding = _embedFaceFromJpeg(imageBytes, null);
+          }
 
-            if (embedding != null) {
-              // Filename format: id__name__timestamp.jpg (or fallback to id_name_timestamp.jpg)
-              String driverId = 'unknown';
-              String driverName = 'unknown';
-              if (fileName.contains('__')) {
-                final parts = fileName.split('__');
-                if (parts.isNotEmpty) driverId = parts[0];
-                if (parts.length >= 2)
-                  driverName = parts[1].replaceAll('_', ' ');
-              } else {
-                final parts = fileName.split('_');
-                if (parts.isNotEmpty) {
-                  driverId = parts[0];
-                  if (parts.length > 2) {
-                    driverName = parts.sublist(1, parts.length - 1).join(' ');
-                  } else if (parts.length == 2) {
-                    driverName = parts[1];
-                  }
+          if (embedding != null) {
+            // Filename format: id__name__timestamp.jpg (or fallback to id_name_timestamp.jpg)
+            String driverId = 'unknown';
+            String driverName = 'unknown';
+            if (fileName.contains('__')) {
+              final parts = fileName.split('__');
+              if (parts.isNotEmpty) driverId = parts[0];
+              if (parts.length >= 2)
+                driverName = parts[1].replaceAll('_', ' ');
+            } else {
+              final parts = fileName.split('_');
+              if (parts.isNotEmpty) {
+                driverId = parts[0];
+                if (parts.length > 2) {
+                  driverName = parts.sublist(1, parts.length - 1).join(' ');
+                } else if (parts.length == 2) {
+                  driverName = parts[1];
                 }
               }
-              driverName = driverName
-                  .replaceAll('.jpg', '')
-                  .replaceAll('.jpeg', '')
-                  .replaceAll('.png', '');
-
-              final label = '$driverId|$driverName';
-
-              embeddings.add(embedding);
-              labels.add(label);
-              print('[Auth] ✓ Enrolled photo: $fileName');
-              print(
-                '[Auth]   → driverId=$driverId, driverName=$driverName, label=$label',
-              );
-            } else {
-              print(
-                '[Auth] WARNING: Failed to extract face embedding from $fileName',
-              );
             }
+            driverName = driverName
+                .replaceAll('.jpg', '')
+                .replaceAll('.jpeg', '')
+                .replaceAll('.png', '');
+
+            final label = '$driverId|$driverName';
+
+            embeddings.add(embedding);
+            labels.add(label);
+            print('[Auth] ✓ Enrolled photo: $fileName -> label=$label');
           } else {
-            print('[Auth] WARNING: ML Kit detected NO face in $fileName');
+            print(
+              '[Auth] WARNING: Failed to extract face embedding from $fileName',
+            );
           }
         } catch (e) {
           print('[Auth] Error enrolling API photo ${file.path}: $e');
@@ -505,22 +512,25 @@ class FaceAuthEngine {
 
   // ── Face Embedding from JPEG bytes (enrollment) ────────────────────────────
 
-  List<double>? _embedFaceFromJpeg(Uint8List jpegBytes, Rect box) {
+  List<double>? _embedFaceFromJpeg(Uint8List jpegBytes, Rect? box) {
     try {
       img.Image? decoded = img.decodeImage(jpegBytes);
       if (decoded == null) return null;
 
-      // CRITICAL FIX: WhatsApp images have EXIF rotation. ML Kit reads the EXIF and returns
-      // the bounding box for the *upright* image. However, dart:image decodeImage does NOT
-      // rotate the pixels by default. We MUST bake the EXIF orientation so the pixel buffer
-      // matches the ML Kit bounding box.
+      // CRITICAL FIX: Bake EXIF orientation so pixel buffer matches upright image.
       decoded = img.bakeOrientation(decoded);
 
-      // Crop face bounding box, then resize to 112x112
-      final cx = box.left.toInt().clamp(0, decoded.width - 1);
-      final cy = box.top.toInt().clamp(0, decoded.height - 1);
-      final cw = box.width.toInt().clamp(1, decoded.width - cx);
-      final ch = box.height.toInt().clamp(1, decoded.height - cy);
+      int cx = 0;
+      int cy = 0;
+      int cw = decoded.width;
+      int ch = decoded.height;
+
+      if (box != null && box.width > 5 && box.height > 5) {
+        cx = box.left.toInt().clamp(0, decoded.width - 1);
+        cy = box.top.toInt().clamp(0, decoded.height - 1);
+        cw = box.width.toInt().clamp(1, decoded.width - cx);
+        ch = box.height.toInt().clamp(1, decoded.height - cy);
+      }
 
       final cropped = img.copyCrop(
         decoded,
