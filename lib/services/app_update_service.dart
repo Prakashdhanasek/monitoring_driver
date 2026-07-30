@@ -131,12 +131,18 @@ class AppUpdateService {
       int downloaded = 0;
 
       final sink = file.openWrite();
+      // Emit fake incremental progress when Content-Length is unknown (-1)
+      // so the UI progress bar keeps moving instead of freezing at 0%.
+      const int _kFakeTotal = 30 * 1024 * 1024; // assume 30 MB if unknown
       try {
         await for (final chunk in response) {
           sink.add(chunk);
           downloaded += chunk.length;
           if (contentLength > 0) {
             yield downloaded / contentLength;
+          } else {
+            // Clamp to 0.95 — jump to 1.0 only after write completes.
+            yield (downloaded / _kFakeTotal).clamp(0.0, 0.95);
           }
         }
         await sink.flush();
