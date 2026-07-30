@@ -187,6 +187,8 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   bool _streaming = false;
   bool _updatingApp =
       false; // true while OTA dialog is open → blocks frame processing
+  bool _isCheckingUpdate = false; // guard against concurrent update checks
+  DateTime? _lastUpdateCheck; // throttle periodic update checks to once per hour
   int _frame = 0;
   bool _isRefreshingDrivers = false;
   DateTime? _lastAuthAttemptAt;
@@ -396,6 +398,13 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     // Send location telemetry every 3 seconds
     _telemetryTimer = Timer.periodic(const Duration(seconds: 3), (_) {
       _sendTelemetryTask();
+      // Check for app update every 5 minutes while online
+      final now = DateTime.now();
+      if (_isOnline &&
+          (_lastUpdateCheck == null ||
+              now.difference(_lastUpdateCheck!).inMinutes >= 5)) {
+        _checkForUpdateInBackground();
+      }
     });
 
     // Refresh UI every 200 ms for real-time sensor/direction telemetry.
@@ -531,8 +540,9 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
           _syncIncidentsTask();
           _triggerVideoUpload();
           _fetchIncidentIntervals();
-
           _syncTripsTask();
+          // Check for app update when WiFi becomes available (vehicle turned on)
+          _checkForUpdateInBackground();
         }
       }
     } catch (_) {
@@ -748,8 +758,11 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   /// Navigates to [AppUpdateScreen] if an update is available.
   /// Cancels the timer once an update is found to avoid repeated prompts.
   Future<void> _checkForUpdateInBackground() async {
-    if (!mounted) return;
+    if (!mounted || _isCheckingUpdate || _updatingApp) return;
+    _isCheckingUpdate = true;
+    _lastUpdateCheck = DateTime.now(); // reset cooldown regardless of call site
     final updateInfo = await AppUpdateService().checkForUpdate();
+    _isCheckingUpdate = false;
     if (!mounted) return;
     if (updateInfo != null) {
       // Pause camera ML and ALL background tasks to give download full resources.
@@ -796,6 +809,13 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       });
       _telemetryTimer = Timer.periodic(const Duration(seconds: 3), (_) {
         _sendTelemetryTask();
+        // Check for app update every 5 minutes while online
+        final now = DateTime.now();
+        if (_isOnline &&
+            (_lastUpdateCheck == null ||
+                now.difference(_lastUpdateCheck!).inMinutes >= 5)) {
+          _checkForUpdateInBackground();
+        }
       });
       _sensorUiTimer = Timer.periodic(const Duration(milliseconds: 200), (_) {
         if (mounted && _phase == Phase.monitoring) setState(() {});
@@ -1303,6 +1323,10 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     _syncIncidentsTask();
 
     if (mounted) setState(() => _initializing = false);
+
+    // Check for update once on startup (handles case where WiFi is already
+    // connected when app launches — connectivity change event never fires).
+    _checkForUpdateInBackground();
   }
 
   Future<void> _requestPermissions() async {
@@ -1728,6 +1752,14 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
 
   Future<void> _onVerified({bool isMatched = true}) async {
     if (_phase != Phase.verifying) return;
+    // ── Guard against re-entry ──────────────────────────────────────────────
+    // Move to Phase.details immediately so concurrent camera frames that fire
+    // _onVerified() while we're awaiting API calls see phase != verifying and
+    // return early. Without this, multiple frames in the 1-2s window before
+    // _phase was set later would each start a separate _sendTripStart() call.
+    _phase = Phase.details;
+    if (mounted) setState(() {});
+    // ────────────────────────────────────────────────────────────────────────
     _unauthorizedStart = null;
     _unauthorizedTripStop = false;
     _tripCompletedAt = null;
@@ -1903,7 +1935,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
 
     if (isMatched) {
       // Show clean "Identity Verified! Welcome back, <Driver Name>" screen
-      _phase = Phase.details;
+      // Note: _phase was already set to Phase.details at the top of this function.
       if (mounted) setState(() {});
 
       // Announce welcome message with driver name
