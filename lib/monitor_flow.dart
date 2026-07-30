@@ -1322,6 +1322,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
 
     final deviceId = _settings.getDeviceId() ?? 'unknown_device';
     _streamService.connect(deviceId);
+    _streamService.connectFleet(deviceId); // fleet GPS WebSocket
 
     // Sync any leftover offline-queued incidents on startup
     _syncIncidentsTask();
@@ -2578,6 +2579,13 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       isOnline: _isOnline,
     );
 
+    // Also send GPS over fleet WebSocket for real-time dashboard tracking
+    _streamService.sendGpsUpdate(
+      _state.gpsLat,
+      _state.gpsLng,
+      _state.vehicleSpeed,
+    );
+
     // Sync queued telemetry when back online
     if (_isOnline && _telemetryService.pendingCount > 0) {
       _telemetryService.syncPendingTelemetry();
@@ -3193,6 +3201,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       }
       // Verify WebSocket is still alive — Doze mode can silently kill it.
       _streamService.onAppResumed();
+      _streamService.onFleetAppResumed(_settings.getDeviceId() ?? '');
     }
   }
 
