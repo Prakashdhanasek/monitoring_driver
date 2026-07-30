@@ -53,10 +53,10 @@ class FaceAuthEngine {
   }
 
   List<double>? extractLiveEmbedding(
-    CameraImage image,
-    int rotation,
-    Rect boundingBox,
-  ) {
+      CameraImage image,
+      int rotation,
+      Rect boundingBox,
+      ) {
     return _embedFaceFromCameraImage(image, rotation, boundingBox);
   }
 
@@ -91,7 +91,7 @@ class FaceAuthEngine {
           isEnrolled = true;
           print(
             '[Auth] MobileFaceNet embeddings loaded from secure storage '
-            '(${_referenceEmbeddings.length} faces).',
+                '(${_referenceEmbeddings.length} faces).',
           );
           return;
         }
@@ -105,12 +105,12 @@ class FaceAuthEngine {
 
   /// Called every N frames with the live MLKit face and raw camera YUV bytes
   void processAuth(
-    Face face,
-    MonitorState state,
-    CameraImage image,
-    int rotation, {
-    String? activeDriverId,
-  }) {
+      Face face,
+      MonitorState state,
+      CameraImage image,
+      int rotation, {
+        String? activeDriverId,
+      }) {
     // Model still loading -> keep scanning.
     if (!_modelLoaded) {
       state.authStatus = AuthStatus.scanning;
@@ -189,16 +189,16 @@ class FaceAuthEngine {
 
     print(
       '[AuthDBG] minDist=$minDist bestLabel=$bestLabel '
-      'threshold=$kAuthThreshold',
+          'threshold=$kAuthThreshold',
     );
 
     // For authenticated driver, require >1.10 distance to detect a real driver swap.
     // A genuinely DIFFERENT person will consistently exceed 1.10.
     // The same driver under varying conditions (lighting, angles) stays below 1.05.
     final double effectiveThreshold =
-        (state.authStatus == AuthStatus.authenticated)
+    (state.authStatus == AuthStatus.authenticated)
         ? kAuthThreshold +
-              0.15 // 0.95 + 0.15 = 1.10
+        0.15 // 0.95 + 0.15 = 1.10
         : kAuthThreshold;
 
     if (minDist < effectiveThreshold) {
@@ -493,7 +493,7 @@ class FaceAuthEngine {
         );
         print(
           '[Auth] Now storing ${_referenceEmbeddings.length} total embeddings '
-          'in secure storage.',
+              'in secure storage.',
         );
       } catch (e) {
         print('[Auth] Storage write failed: $e');
@@ -556,10 +556,10 @@ class FaceAuthEngine {
   // ── Face Embedding from YUV camera frame (live auth) ──────────────────────
 
   List<double>? _embedFaceFromCameraImage(
-    CameraImage image,
-    int rotation,
-    Rect box,
-  ) {
+      CameraImage image,
+      int rotation,
+      Rect box,
+      ) {
     if (image.planes.isEmpty) return null;
 
     try {
