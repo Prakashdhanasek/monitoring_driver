@@ -53,10 +53,10 @@ class FaceAuthEngine {
   }
 
   List<double>? extractLiveEmbedding(
-    CameraImage image,
-    int rotation,
-    Rect boundingBox,
-  ) {
+      CameraImage image,
+      int rotation,
+      Rect boundingBox,
+      ) {
     return _embedFaceFromCameraImage(image, rotation, boundingBox);
   }
 
@@ -91,7 +91,7 @@ class FaceAuthEngine {
           isEnrolled = true;
           print(
             '[Auth] MobileFaceNet embeddings loaded from secure storage '
-            '(${_referenceEmbeddings.length} faces).',
+                '(${_referenceEmbeddings.length} faces).',
           );
           return;
         }
@@ -105,12 +105,12 @@ class FaceAuthEngine {
 
   /// Called every N frames with the live MLKit face and raw camera YUV bytes
   void processAuth(
-    Face face,
-    MonitorState state,
-    CameraImage image,
-    int rotation, {
-    String? activeDriverId,
-  }) {
+      Face face,
+      MonitorState state,
+      CameraImage image,
+      int rotation, {
+        String? activeDriverId,
+      }) {
     // Model still loading -> keep scanning.
     if (!_modelLoaded) {
       state.authStatus = AuthStatus.scanning;
@@ -121,7 +121,8 @@ class FaceAuthEngine {
     final bool hasUnknownTripEmbedding = (activeTripEmbedding != null);
 
     // Model is ready but NO drivers enrolled AND no unknown trip embedding active.
-    if ((!isEnrolled || _referenceEmbeddings.isEmpty) && !hasUnknownTripEmbedding) {
+    if ((!isEnrolled || _referenceEmbeddings.isEmpty) &&
+        !hasUnknownTripEmbedding) {
       state.authStatus = AuthStatus.unauthorized;
       state.authDistance = -1.0;
       return;
@@ -188,12 +189,16 @@ class FaceAuthEngine {
 
     print(
       '[AuthDBG] minDist=$minDist bestLabel=$bestLabel '
-      'threshold=$kAuthThreshold',
+          'threshold=$kAuthThreshold',
     );
 
-    // For authenticated driver, require >1.02 distance to prevent false alarms while driving
-    final double effectiveThreshold = (state.authStatus == AuthStatus.authenticated)
-        ? kAuthThreshold + 0.07 // 0.95 + 0.07 = 1.02
+    // For authenticated driver, require >1.10 distance to detect a real driver swap.
+    // A genuinely DIFFERENT person will consistently exceed 1.10.
+    // The same driver under varying conditions (lighting, angles) stays below 1.05.
+    final double effectiveThreshold =
+    (state.authStatus == AuthStatus.authenticated)
+        ? kAuthThreshold +
+        0.15 // 0.95 + 0.15 = 1.10
         : kAuthThreshold;
 
     if (minDist < effectiveThreshold) {
@@ -211,8 +216,11 @@ class FaceAuthEngine {
       _consecutiveMatch = 0;
       lastMatchedLabel = null;
 
-      // Ultra-fast & accurate driver swap: 3 consecutive mismatches (>1.02 distance)
-      final requiredMisses = (state.authStatus == AuthStatus.authenticated) ? 3 : 2;
+      // Require 4 consecutive mismatches (>1.10) for authenticated → unauthorized.
+      // At 1s check interval, this means ~4 seconds to detect a real driver swap.
+      final requiredMisses = (state.authStatus == AuthStatus.authenticated)
+          ? 4
+          : 2;
 
       if (_consecutiveMiss >= requiredMisses) {
         state.authStatus = AuthStatus.unauthorized;
@@ -244,7 +252,7 @@ class FaceAuthEngine {
   /// produce a match until [resetAndReenroll] or [_enrollFromReferencePhotos]
   /// completes. Use this before switching back to a scanning phase when you
   /// need to prevent an instant re-match on the next camera frame.
-  
+
   void clearEnrollment() {
     isEnrolled = false;
     _referenceEmbeddings = [];
@@ -355,9 +363,14 @@ class FaceAuthEngine {
 
               embeddings.add(embedding);
               labels.add(label);
-              print('[Auth] Enrolled API photo: $fileName -> label: $label');
+              print('[Auth] ✓ Enrolled photo: $fileName');
+              print(
+                '[Auth]   → driverId=$driverId, driverName=$driverName, label=$label',
+              );
             } else {
-              print('[Auth] WARNING: Failed to extract face embedding from $fileName');
+              print(
+                '[Auth] WARNING: Failed to extract face embedding from $fileName',
+              );
             }
           } else {
             print('[Auth] WARNING: ML Kit detected NO face in $fileName');
@@ -480,7 +493,7 @@ class FaceAuthEngine {
         );
         print(
           '[Auth] Now storing ${_referenceEmbeddings.length} total embeddings '
-          'in secure storage.',
+              'in secure storage.',
         );
       } catch (e) {
         print('[Auth] Storage write failed: $e');
@@ -543,10 +556,10 @@ class FaceAuthEngine {
   // ── Face Embedding from YUV camera frame (live auth) ──────────────────────
 
   List<double>? _embedFaceFromCameraImage(
-    CameraImage image,
-    int rotation,
-    Rect box,
-  ) {
+      CameraImage image,
+      int rotation,
+      Rect box,
+      ) {
     if (image.planes.isEmpty) return null;
 
     try {
@@ -696,7 +709,9 @@ class FaceAuthEngine {
 
   Future<Directory> _getVisibleDirectory() async {
     if (Platform.isAndroid) {
-      final downloadDir = Directory('/storage/emulated/0/Download/monitoring_driver');
+      final downloadDir = Directory(
+        '/storage/emulated/0/Download/monitoring_driver',
+      );
       if (!await downloadDir.exists()) {
         try {
           await downloadDir.create(recursive: true);
