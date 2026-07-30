@@ -378,6 +378,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       _syncIncidentsTask();
       _triggerVideoUpload();
       _syncTripsTask();
+      _maybeFetchIncidentIntervals();
       // _maybeReReportCable();
     });
 
@@ -440,6 +441,20 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
 
   /// Loads per-incident interval settings from the API and maps the API's
   /// incidentType names onto the event-type keys this app uses internally.
+  DateTime? _lastIntervalFetchAt;
+
+  /// Called every 30s by _syncTimer. Only actually fetches every 5 minutes.
+  void _maybeFetchIncidentIntervals() {
+    if (!_isOnline) return;
+    final now = DateTime.now();
+    if (_lastIntervalFetchAt != null &&
+        now.difference(_lastIntervalFetchAt!).inMinutes < 5) {
+      return;
+    }
+    _lastIntervalFetchAt = now;
+    _fetchIncidentIntervals();
+  }
+
   Future<void> _fetchIncidentIntervals() async {
     try {
       final res = await http
@@ -2139,19 +2154,20 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       );
       _streamService.sendAlertMessage(eventType);
 
-      // Check severity-based API cooldown
-      // Critical: 30s | High: 60s | Medium: 3 min
+      // Check severity-based API cooldown (single source of truth)
       final now = DateTime.now();
-      final lastApiReport = _settings.getLastApiReportTime(eventType);
       final int apiCooldownSeconds = _getCooldownForLabel(eventType);
+      final lastApiReport = _settings.getLastApiReportTime(eventType);
       if (lastApiReport != null &&
           now.difference(lastApiReport).inSeconds < apiCooldownSeconds) {
         debugPrint(
-          '[Flow] API report throttled for ${apiCooldownSeconds}s: $eventType',
+          '[Flow] API report throttled: $eventType (${now.difference(lastApiReport).inSeconds}s / ${apiCooldownSeconds}s)',
         );
         return;
       }
       _settings.setLastApiReportTime(eventType, now);
+      debugPrint('[Flow] Incident REPORTED: $eventType (cooldown=${apiCooldownSeconds}s from ${_apiCooldownSeconds.containsKey(eventType) ? "API" : "hardcoded"})');
+
 
       // Save the CURRENT camera frame directly as the incident snapshot.
       // This avoids the race condition where the evidence folder from the
@@ -2600,43 +2616,28 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
 
   bool _checkCooldown(String label) {
     final now = DateTime.now();
-    final lastTime = _lastIncidentReportAt[label];
     final int cooldownDuration = _getCooldownForLabel(label);
 
-    if (lastTime == null) {
-      _lastIncidentReportAt[label] = now;
-      debugPrint(
-        '[IncidentCooldown] $label first trigger. Reporting allowed. (cooldown: ${cooldownDuration}s)',
-      );
-      return true;
+    // Use persisted time from Hive (survives app restart)
+    final lastPersisted = _settings.getLastApiReportTime(label);
+    if (lastPersisted != null &&
+        now.difference(lastPersisted).inSeconds < cooldownDuration) {
+      // Throttle logs to once every 10 seconds
+      final lastLogTime = _lastCooldownLogAt[label];
+      if (lastLogTime == null || now.difference(lastLogTime).inSeconds >= 10) {
+        _lastCooldownLogAt[label] = now;
+        final remaining = cooldownDuration - now.difference(lastPersisted).inSeconds;
+        debugPrint(
+          '[IncidentCooldown] $label BLOCKED (${remaining}s remaining of ${cooldownDuration}s)',
+        );
+      }
+      return false;
     }
 
-    final elapsed = now.difference(lastTime).inSeconds;
-    if (elapsed >= cooldownDuration) {
-      _lastIncidentReportAt[label] = now;
-      debugPrint(
-        '[IncidentCooldown] Cooldown expired for $label ($elapsed s elapsed, limit: ${cooldownDuration}s). Reporting allowed.',
-      );
-      return true;
-    }
-
-    final remainingSeconds = cooldownDuration - elapsed;
-    final remainingMinutes = (remainingSeconds / 60).floor();
-    final remSecs = remainingSeconds % 60;
-
-    // Throttle logs to once every 10 seconds to avoid spamming the console
-    final lastLogTime = _lastCooldownLogAt[label];
-    if (lastLogTime == null || now.difference(lastLogTime).inSeconds >= 10) {
-      _lastCooldownLogAt[label] = now;
-      final String timeStr = remainingMinutes > 0
-          ? '$remainingMinutes min $remSecs sec'
-          : '$remainingSeconds sec';
-      debugPrint(
-        '[IncidentCooldown] $label API report blocked (Cooldown active). '
-            'Remaining time: $timeStr ($elapsed s elapsed since last report).',
-      );
-    }
-    return false;
+    debugPrint(
+      '[IncidentCooldown] $label ALLOWED (cooldown: ${cooldownDuration}s from ${_apiCooldownSeconds.containsKey(label) ? "API" : "default"})',
+    );
+    return true;
   }
 
   bool _checkVoiceCooldown(String label, Duration duration) {
