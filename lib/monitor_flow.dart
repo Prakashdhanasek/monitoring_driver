@@ -96,7 +96,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   final TtsService _tts = TtsService();
   final Esp32WifiService _espWifiService = Esp32WifiService();
   final FFmpegVideoRecorderService _ffmpegRecorderService =
-  FFmpegVideoRecorderService();
+      FFmpegVideoRecorderService();
   final SftpUploadService _sftpUploadService = SftpUploadService(
     host: 'sftp.example.com',
     port: 22,
@@ -104,7 +104,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     password: 'secret_password',
   );
   final HttpVideoUploadService _httpVideoUploadService =
-  HttpVideoUploadService();
+      HttpVideoUploadService();
   final LiveStreamService _streamService = LiveStreamService();
   final GlobalKey _screenBoundaryKey = GlobalKey();
   bool _isCapturingScreen = false;
@@ -123,7 +123,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
 
   // ── Unverified driver: require consecutive high-speed readings ──
   int _consecutiveHighSpeedCount = 0;
-  static const int _kHighSpeedConsecutiveRequired = 3;
+  static const int _kHighSpeedConsecutiveRequired = 5;
 
   bool _isConnectingToEsp32 = false;
   bool _isConnectedToEsp32 = false;
@@ -188,7 +188,8 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   bool _updatingApp =
       false; // true while OTA dialog is open → blocks frame processing
   bool _isCheckingUpdate = false; // guard against concurrent update checks
-  DateTime? _lastUpdateCheck; // throttle periodic update checks to once per hour
+  DateTime?
+  _lastUpdateCheck; // throttle periodic update checks to once per hour
   int _frame = 0;
   bool _isRefreshingDrivers = false;
   DateTime? _lastAuthAttemptAt;
@@ -448,7 +449,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     }
   }
 
- /// Loads per-incident interval settings from the API and maps the API's
+  /// Loads per-incident interval settings from the API and maps the API's
   /// incidentType names onto the event-type keys this app uses internally.
   DateTime? _lastIntervalFetchAt;
 
@@ -468,10 +469,10 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     try {
       final res = await http
           .get(
-        Uri.parse(
-          'https://proximity-driver-api.prod-app.in/api/settings/incident-alerts',
-        ),
-      )
+            Uri.parse(
+              'https://proximity-driver-api.prod-app.in/api/settings/incident-alerts',
+            ),
+          )
           .timeout(const Duration(seconds: 10));
       if (res.statusCode == 200 && res.body.isNotEmpty) {
         final decoded = jsonDecode(res.body);
@@ -532,7 +533,6 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     _apiCooldownSeconds = map;
   }
 
-
   Future<void> _checkConnectivity() async {
     try {
       // Check WiFi status
@@ -576,7 +576,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       }
       // Also update WiFi status on error
       final connResult = await Connectivity().checkConnectivity().catchError(
-            (_) => <ConnectivityResult>[],
+        (_) => <ConnectivityResult>[],
       );
       final wifiNow = connResult.contains(ConnectivityResult.wifi);
       if (wifiNow != _isWifi) {
@@ -634,9 +634,9 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
 
     final changed =
         results[0] != _leftCamConnected ||
-            results[1] != _rightCamConnected ||
-            frontConnected != _frontCamConnected ||
-            rearConnected != _rearCamConnected;
+        results[1] != _rightCamConnected ||
+        frontConnected != _frontCamConnected ||
+        rearConnected != _rearCamConnected;
 
     if (changed && mounted) {
       setState(() {
@@ -1209,7 +1209,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       final int
       uploadedCount = await _httpVideoUploadService.uploadPendingFiles(
         uploadUrl:
-        'https://proximity-driver-api.prod-app.in/api/video-recordings/upload',
+            'https://proximity-driver-api.prod-app.in/api/video-recordings/upload',
         vehicleId: effectiveVehicleId,
         deviceTabletId: deviceId,
         driverId: (_driverId == '—' || _driverId == '-' || _driverId.isEmpty)
@@ -1504,8 +1504,8 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
 
     try {
       final RenderRepaintBoundary? boundary =
-      _screenBoundaryKey.currentContext?.findRenderObject()
-      as RenderRepaintBoundary?;
+          _screenBoundaryKey.currentContext?.findRenderObject()
+              as RenderRepaintBoundary?;
       if (boundary == null) return;
 
       // Capture screen dynamically based on warning status
@@ -1556,8 +1556,8 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
           final now = DateTime.now();
           final shouldRefresh =
               !_authEngine.isEnrolled ||
-                  _lastDriversRefreshAt == null ||
-                  now.difference(_lastDriversRefreshAt!).inSeconds >= 15;
+              _lastDriversRefreshAt == null ||
+              now.difference(_lastDriversRefreshAt!).inSeconds >= 15;
 
           if (faces.isNotEmpty &&
               !_faceWasPresentLastFrame &&
@@ -1621,7 +1621,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
           break;
 
         case Phase.details:
-        // Just holding — countdown runs on its own timer.
+          // Just holding — countdown runs on its own timer.
           break;
 
         case Phase.monitoring:
@@ -1823,9 +1823,9 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       if (cachedDriver != null && cachedDriver.isNotEmpty) {
         final rawCachedName =
             cachedDriver['fullName'] ??
-                cachedDriver['name'] ??
-                cachedDriver['driverName'] ??
-                cachedDriver['nameEn'];
+            cachedDriver['name'] ??
+            cachedDriver['driverName'] ??
+            cachedDriver['nameEn'];
         if (rawCachedName != null &&
             rawCachedName.toString().trim().isNotEmpty) {
           driverName = rawCachedName.toString().trim();
@@ -1845,7 +1845,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
           );
           if (liveDrivers != null) {
             final match = liveDrivers.firstWhere(
-                  (d) => d['id']?.toString() == driverId,
+              (d) => d['id']?.toString() == driverId,
               orElse: () => <String, dynamic>{},
             );
             if (match.isNotEmpty) driver = match;
@@ -1863,20 +1863,20 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
 
           final rawApiName =
               driver['fullName'] ??
-                  driver['name'] ??
-                  driver['driverName'] ??
-                  driver['nameEn'];
+              driver['name'] ??
+              driver['driverName'] ??
+              driver['nameEn'];
           if (rawApiName != null && rawApiName.toString().trim().isNotEmpty) {
             driverName = rawApiName.toString().trim();
           }
           final assignedVehiclesList =
-          driver['assignedVehicles'] as List<dynamic>?;
+              driver['assignedVehicles'] as List<dynamic>?;
           if (assignedVehiclesList != null && assignedVehiclesList.isNotEmpty) {
             final firstVehicle =
-            assignedVehiclesList.first as Map<String, dynamic>;
+                assignedVehiclesList.first as Map<String, dynamic>;
             _vehicleId = firstVehicle['vehicleId'] as String?;
             _vehicleRegNo =
-            firstVehicle['vehicleRegistrationNumber'] as String?;
+                firstVehicle['vehicleRegistrationNumber'] as String?;
             // Parse overspeed threshold from API
             final threshold = firstVehicle['overspeedThreshold'];
             if (threshold != null) {
@@ -1894,11 +1894,11 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
 
           // Resolve preferred language from API response
           final String? langStr =
-          (driver['preferredLanguage'] ??
-              driver['alertLanguage'] ??
-              driver['language'] ??
-              driver['lang'])
-          as String?;
+              (driver['preferredLanguage'] ??
+                      driver['alertLanguage'] ??
+                      driver['language'] ??
+                      driver['lang'])
+                  as String?;
           AlertLang preferred = AlertLang.english;
           if (langStr != null) {
             final cleanLang = langStr.toLowerCase().trim();
@@ -2128,7 +2128,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
           _boundaryViolationReported = false;
           debugPrint(
             '[Boundary] Geofence set: ($_boundaryLat, $_boundaryLng) '
-                'r=${_boundaryRadiusM}m id=$_geofenceId',
+            'r=${_boundaryRadiusM}m id=$_geofenceId',
           );
         } else {
           _boundaryLat = null;
@@ -2168,10 +2168,10 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   // INCIDENT REPORTING
   // ─────────────────────────────────────────────────────────
   Future<void> _reportIncident(
-      String eventType,
-      String riskLevel,
-      double confidence,
-      ) async {
+    String eventType,
+    String riskLevel,
+    double confidence,
+  ) async {
     try {
       final deviceId = _settings.getDeviceId();
       if (deviceId == null || deviceId.isEmpty) return;
@@ -2198,8 +2198,9 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
         return;
       }
       _settings.setLastApiReportTime(eventType, now);
-      debugPrint('[Flow] Incident REPORTED: $eventType (cooldown=${apiCooldownSeconds}s from ${_apiCooldownSeconds.containsKey(eventType) ? "API" : "hardcoded"})');
-
+      debugPrint(
+        '[Flow] Incident REPORTED: $eventType (cooldown=${apiCooldownSeconds}s from ${_apiCooldownSeconds.containsKey(eventType) ? "API" : "hardcoded"})',
+      );
 
       // Save the CURRENT camera frame directly as the incident snapshot.
       // This avoids the race condition where the evidence folder from the
@@ -2253,19 +2254,19 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       }
 
       final String? effectiveDriverId =
-      (_state.authStatus == AuthStatus.unauthorized ||
-          _driverId == '—' ||
-          _driverId.isEmpty ||
-          _state.isUnknownDriver)
+          (_state.authStatus == AuthStatus.unauthorized ||
+              _driverId == '—' ||
+              _driverId.isEmpty ||
+              _state.isUnknownDriver)
           ? null
           : _driverId;
       final effectiveDriverName =
-      (_state.authStatus == AuthStatus.unauthorized ||
-          _driverName == 'Driver' ||
-          _driverName == 'Unknown Person' ||
-          _driverName == 'Unknown Driver' ||
-          _driverName.isEmpty ||
-          _state.isUnknownDriver)
+          (_state.authStatus == AuthStatus.unauthorized ||
+              _driverName == 'Driver' ||
+              _driverName == 'Unknown Person' ||
+              _driverName == 'Unknown Driver' ||
+              _driverName.isEmpty ||
+              _state.isUnknownDriver)
           ? 'Unknown Driver'
           : _driverName;
 
@@ -2325,9 +2326,9 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   }
 
   Future<String?> _generateIncidentVideo(
-      List<Uint8List> frames,
-      String eventType,
-      ) async {
+    List<Uint8List> frames,
+    String eventType,
+  ) async {
     if (frames.isEmpty || _state.documentsDirectoryPath == null) return null;
     try {
       final docsDir = _state.documentsDirectoryPath!;
@@ -2383,7 +2384,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       if (folders.isEmpty) return null;
 
       folders.sort(
-            (a, b) => b.statSync().modified.compareTo(a.statSync().modified),
+        (a, b) => b.statSync().modified.compareTo(a.statSync().modified),
       );
       final latest = folders.first.path;
       debugPrint('[Flow] Latest evidence folder for incident: $latest');
@@ -2463,7 +2464,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
 
     setState(() => _showBreakAlert = true);
     _currentBreakMsg =
-    _kBreakMessages[_breakAlertIndex % _kBreakMessages.length];
+        _kBreakMessages[_breakAlertIndex % _kBreakMessages.length];
     // Speak in the driver's preferred language.
     _tts.speak(AlertMessages.breakReminder(_tts.currentLang, _breakAlertIndex));
     _breakAlertIndex++;
@@ -2488,7 +2489,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
         _camMode != CamMode.driverMonitoring) {
       if (_showBreakAlert) {
         WidgetsBinding.instance.addPostFrameCallback(
-              (_) => _dismissBreakAlert(),
+          (_) => _dismissBreakAlert(),
         );
       }
       return const SizedBox.shrink();
@@ -2497,15 +2498,15 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     if (_showBreakAlert) {
       final anyAlertActive =
           _getMonitorBannerKey(_state.hasPhone, _state.hasCigarette) != null ||
-              !_state.seatbeltBuckled ||
-              _state.drowsinessLevel == DrowsinessLevel.drowsy ||
-              _state.drowsinessLevel == DrowsinessLevel.asleep ||
-              _state.distractionStatus == DistractionStatus.distracted ||
-              // _state.vehicleSpeed > _kSpeedLimitKmh ||
-              _state.authStatus == AuthStatus.unauthorized;
+          !_state.seatbeltBuckled ||
+          _state.drowsinessLevel == DrowsinessLevel.drowsy ||
+          _state.drowsinessLevel == DrowsinessLevel.asleep ||
+          _state.distractionStatus == DistractionStatus.distracted ||
+          // _state.vehicleSpeed > _kSpeedLimitKmh ||
+          _state.authStatus == AuthStatus.unauthorized;
       if (anyAlertActive) {
         WidgetsBinding.instance.addPostFrameCallback(
-              (_) => _dismissBreakAlert(),
+          (_) => _dismissBreakAlert(),
         );
         return const SizedBox.shrink();
       }
@@ -2560,7 +2561,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
         !_initializing &&
         _camReady &&
         _latestFrameJpeg != null &&
-        _state.vehicleSpeed > 25) {
+        _state.vehicleSpeed > 30) {
       _consecutiveHighSpeedCount++;
       if (_consecutiveHighSpeedCount >= _kHighSpeedConsecutiveRequired) {
         if (_checkCooldown('Unverified Driver')) {
@@ -2658,7 +2659,8 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       final lastLogTime = _lastCooldownLogAt[label];
       if (lastLogTime == null || now.difference(lastLogTime).inSeconds >= 10) {
         _lastCooldownLogAt[label] = now;
-        final remaining = cooldownDuration - now.difference(lastPersisted).inSeconds;
+        final remaining =
+            cooldownDuration - now.difference(lastPersisted).inSeconds;
         debugPrint(
           '[IncidentCooldown] $label BLOCKED (${remaining}s remaining of ${cooldownDuration}s)',
         );
@@ -2722,8 +2724,8 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     // Grace period: skip seatbelt alert for first 10 seconds after trip start
     final bool seatbeltGraceActive =
         _monitoringStartedAt != null &&
-            now.difference(_monitoringStartedAt!).inSeconds <
-                _kSeatbeltGraceSeconds;
+        now.difference(_monitoringStartedAt!).inSeconds <
+            _kSeatbeltGraceSeconds;
     if (!_state.seatbeltBuckled &&
         _phase == Phase.monitoring &&
         !_tripCompleted &&
@@ -3239,9 +3241,9 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   }
 
   Future<void> _showLicenseExpiredDialog(
-      String licenseNumber,
-      DateTime expiry,
-      ) async {
+    String licenseNumber,
+    DateTime expiry,
+  ) async {
     if (!mounted) return;
     bool _ttsStarted = false;
 
@@ -3401,10 +3403,10 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   }
 
   Future<void> _showLicenseExpiryWarningDialog(
-      String licenseNumber,
-      DateTime expiry,
-      int daysLeft,
-      ) async {
+    String licenseNumber,
+    DateTime expiry,
+    int daysLeft,
+  ) async {
     if (!mounted) return;
     bool _ttsStarted = false;
 
@@ -3730,8 +3732,8 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     // Log every check, regardless of in/out state.
     debugPrint(
       '[Boundary] distance=${distance.toStringAsFixed(1)} m | '
-          'limit=${_boundaryRadiusM!.toStringAsFixed(0)} m | '
-          '${outside ? "OUTSIDE" : "inside"}',
+      'limit=${_boundaryRadiusM!.toStringAsFixed(0)} m | '
+      '${outside ? "OUTSIDE" : "inside"}',
     );
 
     if (outside) {
@@ -3752,7 +3754,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
         _boundaryViolationReported = true;
         debugPrint(
           '[Boundary] VIOLATION — ${distance.toStringAsFixed(1)} m '
-              'from center, ${beyond.toStringAsFixed(1)} m beyond limit.',
+          'from center, ${beyond.toStringAsFixed(1)} m beyond limit.',
         );
         _reportBoundaryViolation(beyond);
         _tts.speak(AlertMessages.boundaryViolation(_tts.currentLang));
@@ -4258,8 +4260,8 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
                               BoxShadow(
                                 color: speaking
                                     ? const Color(
-                                  0xFF22C55E,
-                                ).withValues(alpha: 0.5)
+                                        0xFF22C55E,
+                                      ).withValues(alpha: 0.5)
                                     : Colors.black45,
                                 blurRadius: 12,
                                 spreadRadius: 2,
@@ -4330,7 +4332,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
         const Duration(
           milliseconds: 40,
         ), // ~25 FPS — matches screen capture throttle
-            (_) => _captureAndSendScreen(),
+        (_) => _captureAndSendScreen(),
       );
       debugPrint('[CamMode] ESP cam stream timer STARTED for live stream');
     } else {
@@ -4599,7 +4601,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
         ];
         final sensorResults = await Future.wait(sensorBatch);
         final found = sensorResults.firstWhere(
-              (r) => r != null,
+          (r) => r != null,
           orElse: () => null,
         );
         if (found != null) return found;
@@ -4609,7 +4611,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
         ];
         final videoResults = await Future.wait(videoBatch);
         final vFound = videoResults.firstWhere(
-              (r) => r != null,
+          (r) => r != null,
           orElse: () => null,
         );
         if (vFound != null) return vFound;
@@ -4765,14 +4767,14 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
         final bool rightClear = right == null || right > 60.0;
         final bool isAutoSideCam =
             (_camMode == CamMode.left && !_leftManualOverride) ||
-                (_camMode == CamMode.right && !_rightManualOverride);
+            (_camMode == CamMode.right && !_rightManualOverride);
         if (leftClear && rightClear && isAutoSideCam) {
           final bool lingerExpired =
               _blindSpotObjectLastSeenAt == null ||
-                  DateTime.now()
+              DateTime.now()
                       .difference(_blindSpotObjectLastSeenAt!)
                       .inSeconds >=
-                      _kBlindSpotLingerSec;
+                  _kBlindSpotLingerSec;
           if (lingerExpired) {
             _blindSpotObjectLastSeenAt = null;
             // Restore previous cam mode (front/rear/driver) instead of always going to driverMonitoring
@@ -5055,10 +5057,10 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
                   _initializing
                       ? 'Initializing systems…'
                       : (isUnverified
-                      ? 'Unverified'
-                      : (isAuthenticating
-                      ? 'Authenticating...'
-                      : 'Verifying your face…')),
+                            ? 'Unverified'
+                            : (isAuthenticating
+                                  ? 'Authenticating...'
+                                  : 'Verifying your face…')),
                   style: TextStyle(
                     color: isUnverified ? Colors.redAccent : Colors.white,
                     fontSize: 24,
@@ -5071,10 +5073,10 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
                   _state.faceCount == 0
                       ? 'Look at the camera'
                       : (isUnverified
-                      ? 'Face not recognised — keep looking'
-                      : (isAuthenticating
-                      ? 'Processing your face, please wait...'
-                      : 'Hold still…')),
+                            ? 'Face not recognised — keep looking'
+                            : (isAuthenticating
+                                  ? 'Processing your face, please wait...'
+                                  : 'Hold still…')),
                   style: const TextStyle(
                     color: Colors.white70,
                     fontSize: 14,
@@ -5170,14 +5172,14 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
                             height: 54,
                             child: isUnverified
                                 ? const Icon(
-                              Icons.error_outline,
-                              color: Colors.redAccent,
-                              size: 54,
-                            )
+                                    Icons.error_outline,
+                                    color: Colors.redAccent,
+                                    size: 54,
+                                  )
                                 : CircularProgressIndicator(
-                              strokeWidth: 3,
-                              color: themeColor,
-                            ),
+                                    strokeWidth: 3,
+                                    color: themeColor,
+                                  ),
                           ),
                         ),
                       ],
@@ -5207,8 +5209,8 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
                           'Match Distance: ${_state.authDistance.toStringAsFixed(2)}  (Target: <${FaceAuthEngine.kAuthThreshold.toStringAsFixed(2)})',
                           style: TextStyle(
                             color:
-                            _state.authDistance <
-                                FaceAuthEngine.kAuthThreshold
+                                _state.authDistance <
+                                    FaceAuthEngine.kAuthThreshold
                                 ? Colors.greenAccent
                                 : Colors.orangeAccent,
                             fontSize: 15,
@@ -5980,9 +5982,9 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   Widget _networkStatusRow() {
     final allCamConnected =
         _leftCamConnected &&
-            _rightCamConnected &&
-            _frontCamConnected &&
-            _rearCamConnected;
+        _rightCamConnected &&
+        _frontCamConnected &&
+        _rearCamConnected;
 
     Widget chip({
       required IconData icon,
@@ -6103,10 +6105,10 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
                         decoration: BoxDecoration(
                           shape: BoxShape.circle,
                           color:
-                          (_unauthorizedTripStop
-                              ? const Color(0xFFEF4444)
-                              : const Color(0xFF10B981))
-                              .withValues(alpha: 0.15),
+                              (_unauthorizedTripStop
+                                      ? const Color(0xFFEF4444)
+                                      : const Color(0xFF10B981))
+                                  .withValues(alpha: 0.15),
                           border: Border.all(
                             color: _unauthorizedTripStop
                                 ? const Color(0xFFEF4444)
@@ -6116,10 +6118,10 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
                           boxShadow: [
                             BoxShadow(
                               color:
-                              (_unauthorizedTripStop
-                                  ? const Color(0xFFEF4444)
-                                  : const Color(0xFF10B981))
-                                  .withValues(alpha: 0.3),
+                                  (_unauthorizedTripStop
+                                          ? const Color(0xFFEF4444)
+                                          : const Color(0xFF10B981))
+                                      .withValues(alpha: 0.3),
                               blurRadius: 16,
                               spreadRadius: 2,
                             ),
@@ -6674,8 +6676,8 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   }
 
   Future<void> _reportBoundaryViolation(
-      double distanceFromBoundaryMeters,
-      ) async {
+    double distanceFromBoundaryMeters,
+  ) async {
     if (!_isOnline) {
       debugPrint('[Boundary] Offline — violation not sent.');
       return;
@@ -7206,13 +7208,13 @@ class _EspScannerScreenState extends State<_EspScannerScreen> {
                         items: const ['Rear', 'Left', 'Right', 'Front']
                             .map(
                               (s) => DropdownMenuItem(value: s, child: Text(s)),
-                        )
+                            )
                             .toList(),
                         onChanged: connecting
                             ? null
                             : (v) => setDialogState(
-                              () => selectedSlot = v ?? selectedSlot,
-                        ),
+                                () => selectedSlot = v ?? selectedSlot,
+                              ),
                       ),
                     ],
                   ),
@@ -7230,7 +7232,7 @@ class _EspScannerScreenState extends State<_EspScannerScreen> {
                     onChanged: connecting
                         ? null
                         : (v) =>
-                        setDialogState(() => allowChecked = v ?? false),
+                              setDialogState(() => allowChecked = v ?? false),
                   ),
                 ],
               ),
@@ -7243,32 +7245,32 @@ class _EspScannerScreenState extends State<_EspScannerScreen> {
                   onPressed: (!allowChecked || connecting)
                       ? null
                       : () async {
-                    setDialogState(() => connecting = true);
-                    // Assign to the CHOSEN slot (not always Rear).
-                    widget.onDeviceAssigned(device.ip, selectedSlot);
-                    final ok = await _testReachable(
-                      device.ip,
-                      device.port,
-                    );
-                    if (ok) _connectedIps.add(device.ip);
-                    if (mounted) setState(() {});
-                    if (ctx.mounted) Navigator.pop(ctx);
-                    if (mounted) {
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        SnackBar(
-                          content: Text(
-                            ok
-                                ? 'Connected ${device.ip} as $selectedSlot'
-                                : 'Allowed ${device.ip} ($selectedSlot) — not reachable yet',
-                          ),
-                          backgroundColor: ok
-                              ? const Color(0xFF16A34A)
-                              : const Color(0xFFD97706),
-                          duration: const Duration(seconds: 2),
-                        ),
-                      );
-                    }
-                  },
+                          setDialogState(() => connecting = true);
+                          // Assign to the CHOSEN slot (not always Rear).
+                          widget.onDeviceAssigned(device.ip, selectedSlot);
+                          final ok = await _testReachable(
+                            device.ip,
+                            device.port,
+                          );
+                          if (ok) _connectedIps.add(device.ip);
+                          if (mounted) setState(() {});
+                          if (ctx.mounted) Navigator.pop(ctx);
+                          if (mounted) {
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              SnackBar(
+                                content: Text(
+                                  ok
+                                      ? 'Connected ${device.ip} as $selectedSlot'
+                                      : 'Allowed ${device.ip} ($selectedSlot) — not reachable yet',
+                                ),
+                                backgroundColor: ok
+                                    ? const Color(0xFF16A34A)
+                                    : const Color(0xFFD97706),
+                                duration: const Duration(seconds: 2),
+                              ),
+                            );
+                          }
+                        },
                   style: ElevatedButton.styleFrom(
                     backgroundColor: const Color(0xFF22C55E),
                     foregroundColor: Colors.white,
@@ -7276,13 +7278,13 @@ class _EspScannerScreenState extends State<_EspScannerScreen> {
                   ),
                   child: connecting
                       ? const SizedBox(
-                    width: 18,
-                    height: 18,
-                    child: CircularProgressIndicator(
-                      strokeWidth: 2,
-                      color: Colors.white,
-                    ),
-                  )
+                          width: 18,
+                          height: 18,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2,
+                            color: Colors.white,
+                          ),
+                        )
                       : const Text('Allow'),
                 ),
               ],
@@ -7435,134 +7437,134 @@ class _EspScannerScreenState extends State<_EspScannerScreen> {
       ),
       body: _scanning
           ? const Center(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            CircularProgressIndicator(color: Color(0xFF3B82F6)),
-            SizedBox(height: 20),
-            Text(
-              'Scanning for ESP cameras...',
-              style: TextStyle(color: Colors.white70, fontSize: 16),
-            ),
-            SizedBox(height: 8),
-            Text(
-              'Probing local subnet (1-254)',
-              style: TextStyle(color: Colors.white38, fontSize: 12),
-            ),
-          ],
-        ),
-      )
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  CircularProgressIndicator(color: Color(0xFF3B82F6)),
+                  SizedBox(height: 20),
+                  Text(
+                    'Scanning for ESP cameras...',
+                    style: TextStyle(color: Colors.white70, fontSize: 16),
+                  ),
+                  SizedBox(height: 8),
+                  Text(
+                    'Probing local subnet (1-254)',
+                    style: TextStyle(color: Colors.white38, fontSize: 12),
+                  ),
+                ],
+              ),
+            )
           : _error != null
           ? Center(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const Icon(
-              Icons.error_outline,
-              color: Colors.redAccent,
-              size: 48,
-            ),
-            const SizedBox(height: 12),
-            Text(_error!, style: const TextStyle(color: Colors.white70)),
-            const SizedBox(height: 20),
-            ElevatedButton.icon(
-              onPressed: _startScan,
-              icon: const Icon(Icons.refresh),
-              label: const Text('Retry'),
-            ),
-          ],
-        ),
-      )
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Icon(
+                    Icons.error_outline,
+                    color: Colors.redAccent,
+                    size: 48,
+                  ),
+                  const SizedBox(height: 12),
+                  Text(_error!, style: const TextStyle(color: Colors.white70)),
+                  const SizedBox(height: 20),
+                  ElevatedButton.icon(
+                    onPressed: _startScan,
+                    icon: const Icon(Icons.refresh),
+                    label: const Text('Retry'),
+                  ),
+                ],
+              ),
+            )
           : _devices.isEmpty
           ? Center(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const Icon(
-              Icons.wifi_find_rounded,
-              color: Colors.white38,
-              size: 64,
-            ),
-            const SizedBox(height: 16),
-            const Text(
-              'No ESP cameras found on this network',
-              style: TextStyle(color: Colors.white70, fontSize: 16),
-            ),
-            const SizedBox(height: 20),
-            ElevatedButton.icon(
-              onPressed: _startScan,
-              icon: const Icon(Icons.refresh),
-              label: const Text('Rescan'),
-            ),
-          ],
-        ),
-      )
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Icon(
+                    Icons.wifi_find_rounded,
+                    color: Colors.white38,
+                    size: 64,
+                  ),
+                  const SizedBox(height: 16),
+                  const Text(
+                    'No ESP cameras found on this network',
+                    style: TextStyle(color: Colors.white70, fontSize: 16),
+                  ),
+                  const SizedBox(height: 20),
+                  ElevatedButton.icon(
+                    onPressed: _startScan,
+                    icon: const Icon(Icons.refresh),
+                    label: const Text('Rescan'),
+                  ),
+                ],
+              ),
+            )
           : ListView.builder(
-        padding: const EdgeInsets.all(16),
-        itemCount: _devices.length,
-        itemBuilder: (context, index) {
-          final device = _devices[index];
-          final connected = _connectedIps.contains(device.ip);
-          return Card(
-            color: const Color(0xFF1E293B),
-            margin: const EdgeInsets.only(bottom: 12),
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(12),
-              side: connected
-                  ? const BorderSide(color: Color(0xFF22C55E), width: 1.5)
-                  : BorderSide.none,
-            ),
-            child: ListTile(
-              leading: Icon(
-                connected
-                    ? Icons.check_circle_rounded
-                    : Icons.videocam_rounded,
-                color: const Color(0xFF22C55E),
-                size: 32,
-              ),
-              title: Text(
-                device.ip,
-                style: const TextStyle(
-                  color: Colors.white,
-                  fontWeight: FontWeight.w700,
-                ),
-              ),
-              subtitle: Text(
-                device.label,
-                style: const TextStyle(color: Colors.white54),
-              ),
-              trailing: connected
-              // ── After connect: show "Connected" button (green) ──
-                  ? ElevatedButton.icon(
-                onPressed: null,
-                icon: const Icon(Icons.check_circle, size: 18),
-                label: const Text('Connected'),
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: const Color(0xFF22C55E),
-                  foregroundColor: Colors.white,
-                  disabledBackgroundColor: const Color(0xFF22C55E),
-                  disabledForegroundColor: Colors.white,
+              padding: const EdgeInsets.all(16),
+              itemCount: _devices.length,
+              itemBuilder: (context, index) {
+                final device = _devices[index];
+                final connected = _connectedIps.contains(device.ip);
+                return Card(
+                  color: const Color(0xFF1E293B),
+                  margin: const EdgeInsets.only(bottom: 12),
                   shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(8),
+                    borderRadius: BorderRadius.circular(12),
+                    side: connected
+                        ? const BorderSide(color: Color(0xFF22C55E), width: 1.5)
+                        : BorderSide.none,
                   ),
-                ),
-              )
-              // ── Before connect: "Connect" button opens the dialog ──
-                  : ElevatedButton(
-                onPressed: () => _showAllowDialog(device),
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: const Color(0xFF2563EB),
-                  foregroundColor: Colors.white,
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(8),
+                  child: ListTile(
+                    leading: Icon(
+                      connected
+                          ? Icons.check_circle_rounded
+                          : Icons.videocam_rounded,
+                      color: const Color(0xFF22C55E),
+                      size: 32,
+                    ),
+                    title: Text(
+                      device.ip,
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                    subtitle: Text(
+                      device.label,
+                      style: const TextStyle(color: Colors.white54),
+                    ),
+                    trailing: connected
+                        // ── After connect: show "Connected" button (green) ──
+                        ? ElevatedButton.icon(
+                            onPressed: null,
+                            icon: const Icon(Icons.check_circle, size: 18),
+                            label: const Text('Connected'),
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: const Color(0xFF22C55E),
+                              foregroundColor: Colors.white,
+                              disabledBackgroundColor: const Color(0xFF22C55E),
+                              disabledForegroundColor: Colors.white,
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(8),
+                              ),
+                            ),
+                          )
+                        // ── Before connect: "Connect" button opens the dialog ──
+                        : ElevatedButton(
+                            onPressed: () => _showAllowDialog(device),
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: const Color(0xFF2563EB),
+                              foregroundColor: Colors.white,
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(8),
+                              ),
+                            ),
+                            child: const Text('Connect'),
+                          ),
                   ),
-                ),
-                child: const Text('Connect'),
-              ),
+                );
+              },
             ),
-          );
-        },
-      ),
     );
   }
 }
