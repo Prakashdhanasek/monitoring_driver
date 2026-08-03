@@ -196,6 +196,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   DateTime? _lastDriversRefreshAt;
   DateTime?
   _unmatchedFaceSince; // tracks how long a face is present but not matching
+  DateTime? _verifyingStartedAt; // tracks max 60s verification timeout
 
   // Verified driver
   String _driverName = '';
@@ -1555,6 +1556,32 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       switch (_phase) {
         case Phase.verifying:
           final now = DateTime.now();
+          _verifyingStartedAt ??= now;
+
+          // Maximum 60-second (1 minute) verification timeout.
+          // Handles cases where the driver is seated far from the camera or face authentication
+          // remains incomplete/pending. Reports "Unverified Driver" incident and starts monitoring.
+          if (now.difference(_verifyingStartedAt!).inSeconds >= 60 &&
+              !_isRefreshingDrivers) {
+            debugPrint(
+              '[Flow] Verification timeout reached (60s max) — reporting Unverified Driver & starting monitoring.',
+            );
+            _verifyingStartedAt = null;
+            _unmatchedFaceSince = null;
+            if (faces.isNotEmpty) {
+              _capturedFace = _captureFaceJpeg(image, targetWidth: 480);
+              final embedding = _authEngine.extractLiveEmbedding(
+                image,
+                _getCameraRotation(),
+                faces.first.boundingBox,
+              );
+              _authEngine.setActiveTripEmbedding(embedding);
+            }
+            _reportIncident('Unverified Driver', 'Medium', 0.80);
+            _onVerified(isMatched: false);
+            break;
+          }
+
           final shouldRefresh =
               !_authEngine.isEnrolled ||
                   _lastDriversRefreshAt == null ||
@@ -1581,7 +1608,6 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
           }
 
           if (faces.length == 1 && !_isRefreshingDrivers) {
-            final now = DateTime.now();
             if (_lastAuthAttemptAt == null ||
                 now.difference(_lastAuthAttemptAt!).inMilliseconds >= 1000) {
               _lastAuthAttemptAt = now;
@@ -1593,6 +1619,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
               );
             }
             if (_state.authStatus == AuthStatus.authenticated) {
+              _verifyingStartedAt = null;
               _unmatchedFaceSince = null;
               _capturedFace = _captureFaceJpeg(image, targetWidth: 480);
               _onVerified(isMatched: true);
@@ -1603,6 +1630,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
               _unmatchedFaceSince ??= DateTime.now();
               if (DateTime.now().difference(_unmatchedFaceSince!).inSeconds >=
                   10) {
+                _verifyingStartedAt = null;
                 _unmatchedFaceSince = null;
                 _capturedFace = _captureFaceJpeg(image, targetWidth: 480);
                 final embedding = _authEngine.extractLiveEmbedding(
@@ -2177,16 +2205,6 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       final deviceId = _settings.getDeviceId();
       if (deviceId == null || deviceId.isEmpty) return;
 
-      // Ella alert-inum screenshot effect kaanikkuka (this happens every 30s locally).
-      _showScreenshotFlash();
-
-      // Trigger high-resolution streaming mode for 15 seconds for evidence capture
-      _highResUntil = DateTime.now().add(const Duration(seconds: 15));
-      debugPrint(
-        '[Stream] Incident triggered! Boosting resolution to 0.7x for 15 seconds.',
-      );
-      _streamService.sendAlertMessage(eventType);
-
       // Check severity-based API cooldown (single source of truth)
       final now = DateTime.now();
       final int apiCooldownSeconds = _getCooldownForLabel(eventType);
@@ -2198,6 +2216,17 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
         );
         return;
       }
+
+      // Ella alert-inum screenshot effect kaanikkuka (this happens every 30s locally).
+      _showScreenshotFlash();
+
+      // Trigger high-resolution streaming mode for 15 seconds for evidence capture
+      _highResUntil = DateTime.now().add(const Duration(seconds: 15));
+      debugPrint(
+        '[Stream] Incident triggered! Boosting resolution to 0.7x for 15 seconds.',
+      );
+      _streamService.sendAlertMessage(eventType);
+
       _settings.setLastApiReportTime(eventType, now);
       debugPrint('[Flow] Incident REPORTED: $eventType (cooldown=${apiCooldownSeconds}s from ${_apiCooldownSeconds.containsKey(eventType) ? "API" : "hardcoded"})');
 

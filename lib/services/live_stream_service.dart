@@ -300,6 +300,7 @@ class LiveStreamService {
       final tempDir = await getTemporaryDirectory();
       final tempFile = File('${tempDir.path}/admin_audio_${DateTime.now().millisecondsSinceEpoch}.webm');
       await tempFile.writeAsBytes(assembled);
+      await _audioPlayer.stop(); // Stop any previously playing audio to prevent echo
       await _audioPlayer.setVolume(1.0);
       await _audioPlayer.play(DeviceFileSource(tempFile.path));
       debugPrint('[Audio] ✅ Playing assembled admin audio ($totalBytes bytes)');
@@ -321,6 +322,7 @@ class LiveStreamService {
   Future<void> startSpeaking() async {
     if (_isSpeaking || !isConnected.value) return;
     try {
+      await _audioPlayer.stop(); // Stop speaker playback to prevent mic feedback echo loop
       final hasPermission = await _recorder.hasPermission();
       if (!hasPermission) {
         debugPrint('[Audio] Mic permission denied');
@@ -484,10 +486,19 @@ class LiveStreamService {
     }
   }
 
+  final Map<String, DateTime> _lastAlertSocketSent = {};
+
   /// Sends a text-based alert message over the WebSocket to notify web dashboard.
   void sendAlertMessage(String alertType) {
     if (_channel != null && _isStreaming) {
-      final jsonMsg = '{"event": "alert", "type": "$alertType", "timestamp": "${DateTime.now().toIso8601String()}"}';
+      final now = DateTime.now();
+      final lastSent = _lastAlertSocketSent[alertType];
+      if (lastSent != null && now.difference(lastSent).inSeconds < 5) {
+        debugPrint('[Stream] Throttled duplicate socket alert message: $alertType');
+        return;
+      }
+      _lastAlertSocketSent[alertType] = now;
+      final jsonMsg = '{"event": "alert", "type": "$alertType", "timestamp": "${now.toIso8601String()}"}';
       _channel!.sink.add(jsonMsg);
       debugPrint('[Stream] Sent alert metadata over WebSocket: $jsonMsg');
     }
