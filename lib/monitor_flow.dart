@@ -1386,13 +1386,14 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
 
     if (permission == LocationPermission.always ||
         permission == LocationPermission.whileInUse) {
-      // Get initial position immediately so telemetry doesn't send 0,0
-      try {
-        final pos = await Geolocator.getCurrentPosition(
-          locationSettings: const LocationSettings(
-            accuracy: LocationAccuracy.high,
-          ),
-        ).timeout(const Duration(seconds: 10));
+      // Get initial position in the background — do NOT await so the rest of
+      // _init() (camera, ML models, enroll) is not blocked waiting for a GPS fix.
+      // The position stream below provides continuous updates anyway.
+      Geolocator.getCurrentPosition(
+        locationSettings: const LocationSettings(
+          accuracy: LocationAccuracy.high,
+        ),
+      ).timeout(const Duration(seconds: 3)).then((pos) {
         _state.gpsLat = pos.latitude;
         _state.gpsLng = pos.longitude;
         _state.vehicleSpeed = pos.speed > 0 ? (pos.speed * 3.6) : 0.0;
@@ -1402,9 +1403,9 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
           _state.vehicleSpeed,
         );
         debugPrint('[Flow] Initial GPS fix: ${pos.latitude}, ${pos.longitude}');
-      } catch (e) {
-        debugPrint('[Flow] Initial GPS fix failed: $e');
-      }
+      }).catchError((e) {
+        debugPrint('[Flow] Initial GPS fix failed (non-blocking): $e');
+      });
 
       Geolocator.getPositionStream(
         locationSettings: const LocationSettings(
@@ -1652,7 +1653,8 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
                   if (jpeg != null) {
                     _latestFrameJpeg = jpeg;
                   }
-                  _handleAlertSounds(image);
+                  // Note: alert handling is done by the unconditional
+                  // _handleAlertSounds call below — no separate call needed here.
                 }
               }
               _monitoringEngine.processFrame(face);
@@ -2170,9 +2172,9 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       debugPrint(
         '[Stream] Incident triggered! Boosting resolution to 0.7x for 15 seconds.',
       );
-      _streamService.sendAlertMessage(eventType);
 
-      // Check severity-based API cooldown
+      // Check severity-based API cooldown BEFORE sending the WebSocket alert,
+      // so the dashboard only receives one notification per cooldown window.
       // Critical: 30s | High: 60s | Medium: 3 min
       final now = DateTime.now();
       final lastApiReport = _settings.getLastApiReportTime(eventType);
@@ -2185,6 +2187,8 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
         return;
       }
       _settings.setLastApiReportTime(eventType, now);
+      // Send WebSocket alert only after both cooldown gates have passed.
+      _streamService.sendAlertMessage(eventType);
 
       // Save the CURRENT camera frame directly as the incident snapshot.
       // This avoids the race condition where the evidence folder from the
@@ -2644,6 +2648,8 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     final int cooldownDuration = _getCooldownForLabel(label);
 
     if (lastTime == null) {
+      // Write timestamp immediately to prevent a second frame that arrives
+      // before this method returns from also passing the null-check (race condition).
       _lastIncidentReportAt[label] = now;
       debugPrint(
         '[IncidentCooldown] $label first trigger. Reporting allowed. (cooldown: ${cooldownDuration}s)',
@@ -2897,6 +2903,12 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   }
 
   Future<void> _playAlert(String assetPath) async {
+    // Pause PTT mic recording while the alert plays to prevent the speaker
+    // audio from bleeding into the mic and being echoed back to the dashboard.
+    final wasSpeaking = _streamService.isSpeaking.value;
+    if (wasSpeaking) {
+      await _streamService.stopSpeaking();
+    }
     try {
       await _player.stop();
       await _player.play(AssetSource(assetPath));
