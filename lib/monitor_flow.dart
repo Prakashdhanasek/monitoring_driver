@@ -6422,7 +6422,8 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       bg = const Color(0xFFEAB308);
       fg = Colors.black;
       text = '⚠  DISTRACTION DETECTED EYES ON THE ROAD';
-    } else if (_state.authStatus == AuthStatus.unauthorized) {
+    } else if (_state.authStatus == AuthStatus.unauthorized &&
+        _isDriverChangedActive()) {
       bg = const Color(0xFF7F1D1D);
       text = '⚠  DRIVER CHANGED';
     } else if (_state.authStatus == AuthStatus.multipleFaces) {
