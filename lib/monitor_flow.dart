@@ -197,6 +197,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   DateTime? _lastDriversRefreshAt;
   DateTime?
   _unmatchedFaceSince; // tracks how long a face is present but not matching
+  DateTime? _verifyingStartedAt; // tracks max 60s verification timeout
 
   // Verified driver
   String _driverName = '';
@@ -381,7 +382,6 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       _syncIncidentsTask();
       _triggerVideoUpload();
       _syncTripsTask();
-      _maybeFetchIncidentIntervals();
       // _maybeReReportCable();
     });
 
@@ -400,9 +400,10 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     });
     _checkConnectivity();
 
-    // Send location telemetry every 3 seconds
+    // Send location telemetry + fetch incident intervals every 3 seconds
     _telemetryTimer = Timer.periodic(const Duration(seconds: 3), (_) {
       _sendTelemetryTask();
+      _maybeFetchIncidentIntervals();
       // Check for app update every 5 minutes while online
       final now = DateTime.now();
       if (_isOnline &&
@@ -453,15 +454,9 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   /// incidentType names onto the event-type keys this app uses internally.
   DateTime? _lastIntervalFetchAt;
 
-  /// Called every 30s by _syncTimer. Only actually fetches every 5 minutes.
+  /// Called every 3s by _telemetryTimer.
   void _maybeFetchIncidentIntervals() {
     if (!_isOnline) return;
-    final now = DateTime.now();
-    if (_lastIntervalFetchAt != null &&
-        now.difference(_lastIntervalFetchAt!).inMinutes < 5) {
-      return;
-    }
-    _lastIntervalFetchAt = now;
     _fetchIncidentIntervals();
   }
 
@@ -504,11 +499,14 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
         case 'Drowsiness':
           map['Drowsiness'] = secs;
           break;
+        case 'Sleepiness':
+          map['Sleepiness'] = secs;
+          break;
         case 'Distraction':
           map['Distraction'] = secs;
           break;
         case 'Overspeed':
-          map['Overspeeding'] = secs; // code uses 'Overspeeding'
+          map['Overspeeding'] = secs;
           break;
         case 'Phone Usage':
           map['Phone Usage'] = secs;
@@ -830,6 +828,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       });
       _telemetryTimer = Timer.periodic(const Duration(seconds: 3), (_) {
         _sendTelemetryTask();
+        _maybeFetchIncidentIntervals();
         // Check for app update every 5 minutes while online
         final now = DateTime.now();
         if (_isOnline &&
@@ -1339,6 +1338,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
 
     final deviceId = _settings.getDeviceId() ?? 'unknown_device';
     _streamService.connect(deviceId);
+    _streamService.connectFleet(deviceId); // fleet GPS WebSocket
 
     // Sync any leftover offline-queued incidents on startup
     _syncIncidentsTask();
@@ -1554,6 +1554,32 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       switch (_phase) {
         case Phase.verifying:
           final now = DateTime.now();
+          _verifyingStartedAt ??= now;
+
+          // Maximum 60-second (1 minute) verification timeout.
+          // Handles cases where the driver is seated far from the camera or face authentication
+          // remains incomplete/pending. Reports "Unverified Driver" incident and starts monitoring.
+          if (now.difference(_verifyingStartedAt!).inSeconds >= 60 &&
+              !_isRefreshingDrivers) {
+            debugPrint(
+              '[Flow] Verification timeout reached (60s max) — reporting Unverified Driver & starting monitoring.',
+            );
+            _verifyingStartedAt = null;
+            _unmatchedFaceSince = null;
+            if (faces.isNotEmpty) {
+              _capturedFace = _captureFaceJpeg(image, targetWidth: 480);
+              final embedding = _authEngine.extractLiveEmbedding(
+                image,
+                _getCameraRotation(),
+                faces.first.boundingBox,
+              );
+              _authEngine.setActiveTripEmbedding(embedding);
+            }
+            _reportIncident('Unverified Driver', 'Medium', 0.80);
+            _onVerified(isMatched: false);
+            break;
+          }
+
           final shouldRefresh =
               !_authEngine.isEnrolled ||
               _lastDriversRefreshAt == null ||
@@ -1580,7 +1606,6 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
           }
 
           if (faces.length == 1 && !_isRefreshingDrivers) {
-            final now = DateTime.now();
             if (_lastAuthAttemptAt == null ||
                 now.difference(_lastAuthAttemptAt!).inMilliseconds >= 1000) {
               _lastAuthAttemptAt = now;
@@ -1592,6 +1617,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
               );
             }
             if (_state.authStatus == AuthStatus.authenticated) {
+              _verifyingStartedAt = null;
               _unmatchedFaceSince = null;
               _capturedFace = _captureFaceJpeg(image, targetWidth: 480);
               _onVerified(isMatched: true);
@@ -1602,6 +1628,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
               _unmatchedFaceSince ??= DateTime.now();
               if (DateTime.now().difference(_unmatchedFaceSince!).inSeconds >=
                   10) {
+                _verifyingStartedAt = null;
                 _unmatchedFaceSince = null;
                 _capturedFace = _captureFaceJpeg(image, targetWidth: 480);
                 final embedding = _authEngine.extractLiveEmbedding(
@@ -2167,6 +2194,18 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   // ─────────────────────────────────────────────────────────
   // INCIDENT REPORTING
   // ─────────────────────────────────────────────────────────
+  Future<void> _reportIncidentWithSpeed(
+    String eventType,
+    String riskLevel,
+    double confidence,
+    double overrideSpeed,
+  ) async {
+    final savedSpeed = _state.vehicleSpeed;
+    _state.vehicleSpeed = overrideSpeed;
+    await _reportIncident(eventType, riskLevel, confidence);
+    _state.vehicleSpeed = savedSpeed;
+  }
+
   Future<void> _reportIncident(
     String eventType,
     String riskLevel,
@@ -2175,16 +2214,6 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     try {
       final deviceId = _settings.getDeviceId();
       if (deviceId == null || deviceId.isEmpty) return;
-
-      // Ella alert-inum screenshot effect kaanikkuka (this happens every 30s locally).
-      _showScreenshotFlash();
-
-      // Trigger high-resolution streaming mode for 15 seconds for evidence capture
-      _highResUntil = DateTime.now().add(const Duration(seconds: 15));
-      debugPrint(
-        '[Stream] Incident triggered! Boosting resolution to 0.7x for 15 seconds.',
-      );
-      _streamService.sendAlertMessage(eventType);
 
       // Check severity-based API cooldown (single source of truth)
       final now = DateTime.now();
@@ -2197,6 +2226,16 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
         );
         return;
       }
+
+      _showScreenshotFlash();
+
+      // Trigger high-resolution streaming mode for 15 seconds for evidence capture
+      _highResUntil = DateTime.now().add(const Duration(seconds: 15));
+      debugPrint(
+        '[Stream] Incident triggered! Boosting resolution to 0.7x for 15 seconds.',
+      );
+      _streamService.sendAlertMessage(eventType);
+
       _settings.setLastApiReportTime(eventType, now);
       debugPrint(
         '[Flow] Incident REPORTED: $eventType (cooldown=${apiCooldownSeconds}s from ${_apiCooldownSeconds.containsKey(eventType) ? "API" : "hardcoded"})',
@@ -2564,11 +2603,19 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
         _state.vehicleSpeed > 30) {
       _consecutiveHighSpeedCount++;
       if (_consecutiveHighSpeedCount >= _kHighSpeedConsecutiveRequired) {
+        final triggerSpeed = _state.vehicleSpeed;
         if (_checkCooldown('Unverified Driver')) {
-          _reportIncident('Unverified Driver', 'High', 1.0);
+          // Store the trigger speed so _reportIncident uses the speed
+          // that actually caused the trigger, not the current (possibly 0) speed.
+          _reportIncidentWithSpeed(
+            'Unverified Driver',
+            'High',
+            1.0,
+            triggerSpeed,
+          );
           _tts.speak(AlertMessages.unverifiedDriver(_tts.currentLang));
           debugPrint(
-            '[Flow] Vehicle moving at ${_state.vehicleSpeed.toStringAsFixed(1)} km/h without driver verification! (consecutive: $_consecutiveHighSpeedCount)',
+            '[Flow] Vehicle moving at ${triggerSpeed.toStringAsFixed(1)} km/h without driver verification! (consecutive: $_consecutiveHighSpeedCount)',
           );
         }
       }
@@ -2595,6 +2642,13 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       isOnline: _isOnline,
     );
 
+    // Also send GPS over fleet WebSocket for real-time dashboard tracking
+    _streamService.sendGpsUpdate(
+      _state.gpsLat,
+      _state.gpsLng,
+      _state.vehicleSpeed,
+    );
+
     // Sync queued telemetry when back online
     if (_isOnline && _telemetryService.pendingCount > 0) {
       _telemetryService.syncPendingTelemetry();
@@ -2609,7 +2663,8 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   // Critical: 30s | High: 60s | Medium: 180s
   static const Map<String, int> _kIncidentCooldownSeconds = {
     // Critical (every 30 seconds)
-    'Drowsiness': 30, // asleep/drowsy both use this key
+    'Drowsiness': 30,
+    'Sleepiness': 60,
     // 'Medical Emergency': 30,
     // High (every 1 minute)
     'Distraction': 60,
@@ -2774,9 +2829,8 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     if (_state.drowsinessLevel == DrowsinessLevel.asleep) {
       loud = true;
 
-      // Use 'Drowsiness' for both asleep and drowsy so they share the cooldown
-      if (_checkCooldown('Drowsiness')) {
-        _reportIncident('Drowsiness', 'Critical', 1.0);
+      if (_checkCooldown('Sleepiness')) {
+        _reportIncident('Sleepiness', 'Critical', 1.0);
       }
     } else if (_state.drowsinessLevel == DrowsinessLevel.drowsy) {
       soft = true;
@@ -3196,6 +3250,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       }
       // Verify WebSocket is still alive — Doze mode can silently kill it.
       _streamService.onAppResumed();
+      _streamService.onFleetAppResumed(_settings.getDeviceId() ?? '');
     }
   }
 

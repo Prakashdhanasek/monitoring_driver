@@ -41,6 +41,13 @@ class LiveStreamService {
   Timer? _audioFlushTimer;
   bool _waitingForPong = false; // true after PING sent; false once PONG received
 
+  // ─── Fleet GPS WebSocket ─────────────────────────────
+  WebSocketChannel? _fleetChannel;
+  bool _fleetIsReconnecting = false;
+  Timer? _fleetReconnectTimer;
+  Timer? _fleetKeepAliveTimer;
+  bool _fleetWaitingForPong = false;
+
   final ValueNotifier<bool> isConnected = ValueNotifier<bool>(false);
   final ValueNotifier<bool> isSpeaking = ValueNotifier<bool>(false);
 
@@ -293,6 +300,7 @@ class LiveStreamService {
       final tempDir = await getTemporaryDirectory();
       final tempFile = File('${tempDir.path}/admin_audio_${DateTime.now().millisecondsSinceEpoch}.webm');
       await tempFile.writeAsBytes(assembled);
+      await _audioPlayer.stop(); // Stop any previously playing audio to prevent echo
       await _audioPlayer.setVolume(1.0);
       await _audioPlayer.play(DeviceFileSource(tempFile.path));
       debugPrint('[Audio] ✅ Playing assembled admin audio ($totalBytes bytes)');
@@ -314,6 +322,7 @@ class LiveStreamService {
   Future<void> startSpeaking() async {
     if (_isSpeaking || !isConnected.value) return;
     try {
+      await _audioPlayer.stop(); // Stop speaker playback to prevent mic feedback echo loop
       final hasPermission = await _recorder.hasPermission();
       if (!hasPermission) {
         debugPrint('[Audio] Mic permission denied');
@@ -477,10 +486,19 @@ class LiveStreamService {
     }
   }
 
+  final Map<String, DateTime> _lastAlertSocketSent = {};
+
   /// Sends a text-based alert message over the WebSocket to notify web dashboard.
   void sendAlertMessage(String alertType) {
     if (_channel != null && _isStreaming) {
-      final jsonMsg = '{"event": "alert", "type": "$alertType", "timestamp": "${DateTime.now().toIso8601String()}"}';
+      final now = DateTime.now();
+      final lastSent = _lastAlertSocketSent[alertType];
+      if (lastSent != null && now.difference(lastSent).inSeconds < 5) {
+        debugPrint('[Stream] Throttled duplicate socket alert message: $alertType');
+        return;
+      }
+      _lastAlertSocketSent[alertType] = now;
+      final jsonMsg = '{"event": "alert", "type": "$alertType", "timestamp": "${now.toIso8601String()}"}';
       _channel!.sink.add(jsonMsg);
       debugPrint('[Stream] Sent alert metadata over WebSocket: $jsonMsg');
     }
@@ -502,6 +520,116 @@ class LiveStreamService {
   }
 
   /// Closes the connection and stops streaming
+  // ─── Fleet GPS WebSocket ──────────────────────────────────────────────────
+
+  /// Connects to the fleet GPS WebSocket.
+  /// Separate from the stream socket — used only to send periodic GPS updates.
+  void connectFleet(String deviceTabletId) {
+    if (deviceTabletId.isEmpty || _fleetIsReconnecting) return;
+    if (_fleetChannel != null) return; // already connected
+
+    _fleetIsReconnecting = true;
+    final wsUrl =
+        'wss://proximity-driver-api.prod-app.in/ws/fleet?role=sender&deviceId=$deviceTabletId';
+    debugPrint('[Fleet] Connecting to fleet WebSocket: $wsUrl');
+
+    try {
+      _fleetChannel = WebSocketChannel.connect(Uri.parse(wsUrl));
+      _fleetChannel!.ready.then((_) {
+        _fleetIsReconnecting = false;
+        _fleetWaitingForPong = false;
+        _startFleetKeepAlive();
+        debugPrint('[Fleet] Fleet WebSocket connected.');
+      }).catchError((err) {
+        debugPrint('[Fleet] Fleet connect failed: $err');
+        _fleetChannel = null;
+        _fleetIsReconnecting = false;
+        _scheduleFleetReconnect(deviceTabletId);
+      });
+
+      _fleetChannel!.stream.listen(
+        (message) {
+          // Handle PONG from server
+          if (message is String && message.trim().toUpperCase() == 'PONG') {
+            _fleetWaitingForPong = false;
+            debugPrint('[Fleet] ♥ PONG received — fleet connection alive');
+          }
+        },
+        onDone: () {
+          debugPrint('[Fleet] Fleet WebSocket closed.');
+          _fleetKeepAliveTimer?.cancel();
+          _fleetChannel = null;
+          _fleetIsReconnecting = false;
+          _scheduleFleetReconnect(deviceTabletId);
+        },
+        onError: (e) {
+          debugPrint('[Fleet] Fleet WebSocket error: $e');
+          _fleetKeepAliveTimer?.cancel();
+          _fleetChannel = null;
+          _fleetIsReconnecting = false;
+          _scheduleFleetReconnect(deviceTabletId);
+        },
+      );
+    } catch (e) {
+      debugPrint('[Fleet] Fleet connect exception: $e');
+      _fleetChannel = null;
+      _fleetIsReconnecting = false;
+      _scheduleFleetReconnect(deviceTabletId);
+    }
+  }
+
+  void _startFleetKeepAlive() {
+    _fleetKeepAliveTimer?.cancel();
+    _fleetWaitingForPong = false;
+    _fleetKeepAliveTimer = Timer.periodic(const Duration(seconds: 10), (_) {
+      if (_fleetChannel == null) return;
+      if (_fleetWaitingForPong) {
+        debugPrint('[Fleet] ✗ No PONG since last PING — zombie fleet connection, reconnecting');
+        _fleetKeepAliveTimer?.cancel();
+        try { _fleetChannel?.sink.close(); } catch (_) {}
+        _fleetChannel = null;
+        _fleetIsReconnecting = false;
+        _scheduleFleetReconnect(_deviceTabletId);
+        return;
+      }
+      try {
+        _fleetChannel!.sink.add('PING');
+        _fleetWaitingForPong = true;
+        debugPrint('[Fleet] ♥ Fleet keepalive ping sent');
+      } catch (_) {}
+    });
+  }
+
+  void _scheduleFleetReconnect(String deviceTabletId) {
+    _fleetReconnectTimer?.cancel();
+    _fleetReconnectTimer = Timer(const Duration(seconds: 5), () {
+      connectFleet(deviceTabletId);
+    });
+  }
+
+  /// Sends a GPS update as a JSON text frame over the fleet WebSocket.
+  /// Called from _sendTelemetryTask() every 3 seconds.
+  void sendGpsUpdate(double latitude, double longitude, double speed) {
+    if (_fleetChannel == null) return;
+    try {
+      final json =
+          '{"latitude":$latitude,"longitude":$longitude,"speed":${speed.toStringAsFixed(1)}}';
+      _fleetChannel!.sink.add(json);
+      debugPrint('[Fleet] GPS sent: $json');
+    } catch (e) {
+      debugPrint('[Fleet] sendGpsUpdate error: $e');
+      _fleetChannel = null;
+      _scheduleFleetReconnect(_deviceTabletId); // reconnect using stored deviceId
+    }
+  }
+
+  /// Call when app resumes to reconnect fleet socket if dropped.
+  void onFleetAppResumed(String deviceTabletId) {
+    if (_fleetChannel == null && !_fleetIsReconnecting) {
+      connectFleet(deviceTabletId);
+    }
+  }
+
   void dispose() {
     _isStreaming = false;
     _waitingForPong = false;
@@ -516,6 +644,10 @@ class LiveStreamService {
     _channel = null;
     isConnected.value = false;
     isSpeaking.value = false;
+    _fleetReconnectTimer?.cancel();
+    _fleetKeepAliveTimer?.cancel();
+    try { _fleetChannel?.sink.close(); } catch (_) {}
+    _fleetChannel = null;
     debugPrint('[Stream] Disposed.');
   }
 }
