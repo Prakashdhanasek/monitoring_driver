@@ -24,10 +24,10 @@ class MonitoringEngine {
 
   // Drowsiness: 4 seconds of continuous eye closure/yawning = 1 strike
   static const int kDrowsyFramesPerStrike = 120; // ~4s @ 30fps
-  static const int kRecoveryFrames = 300;         // 10s recovery
+  static const int kRecoveryFrames = 300; // 10s recovery
 
   // Distraction: 3 seconds of sustained yaw > threshold = 1 strike
-  static const int kDistractedFramesPerStrike = 90;  // ~3s @ 30fps
+  static const int kDistractedFramesPerStrike = 90; // ~3s @ 30fps
   static const int kDistractionRecoveryFrames = 450; // 15s recovery
 
   final MonitorState state;
@@ -73,7 +73,8 @@ class MonitoringEngine {
       } else {
         double perclos = 0.0;
         if (state.eyeClosureHistory.isNotEmpty) {
-          perclos = state.eyeClosureHistory.where((c) => c).length /
+          perclos =
+              state.eyeClosureHistory.where((c) => c).length /
               state.eyeClosureHistory.length;
         }
         if (perclos > 0.30 || state.yawningSince != null) {
@@ -92,16 +93,23 @@ class MonitoringEngine {
     if (state.eyesClosedSince == null) return;
     if (now.difference(state.eyesClosedSince!).inMilliseconds < 5000) return;
 
-    final recentAlert = state.recentAlerts.any((a) =>
-        a.type == 'flag_sleeping' && now.difference(a.timestamp).inSeconds < 8);
+    // Eyes closed >= 5s — always keep asleep level
+    state.drowsinessLevel = DrowsinessLevel.asleep;
+
+    final recentAlert = state.recentAlerts.any(
+      (a) =>
+          a.type == 'flag_sleeping' &&
+          now.difference(a.timestamp).inSeconds < 8,
+    );
     if (!recentAlert) {
-      state.drowsinessLevel = DrowsinessLevel.asleep;
-      state.addAlert(AlertEvent(
-        type: 'flag_sleeping',
-        message: 'WAKE UP! EYES CLOSED >= 5.0s',
-        needsScreenshot: true,
-        isMajorFlag: true,
-      ));
+      state.addAlert(
+        AlertEvent(
+          type: 'flag_sleeping',
+          message: 'WAKE UP! EYES CLOSED >= 5.0s',
+          needsScreenshot: true,
+          isMajorFlag: true,
+        ),
+      );
       state.eyesClosedSince = now; // Shift to avoid instant re-trigger
     }
   }
@@ -112,16 +120,23 @@ class MonitoringEngine {
     if (state.headDropSince == null) return;
     if (now.difference(state.headDropSince!).inMilliseconds < 5000) return;
 
-    final recentAlert = state.recentAlerts.any((a) =>
-        a.type == 'flag_head_drop' && now.difference(a.timestamp).inSeconds < 8);
+    // Head dropped >= 5s — always keep asleep level
+    state.drowsinessLevel = DrowsinessLevel.asleep;
+
+    final recentAlert = state.recentAlerts.any(
+      (a) =>
+          a.type == 'flag_head_drop' &&
+          now.difference(a.timestamp).inSeconds < 8,
+    );
     if (!recentAlert) {
-      state.drowsinessLevel = DrowsinessLevel.asleep;
-      state.addAlert(AlertEvent(
-        type: 'flag_head_drop',
-        message: 'WAKE UP! HEAD DROPPED >= 5.0s',
-        needsScreenshot: true,
-        isMajorFlag: true,
-      ));
+      state.addAlert(
+        AlertEvent(
+          type: 'flag_head_drop',
+          message: 'WAKE UP! HEAD DROPPED >= 5.0s',
+          needsScreenshot: true,
+          isMajorFlag: true,
+        ),
+      );
       state.headDropSince = now;
     }
   }
@@ -339,23 +354,33 @@ class MonitoringEngine {
 
         if (state.drowsyAlertCount < 3) {
           // Strikes 1-2: silent, update level only
-          state.drowsinessLevel = DrowsinessLevel.drowsy;
+          // Don't downgrade from asleep (set by _checkSleepByEyes) to drowsy
+          if (state.drowsinessLevel != DrowsinessLevel.asleep) {
+            state.drowsinessLevel = DrowsinessLevel.drowsy;
+          }
         } else if (state.drowsyAlertCount < 5) {
           // Strikes 3-4: audio warning
-          state.drowsinessLevel = DrowsinessLevel.drowsy;
-          state.addAlert(AlertEvent(
-            type: 'audio_alert_soft',
-            message: '⚠ DROWSINESS WARNING: Strike ${state.drowsyAlertCount}/5',
-          ));
+          if (state.drowsinessLevel != DrowsinessLevel.asleep) {
+            state.drowsinessLevel = DrowsinessLevel.drowsy;
+          }
+          state.addAlert(
+            AlertEvent(
+              type: 'audio_alert_soft',
+              message:
+                  '⚠ DROWSINESS WARNING: Strike ${state.drowsyAlertCount}/5',
+            ),
+          );
         } else {
           // Strike 5: major flag
           state.drowsinessLevel = DrowsinessLevel.asleep;
-          state.addAlert(AlertEvent(
-            type: 'flag_drowsy',
-            message: 'FLAG: SEVERE DROWSINESS (5 STRIKES)',
-            needsScreenshot: true,
-            isMajorFlag: true,
-          ));
+          state.addAlert(
+            AlertEvent(
+              type: 'flag_drowsy',
+              message: 'FLAG: SEVERE DROWSINESS (5 STRIKES)',
+              needsScreenshot: true,
+              isMajorFlag: true,
+            ),
+          );
           state.drowsyAlertCount = 0;
         }
       }
@@ -384,25 +409,28 @@ class MonitoringEngine {
 
       if (now.difference(state.continuousDistractedSince!).inSeconds >= 5) {
         final lastStrike = state.lastDistractionStrikeCooldown;
-        if (lastStrike == null ||
-            now.difference(lastStrike).inSeconds >= 5) {
+        if (lastStrike == null || now.difference(lastStrike).inSeconds >= 5) {
           state.lastDistractionStrikeCooldown = now;
           state.distractionStrikeCount++;
           state.continuousDistractedSince = now; // Reset for next strike
 
           if (state.distractionStrikeCount < 5) {
-            state.addAlert(AlertEvent(
-              type: 'audio_alert_distraction',
-              message:
-                  '⚠ DISTRACTION WARNING: Strike ${state.distractionStrikeCount}/5',
-            ));
+            state.addAlert(
+              AlertEvent(
+                type: 'audio_alert_distraction',
+                message:
+                    '⚠ DISTRACTION WARNING: Strike ${state.distractionStrikeCount}/5',
+              ),
+            );
           } else {
-            state.addAlert(AlertEvent(
-              type: 'flag_distraction_looking_away',
-              message: 'FLAG: REPEATED DISTRACTION (5 STRIKES)',
-              needsScreenshot: true,
-              isMajorFlag: true,
-            ));
+            state.addAlert(
+              AlertEvent(
+                type: 'flag_distraction_looking_away',
+                message: 'FLAG: REPEATED DISTRACTION (5 STRIKES)',
+                needsScreenshot: true,
+                isMajorFlag: true,
+              ),
+            );
             state.distractionStrikeCount = 0;
           }
         }
@@ -419,5 +447,3 @@ class MonitoringEngine {
     }
   }
 }
-
-
