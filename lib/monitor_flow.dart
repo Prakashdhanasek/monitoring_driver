@@ -197,6 +197,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   DateTime?
   _unmatchedFaceSince; // tracks how long a face is present but not matching
   DateTime? _verifyingStartedAt; // tracks max 60s verification timeout
+  int _consecutiveSpeedTicks = 0; // debounce GPS jitter noise at low speeds
 
   // Verified driver
   String _driverName = '';
@@ -273,16 +274,49 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     if (_state.isUnknownDriver || _driverId == '—' || _driverName == 'Unknown Driver') {
       return false;
     }
+    // 5-second grace period after entering monitoring screen so initial camera frames lock on cleanly
+    if (_monitoringStartedAt != null &&
+        DateTime.now().difference(_monitoringStartedAt!).inSeconds < 5) {
+      return false;
+    }
     if (_state.authStatus != AuthStatus.unauthorized) return false;
     if (_lastDriverChangedReportAt != null) {
       final elapsedSinceReport = DateTime.now()
           .difference(_lastDriverChangedReportAt!)
           .inSeconds;
-      if (elapsedSinceReport < 300) {
-        return false; // 5-minute (300s) cooldown active
+      if (elapsedSinceReport < 10) {
+        return false; // 10-second cooldown active
       }
     }
     return true;
+  }
+
+  void _checkVerifyingPhaseFallback() {
+    if (_phase != Phase.verifying || _isRefreshingDrivers) return;
+    final now = DateTime.now();
+    _verifyingStartedAt ??= now;
+
+    if (_state.vehicleSpeed >= 3.5) {
+      _consecutiveSpeedTicks++;
+    } else {
+      _consecutiveSpeedTicks = 0;
+    }
+
+    final bool isVehicleMoving =
+        _consecutiveSpeedTicks >= 2 || _state.vehicleSpeed >= 5.0;
+    final bool isVerifyingTimeout =
+        now.difference(_verifyingStartedAt!).inSeconds >= 60;
+
+    if ((isVehicleMoving || isVerifyingTimeout) && !_isRefreshingDrivers) {
+      debugPrint(
+        '[Flow] Verification fallback triggered (speed=${_state.vehicleSpeed}km/h, timeout=$isVerifyingTimeout) — transitioning to Phase.monitoring as Unknown Driver.',
+      );
+      _verifyingStartedAt = null;
+      _unmatchedFaceSince = null;
+      _consecutiveSpeedTicks = 0;
+      _reportIncident('Unverified Driver', 'Medium', 0.80);
+      _onVerified(isMatched: false);
+    }
   }
 
   //static const int _kTripEndSeconds = 600; // 10 minutes
@@ -1451,6 +1485,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
           position.speed > 0 ? position.speed : 0.0,
           position.heading,
         );
+        _checkVerifyingPhaseFallback();
       });
     }
   }
@@ -1563,39 +1598,8 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
           final now = DateTime.now();
           _verifyingStartedAt ??= now;
 
-          final double currentSpeed = _state.vehicleSpeed;
-          // Trigger 1: Vehicle starts moving > 3 km/h before verification completes.
-          final bool isVehicleMoving = currentSpeed > 3.0;
-          // Trigger 2: Maximum 60-second (1 minute) verification timeout.
-          final int elapsedVerifyingSeconds =
-              now.difference(_verifyingStartedAt!).inSeconds;
-          final bool isVerifyingTimeout = elapsedVerifyingSeconds >= 60;
-
-          if ((isVehicleMoving || isVerifyingTimeout) && !_isRefreshingDrivers) {
-            debugPrint(
-              '========================================================================\n'
-              '🚗 [SPEED & TIMEOUT TRIGGER DETECTED]\n'
-              '   - Current Vehicle Speed: ${currentSpeed.toStringAsFixed(1)} km/h (Threshold: > 3.0 km/h)\n'
-              '   - Elapsed Verifying Time: ${elapsedVerifyingSeconds}s (Timeout: 60s)\n'
-              '   - Triggered By: ${isVehicleMoving ? "VEHICLE MOVEMENT (>3 km/h)" : "VERIFICATION TIMEOUT (60s)"}\n'
-              '🚨 Transitioning to Monitoring Screen as UNKNOWN DRIVER & Reporting Incident...\n'
-              '========================================================================',
-            );
-            _verifyingStartedAt = null;
-            _unmatchedFaceSince = null;
-            if (faces.isNotEmpty) {
-              _capturedFace = _captureFaceJpeg(image, targetWidth: 480);
-              final embedding = _authEngine.extractLiveEmbedding(
-                image,
-                _getCameraRotation(),
-                faces.first.boundingBox,
-              );
-              _authEngine.setActiveTripEmbedding(embedding);
-            }
-            _reportIncident('Unverified Driver', 'Medium', 0.80);
-            _onVerified(isMatched: false);
-            break;
-          }
+          _checkVerifyingPhaseFallback();
+          if (_phase != Phase.verifying) break;
 
           final shouldRefresh =
               !_authEngine.isEnrolled ||
@@ -2038,17 +2042,19 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       _state.authStatus = AuthStatus.authenticated;
     }
 
-    if (isMatched) {
-      // Show clean "Identity Verified! Welcome back, <Driver Name>" screen
-      // Note: _phase was already set to Phase.details at the top of this function.
+    if (isMatched && !_state.isUnknownDriver) {
+      // Show clean "Welcome, <Driver Name>. Driver verification successful. Please drive safely." screen
       if (mounted) setState(() {});
 
       // Announce welcome message with driver name
-      _tts.speak(AlertMessages.welcome(_tts.currentLang, driverName));
+      _tts.speak(AlertMessages.welcome(_tts.currentLang, _driverName));
 
       // Hold on the confirmation screen for 2.5 seconds so driver sees their name & verification success
       await Future.delayed(const Duration(milliseconds: 2500));
       if (!mounted) return;
+    } else {
+      // Speak "Driver verification failed. You are not authorized to operate this vehicle. Please contact your supervisor."
+      _tts.speak(AlertMessages.verificationFailed(_tts.currentLang));
     }
 
     // Proceed to Monitoring screen
@@ -5294,42 +5300,6 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
                     ),
                   ),
                 ],
-                const SizedBox(height: 20),
-                // ── HARDCODED TEST BUTTON FOR SPEED THRESHOLD (>3 km/h) ──
-                ElevatedButton.icon(
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: const Color(0xFFEF4444),
-                    foregroundColor: Colors.white,
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 24,
-                      vertical: 14,
-                    ),
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(30),
-                    ),
-                    elevation: 8,
-                  ),
-                  icon: const Icon(Icons.directions_car_rounded, size: 20),
-                  label: const Text(
-                    '🚗 TEST FAKE 5 KM/H SPEED (TRIGGER UNKNOWN DRIVER)',
-                    style: TextStyle(
-                      fontSize: 13,
-                      fontWeight: FontWeight.w900,
-                      letterSpacing: 0.5,
-                    ),
-                  ),
-                  onPressed: () {
-                    debugPrint(
-                      '========================================================================\n'
-                      '🚗 [HARDCODED TEST BUTTON CLICKED]\n'
-                      '   - Setting fake vehicle speed to 5.0 km/h (> 3.0 km/h threshold)\n'
-                      '🚨 Triggering immediate transition to Monitoring Screen as UNKNOWN DRIVER!\n'
-                      '========================================================================',
-                    );
-                    _state.vehicleSpeed = 5.0;
-                    if (mounted) setState(() {});
-                  },
-                ),
               ],
             ),
           ),

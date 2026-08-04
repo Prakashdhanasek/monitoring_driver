@@ -39,7 +39,7 @@ class FaceAuthEngine {
   // Balanced threshold:
   // 0.72 was too strict and caused all faces to fail.
   // 0.85 allows valid reference drivers while still blocking many unknown faces.
-  static const double kAuthThreshold = 0.95;
+  static const double kAuthThreshold = 0.90;
 
   int _consecutiveMatch = 0;
   int _consecutiveMiss = 0;
@@ -207,12 +207,11 @@ class FaceAuthEngine {
           'threshold=$kAuthThreshold',
     );
 
-    // Strict threshold: 0.92 for initial verification to prevent false positive identity matches (e.g. Maneesha matching Anjana).
-    // Swap threshold: 1.12 when already authenticated to detect driver changes mid-trip.
+    // Threshold: 1.00 when authenticated (driver swap threshold), 0.90 during initial verification (strict single identity match)
     final double effectiveThreshold =
         (state.authStatus == AuthStatus.authenticated)
-        ? 1.12
-        : 0.92;
+        ? 1.00
+        : 0.90;
 
     if (minDist < effectiveThreshold) {
       _consecutiveMatch++;
@@ -229,8 +228,8 @@ class FaceAuthEngine {
       _consecutiveMatch = 0;
       lastMatchedLabel = null;
 
-      // Instant driver swap: 2 consecutive mismatches trigger unauthorized (<0.3s)
-      final requiredMisses = 2;
+      // Driver swap: 3 consecutive mismatch frames (~0.3s) when another human face is in view
+      final requiredMisses = (state.authStatus == AuthStatus.authenticated) ? 3 : 5;
 
       if (_consecutiveMiss >= requiredMisses) {
         state.authStatus = AuthStatus.unauthorized;

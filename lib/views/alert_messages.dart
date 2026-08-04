@@ -36,11 +36,20 @@ class AlertMessages {
 
   static String welcome(AlertLang lang, String name) => _pick(
     lang,
-    en: 'Welcome $name. Identity verified.',
-    hi: 'स्वागत है $name। पहचान सत्यापित हो गई।',
-    ml: 'സ്വാഗതം $name. തിരിച്ചറിയൽ പൂർത്തിയായി.',
-    ta: 'வரவேற்கிறோம் $name. அடையாளம் சரிபார்க்கப்பட்டது.',
-    kn: 'ಸ್ವಾಗತ $name. ಗುರುತು ಪರಿಶೀಲಿಸಲಾಗಿದೆ.',
+    en: 'Welcome, $name. Driver verification successful. Please drive safely.',
+    hi: 'स्वागत है, $name। चालक सत्यापन सफल। कृपया सुरक्षित रूप से गाड़ी चलाएं।',
+    ml: 'സ്വാഗതം, $name. ഡ്രൈവർ പരിശോധന വിജയകരം. ദയവായി സുരക്ഷിതമായി വാഹനം ഓടിക്കുക.',
+    ta: 'வரவேற்கிறோம், $name. ஓட்டுநர் சரிபார்ப்பு வெற்றி. பாதுகாப்பாக ஓட்டவும்.',
+    kn: 'ಸ್ವಾಗತ, $name. ಚಾಲಕ ಪರಿಶೀಲನೆ ಯಶಸ್ವಿಯಾಗಿದೆ. ದಯವಿಟ್ಟು ಸುರಕ್ಷಿತವಾಗಿ ಚಾಲನೆ ಮಾಡಿ.',
+  );
+
+  static String verificationFailed(AlertLang lang) => _pick(
+    lang,
+    en: 'Driver verification failed. You are not authorized to operate this vehicle. Please contact your supervisor.',
+    hi: 'चालक सत्यापन विफल। आप इस वाहन को चलाने के लिए अधिकृत नहीं हैं। कृपया अपने पर्यवेक्षक से संपर्क करें।',
+    ml: 'ഡ്രൈവർ പരിശോധന പരാജയപ്പെട്ടു. ഈ വാഹനം ഓടിക്കാൻ നിങ്ങൾക്ക് അനുമതിയില്ല. ദയവായി നിങ്ങളുടെ സൂപ്പർവൈസറെ ബന്ധപ്പെടുക.',
+    ta: 'ஓட்டுநர் சரிபார்ப்பு தோல்வியடைந்தது. මෙම வாகனத்தை இயக்க உங்களுக்கு அனுமதி இல்லை. உங்கள் மேற்பார்வையாளரைத் தொடர்புகொள்ளவும்.',
+    kn: 'ಚಾಲಕ ಪರಿಶೀಲನೆ ವಿಫಲವಾಗಿದೆ. ಈ ವಾಹನವನ್ನು ಚಲಾಯಿಸಲು ನಿಮಗೆ ಅಧಿಕಾರವಿಲ್ಲ. ದಯವಿಟ್ಟು ನಿಮ್ಮ ಸೂಪರ್‌ವೈಸರ್ ಅನ್ನು ಸಂಪರ್ಕಿಸಿ.',
   );
 
   static String phone(AlertLang lang) => _pick(
