@@ -268,6 +268,11 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   static const int _kTripEndSeconds = 30; // 10 minutes
 
   bool _isDriverChangedActive() {
+    // Only trigger Driver Changed if the trip session started as a verified registered driver.
+    // Unknown driver trips should never trigger Driver Changed alerts.
+    if (_state.isUnknownDriver || _driverId == '—' || _driverName == 'Unknown Driver') {
+      return false;
+    }
     if (_state.authStatus != AuthStatus.unauthorized) return false;
     if (_lastDriverChangedReportAt != null) {
       final elapsedSinceReport = DateTime.now()
@@ -1558,13 +1563,23 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
           final now = DateTime.now();
           _verifyingStartedAt ??= now;
 
-          // Maximum 60-second (1 minute) verification timeout.
-          // Handles cases where the driver is seated far from the camera or face authentication
-          // remains incomplete/pending. Reports "Unverified Driver" incident and starts monitoring.
-          if (now.difference(_verifyingStartedAt!).inSeconds >= 60 &&
-              !_isRefreshingDrivers) {
+          final double currentSpeed = _state.vehicleSpeed;
+          // Trigger 1: Vehicle starts moving > 3 km/h before verification completes.
+          final bool isVehicleMoving = currentSpeed > 3.0;
+          // Trigger 2: Maximum 60-second (1 minute) verification timeout.
+          final int elapsedVerifyingSeconds =
+              now.difference(_verifyingStartedAt!).inSeconds;
+          final bool isVerifyingTimeout = elapsedVerifyingSeconds >= 60;
+
+          if ((isVehicleMoving || isVerifyingTimeout) && !_isRefreshingDrivers) {
             debugPrint(
-              '[Flow] Verification timeout reached (60s max) — reporting Unverified Driver & starting monitoring.',
+              '========================================================================\n'
+              '🚗 [SPEED & TIMEOUT TRIGGER DETECTED]\n'
+              '   - Current Vehicle Speed: ${currentSpeed.toStringAsFixed(1)} km/h (Threshold: > 3.0 km/h)\n'
+              '   - Elapsed Verifying Time: ${elapsedVerifyingSeconds}s (Timeout: 60s)\n'
+              '   - Triggered By: ${isVehicleMoving ? "VEHICLE MOVEMENT (>3 km/h)" : "VERIFICATION TIMEOUT (60s)"}\n'
+              '🚨 Transitioning to Monitoring Screen as UNKNOWN DRIVER & Reporting Incident...\n'
+              '========================================================================',
             );
             _verifyingStartedAt = null;
             _unmatchedFaceSince = null;
@@ -1609,7 +1624,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
 
           if (faces.length == 1 && !_isRefreshingDrivers) {
             if (_lastAuthAttemptAt == null ||
-                now.difference(_lastAuthAttemptAt!).inMilliseconds >= 1000) {
+                now.difference(_lastAuthAttemptAt!).inMilliseconds >= 100) {
               _lastAuthAttemptAt = now;
               _authEngine.processAuth(
                 faces.first,
@@ -1677,25 +1692,27 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
             } else {
               _multiFace = 0;
               final face = faces.first;
-              // Continuous identity check — fast instant driver swap detection (<0.3s)
-              final now = DateTime.now();
-              if (_lastAuthAttemptAt == null ||
-                  now.difference(_lastAuthAttemptAt!).inMilliseconds >= 100) {
-                _lastAuthAttemptAt = now;
-                _authEngine.processAuth(
-                  face,
-                  _state,
-                  image,
-                  _getCameraRotation(),
-                  activeDriverId: _driverId,
-                );
-                if (_state.authStatus == AuthStatus.unauthorized &&
-                    _isDriverChangedActive()) {
-                  final jpeg = _captureFaceJpeg(image, targetWidth: 240);
-                  if (jpeg != null) {
-                    _latestFrameJpeg = jpeg;
+              // Continuous identity check — run ONLY IF trip started as a verified registered driver
+              if (!_state.isUnknownDriver && _driverId != '—' && _driverName != 'Unknown Driver') {
+                final now = DateTime.now();
+                if (_lastAuthAttemptAt == null ||
+                    now.difference(_lastAuthAttemptAt!).inMilliseconds >= 100) {
+                  _lastAuthAttemptAt = now;
+                  _authEngine.processAuth(
+                    face,
+                    _state,
+                    image,
+                    _getCameraRotation(),
+                    activeDriverId: _driverId,
+                  );
+                  if (_state.authStatus == AuthStatus.unauthorized &&
+                      _isDriverChangedActive()) {
+                    final jpeg = _captureFaceJpeg(image, targetWidth: 240);
+                    if (jpeg != null) {
+                      _latestFrameJpeg = jpeg;
+                    }
+                    _handleAlertSounds(image);
                   }
-                  _handleAlertSounds(image);
                 }
               }
               _monitoringEngine.processFrame(face);
@@ -2003,9 +2020,23 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     _driverId = driverId;
     _driverName = driverName;
 
+    // Requirement: If photo is verified from DB but driver name is missing or unknown, set as Unknown Driver
+    if (_driverName.trim().isEmpty ||
+        _driverName.trim().toLowerCase() == 'unknown' ||
+        _driverName.trim().toLowerCase() == 'driver' ||
+        _driverName.trim().toLowerCase() == 'unknown driver' ||
+        _driverName.trim() == '—') {
+      _driverName = 'Unknown Driver';
+      _driverId = '—';
+      _state.isUnknownDriver = true;
+    }
+
     _state.resetCalibration();
-    _state.isUnknownDriver = !isMatched;
-    _state.authStatus = AuthStatus.authenticated;
+    if (_state.isUnknownDriver) {
+      _state.authStatus = AuthStatus.unauthorized;
+    } else {
+      _state.authStatus = AuthStatus.authenticated;
+    }
 
     if (isMatched) {
       // Show clean "Identity Verified! Welcome back, <Driver Name>" screen
@@ -5263,6 +5294,42 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
                     ),
                   ),
                 ],
+                const SizedBox(height: 20),
+                // ── HARDCODED TEST BUTTON FOR SPEED THRESHOLD (>3 km/h) ──
+                ElevatedButton.icon(
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFFEF4444),
+                    foregroundColor: Colors.white,
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 24,
+                      vertical: 14,
+                    ),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(30),
+                    ),
+                    elevation: 8,
+                  ),
+                  icon: const Icon(Icons.directions_car_rounded, size: 20),
+                  label: const Text(
+                    '🚗 TEST FAKE 5 KM/H SPEED (TRIGGER UNKNOWN DRIVER)',
+                    style: TextStyle(
+                      fontSize: 13,
+                      fontWeight: FontWeight.w900,
+                      letterSpacing: 0.5,
+                    ),
+                  ),
+                  onPressed: () {
+                    debugPrint(
+                      '========================================================================\n'
+                      '🚗 [HARDCODED TEST BUTTON CLICKED]\n'
+                      '   - Setting fake vehicle speed to 5.0 km/h (> 3.0 km/h threshold)\n'
+                      '🚨 Triggering immediate transition to Monitoring Screen as UNKNOWN DRIVER!\n'
+                      '========================================================================',
+                    );
+                    _state.vehicleSpeed = 5.0;
+                    if (mounted) setState(() {});
+                  },
+                ),
               ],
             ),
           ),

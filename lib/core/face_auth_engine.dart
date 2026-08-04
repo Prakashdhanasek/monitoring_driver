@@ -207,11 +207,12 @@ class FaceAuthEngine {
           'threshold=$kAuthThreshold',
     );
 
-    // Instant driver swap detection threshold
+    // Strict threshold: 0.92 for initial verification to prevent false positive identity matches (e.g. Maneesha matching Anjana).
+    // Swap threshold: 1.12 when already authenticated to detect driver changes mid-trip.
     final double effectiveThreshold =
         (state.authStatus == AuthStatus.authenticated)
-        ? kAuthThreshold + 0.05 // 0.95 + 0.05 = 1.00
-        : kAuthThreshold;
+        ? 1.12
+        : 0.92;
 
     if (minDist < effectiveThreshold) {
       _consecutiveMatch++;
