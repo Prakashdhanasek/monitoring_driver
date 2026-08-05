@@ -143,15 +143,26 @@ class FaceAuthEngine {
       return;
     }
 
-    // ── HEAD ANGLE LENIENCY FOR AUTHENTICATED DRIVER ─────────────────────────
-    // If the driver is already authenticated, skip FaceNet for head turns (yaw, pitch, roll > 22°)
-    // so checking mirrors or turning head never triggers false unauthorized states.
+    // ── PHYSICAL FACE TRACKING LOCK FOR AUTHENTICATED DRIVER ─────────────────
+    // If the driver is already authenticated and ML Kit is tracking the EXACT SAME physical face,
+    // NEVER trigger false Driver Changed alerts for the verified driver!
+    if (state.authStatus == AuthStatus.authenticated &&
+        state.authenticatedTrackingId != null &&
+        face.trackingId != null &&
+        face.trackingId == state.authenticatedTrackingId) {
+      _consecutiveMiss = 0;
+      _consecutiveMatch = kMatchFrames;
+      return;
+    }
+
+    // Skip FaceNet for extreme head turns (yaw, pitch, roll > 25°)
+    // so checking side mirrors never triggers false unauthorized states.
     if (state.authStatus == AuthStatus.authenticated) {
       final yaw = face.headEulerAngleY ?? 0.0;
       final pitch = face.headEulerAngleX ?? 0.0;
       final roll = face.headEulerAngleZ ?? 0.0;
 
-      if (yaw.abs() > 22.0 || pitch.abs() > 22.0 || roll.abs() > 22.0) {
+      if (yaw.abs() > 25.0 || pitch.abs() > 25.0 || roll.abs() > 25.0) {
         return;
       }
     }
@@ -207,29 +218,33 @@ class FaceAuthEngine {
           'threshold=$kAuthThreshold',
     );
 
-    // Threshold: 1.00 when authenticated (driver swap threshold), 0.90 during initial verification (strict single identity match)
+    // Threshold: 0.96 during initial verification (to accommodate lighting/angle variations from DB reference photo), 0.92 during continuous monitoring
     final double effectiveThreshold =
         (state.authStatus == AuthStatus.authenticated)
-        ? 1.00
-        : 0.90;
+        ? 0.92
+        : 0.96;
 
     if (minDist < effectiveThreshold) {
       _consecutiveMatch++;
       _consecutiveMiss = 0;
       lastMatchedLabel = bestLabel;
 
-      if (_consecutiveMatch >= kMatchFrames) {
+      final requiredMatchFrames =
+          (state.authStatus == AuthStatus.authenticated) ? kMatchFrames : 2;
+
+      if (_consecutiveMatch >= requiredMatchFrames) {
         state.authStatus = AuthStatus.authenticated;
-        state.authenticatedTrackingId =
-            face.trackingId; // Lock on to this physical face
+        if (face.trackingId != null) {
+          state.authenticatedTrackingId = face.trackingId; // Lock on to physical face
+        }
       }
     } else {
       _consecutiveMiss++;
       _consecutiveMatch = 0;
       lastMatchedLabel = null;
 
-      // Driver swap: 3 consecutive mismatch frames (~0.3s) when another human face is in view
-      final requiredMisses = (state.authStatus == AuthStatus.authenticated) ? 3 : 5;
+      // Driver swap: 6 consecutive mismatch frames (~0.6s) when a DIFFERENT physical person sits down
+      const requiredMisses = 6;
 
       if (_consecutiveMiss >= requiredMisses) {
         state.authStatus = AuthStatus.unauthorized;
