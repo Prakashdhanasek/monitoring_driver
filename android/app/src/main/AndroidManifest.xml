@@ -44,6 +44,9 @@
                 <action android:name="com.htc.intent.action.QUICKBOOT_POWERON" />
             </intent-filter>
         </receiver>
+        <!-- PowerConnectionReceiver is registered dynamically in MainActivity
+             (manifest-declared receivers for POWER_CONNECTED/DISCONNECTED are
+             blocked on Android 8+) -->
         <activity
             android:name=".MainActivity"
             android:exported="true"
@@ -116,6 +119,19 @@
             android:exported="false">
             <property android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
                       android:value="ota_app_restart" />
+        </service>
+
+        <service
+            android:name=".ShutdownAccessibilityService"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE"
+            android:directBootAware="true"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.accessibilityservice"
+                android:resource="@xml/accessibility_service_config" />
         </service>
 
         <!-- Don't delete the meta-data below.

@@ -34,6 +34,7 @@ class MainActivity : FlutterActivity() {
     // Screen-off interception: immediately turn screen back on when power button is pressed
     private var screenOffReceiver: BroadcastReceiver? = null
     private var wakeLock: PowerManager.WakeLock? = null
+    private var powerConnectionReceiver: PowerConnectionReceiver? = null
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
@@ -312,6 +313,12 @@ class MainActivity : FlutterActivity() {
             if (dpm.isDeviceOwnerApp(packageName)) {
                 dpm.setLockTaskPackages(admin, arrayOf(packageName))
 
+                // Enable accessibility service for power-off capability
+                enableShutdownAccessibilityService(dpm, admin)
+
+                // Ensure ADB TCP mode is active for PowerConnectionReceiver shutdown
+                ensureAdbTcp(dpm, admin)
+
                 // Always keep app as preferred HOME so it auto-launches on boot.
                 // OPPO/ColorOS blocks BOOT_COMPLETED receivers for third-party apps,
                 // but the HOME app is always started by the system on every boot.
@@ -424,6 +431,78 @@ class MainActivity : FlutterActivity() {
         enableMobileData()
         enableBluetooth()
         enableGps()
+    }
+
+    // Enable accessibility service for power-off capability (Device Owner only)
+    private fun enableShutdownAccessibilityService(dpm: DevicePolicyManager, admin: ComponentName) {
+        try {
+            val serviceComponent = "$packageName/${packageName}.ShutdownAccessibilityService"
+            val enabledServices = android.provider.Settings.Secure.getString(
+                contentResolver,
+                android.provider.Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES
+            ) ?: ""
+            if (enabledServices.contains(serviceComponent)) return
+
+            val newValue = if (enabledServices.isEmpty()) serviceComponent
+                           else "$enabledServices:$serviceComponent"
+
+            // Method 1: Device Owner setSecureSetting (blocked on some OEMs)
+            try {
+                dpm.setSecureSetting(admin, "enabled_accessibility_services", newValue)
+                dpm.setSecureSetting(admin, "accessibility_enabled", "1")
+                return
+            } catch (_: Throwable) {}
+
+            // Method 2: Shell command fallback
+            try {
+                Runtime.getRuntime().exec(arrayOf("sh", "-c",
+                    "settings put secure enabled_accessibility_services '$newValue' && " +
+                    "settings put secure accessibility_enabled 1"
+                )).waitFor()
+            } catch (_: Throwable) {}
+        } catch (_: Throwable) {}
+    }
+
+    // Enable ADB over TCP on port 5555 so PowerConnectionReceiver can
+    // execute "reboot -p" as shell user via localhost ADB connection.
+    private fun ensureAdbTcp(dpm: DevicePolicyManager, admin: ComponentName) {
+        try {
+            dpm.setGlobalSetting(admin, "adb_enabled", "1")
+        } catch (_: Throwable) {}
+
+        Thread {
+            try {
+                // Set persistent TCP port property (works on some devices)
+                val sp = Class.forName("android.os.SystemProperties")
+                val set = sp.getMethod("set", String::class.java, String::class.java)
+                set.invoke(null, "persist.adb.tcp.port", "5555")
+                set.invoke(null, "service.adb.tcp.port", "5555")
+                Log.i("Kiosk", "ADB TCP port set via SystemProperties")
+            } catch (_: Throwable) {
+                Log.w("Kiosk", "SystemProperties set failed, trying shell")
+            }
+
+            // Fallback: try shell commands
+            try {
+                Runtime.getRuntime().exec(arrayOf("sh", "-c",
+                    "setprop persist.adb.tcp.port 5555 && setprop service.adb.tcp.port 5555 && stop adbd && start adbd"
+                )).waitFor()
+                Log.i("Kiosk", "ADB TCP enabled via shell")
+            } catch (_: Throwable) {
+                Log.w("Kiosk", "Shell ADB TCP setup failed")
+            }
+
+            // Verify ADB is listening
+            try {
+                Thread.sleep(2000)
+                val socket = java.net.Socket()
+                socket.connect(java.net.InetSocketAddress("127.0.0.1", 5555), 3000)
+                socket.close()
+                Log.i("Kiosk", "ADB TCP verified — port 5555 is open")
+            } catch (e: Throwable) {
+                Log.e("Kiosk", "ADB TCP NOT available on port 5555: ${e.message}")
+            }
+        }.start()
     }
 
     // ───────────────────────────────────────────────
@@ -634,6 +713,7 @@ class MainActivity : FlutterActivity() {
         // Register a receiver that fires when screen goes off (power button pressed).
         // It immediately acquires a wake lock to turn the screen back on.
         registerScreenOffReceiver()
+        registerPowerConnectionReceiver()
     }
 
   override fun onResume() {
@@ -660,6 +740,11 @@ class MainActivity : FlutterActivity() {
         } catch (_: Exception) {}
         screenOffReceiver = null
 
+        try {
+            powerConnectionReceiver?.let { unregisterReceiver(it) }
+        } catch (_: Exception) {}
+        powerConnectionReceiver = null
+
         // Release wake lock
         try {
             wakeLock?.let { if (it.isHeld) it.release() }
@@ -675,6 +760,33 @@ class MainActivity : FlutterActivity() {
     // We catch it and immediately force the screen back on using a wake lock.
     // This makes the screen flash off for a split second then come right back.
     // ───────────────────────────────────────────────
+    private fun registerPowerConnectionReceiver() {
+        if (powerConnectionReceiver != null) return
+        powerConnectionReceiver = PowerConnectionReceiver()
+        val filter = android.content.IntentFilter().apply {
+            addAction(Intent.ACTION_POWER_DISCONNECTED)
+            addAction(Intent.ACTION_POWER_CONNECTED)
+        }
+        registerReceiver(powerConnectionReceiver, filter)
+        Log.i("Kiosk", "PowerConnectionReceiver registered")
+    }
+
+    private fun checkChargingStateAndShutdown() {
+        try {
+            val batteryStatus = registerReceiver(null,
+                android.content.IntentFilter(Intent.ACTION_BATTERY_CHANGED))
+            val plugged = batteryStatus?.getIntExtra(
+                android.os.BatteryManager.EXTRA_PLUGGED, -1) ?: -1
+            if (plugged == 0) {
+                // Not charging — vehicle is OFF, shut down after delay for service to bind
+                Log.i("Kiosk", "App started without charger — triggering shutdown in 15s")
+                android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+                    ShutdownAccessibilityService.triggerShutdown()
+                }, 15_000L)
+            }
+        } catch (_: Throwable) {}
+    }
+
     private fun registerScreenOffReceiver() {
         if (screenOffReceiver != null) return
         screenOffReceiver = object : BroadcastReceiver() {
