@@ -27,12 +27,17 @@ class ShutdownAccessibilityService : AccessibilityService() {
         fun triggerShutdown() {
             instance?.performShutdown() ?: Log.e(TAG, "No instance")
         }
+
+        fun cancelAndDisable() {
+            instance?.doCancelAndDisable()
+        }
     }
 
     private var powerReceiver: BroadcastReceiver? = null
     private var shutdownHandler: Handler? = null
     private var shutdownRunnable: Runnable? = null
     private var waitingForPowerMenu = false
+    private var disabled = false
 
     override fun onServiceConnected() {
         super.onServiceConnected()
@@ -68,66 +73,27 @@ class ShutdownAccessibilityService : AccessibilityService() {
         }
     }
 
-    // Register our own charger disconnect listener — independent of main app
+    // Power monitoring & automatic device shutdown disabled as requested:
+    // Admin exit should ONLY close the app activity without powering off the phone.
     private fun registerPowerMonitor() {
-        if (powerReceiver != null) return
-        powerReceiver = object : BroadcastReceiver() {
-            override fun onReceive(context: Context?, intent: Intent?) {
-                when (intent?.action) {
-                    Intent.ACTION_POWER_DISCONNECTED -> {
-                        Log.e(TAG, "=== CHARGER DISCONNECTED — shutdown in ${SHUTDOWN_DELAY_MS/1000}s ===")
-                        val handler = Handler(Looper.getMainLooper())
-                        val runnable = Runnable { performShutdown() }
-                        shutdownHandler = handler
-                        shutdownRunnable = runnable
-                        handler.postDelayed(runnable, SHUTDOWN_DELAY_MS)
-                    }
-                    Intent.ACTION_POWER_CONNECTED -> {
-                        Log.e(TAG, "=== CHARGER CONNECTED — cancelling shutdown ===")
-                        shutdownRunnable?.let { shutdownHandler?.removeCallbacks(it) }
-                        shutdownHandler = null
-                        shutdownRunnable = null
-                    }
-                }
-            }
-        }
-        val filter = IntentFilter().apply {
-            addAction(Intent.ACTION_POWER_DISCONNECTED)
-            addAction(Intent.ACTION_POWER_CONNECTED)
-        }
-        registerReceiver(powerReceiver, filter)
-        Log.e(TAG, "Power monitor registered")
-
-        // Also check current state — if already not charging, schedule shutdown
-        checkCurrentChargingState()
+        Log.i(TAG, "Device shutdown monitor disabled — Admin Exit will close app without powering off device.")
     }
 
-    private fun checkCurrentChargingState() {
-        try {
-            val batteryStatus = registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
-            val plugged = batteryStatus?.getIntExtra(BatteryManager.EXTRA_PLUGGED, -1) ?: -1
-            if (plugged == 0) {
-                Log.e(TAG, "=== NOT CHARGING on service start — shutdown in ${SHUTDOWN_DELAY_MS/1000}s ===")
-                val handler = Handler(Looper.getMainLooper())
-                val runnable = Runnable { performShutdown() }
-                shutdownHandler = handler
-                shutdownRunnable = runnable
-                handler.postDelayed(runnable, SHUTDOWN_DELAY_MS)
-            } else {
-                Log.e(TAG, "Currently charging (plugged=$plugged) — standing by")
-            }
-        } catch (_: Throwable) {}
+    private fun checkCurrentChargingState() {}
+
+    private fun doCancelAndDisable() {
+        Log.i(TAG, "=== CANCEL & DISABLE — admin exit ===")
+        disabled = true
+        waitingForPowerMenu = false
+        shutdownRunnable?.let { shutdownHandler?.removeCallbacks(it) }
+        shutdownHandler = null
+        shutdownRunnable = null
+        try { powerReceiver?.let { unregisterReceiver(it) } } catch (_: Exception) {}
+        powerReceiver = null
     }
 
     private fun performShutdown() {
-        Log.e(TAG, "=== PERFORMING SHUTDOWN — opening power dialog ===")
-        waitingForPowerMenu = true
-        val success = performGlobalAction(GLOBAL_ACTION_POWER_DIALOG)
-        Log.e(TAG, "Power dialog result: $success")
-
-        Handler(Looper.getMainLooper()).postDelayed({ if (waitingForPowerMenu) tryClickPowerOff() }, 1500)
-        Handler(Looper.getMainLooper()).postDelayed({ if (waitingForPowerMenu) tryClickPowerOff() }, 3000)
-        Handler(Looper.getMainLooper()).postDelayed({ if (waitingForPowerMenu) tryClickPowerOff() }, 5000)
+        Log.i(TAG, "performShutdown called but ignored — device shutdown disabled.")
     }
 
     private fun tryClickPowerOff() {

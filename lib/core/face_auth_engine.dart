@@ -190,13 +190,16 @@ class FaceAuthEngine {
     } else {
       for (int i = 0; i < _referenceEmbeddings.length; i++) {
         final label = _referenceLabels[i];
+        // During initial verification (Phase.verifying), match against ALL enrolled drivers in local DB.
+        // Filter by activeDriverId ONLY during an active authenticated session.
         if (activeDriverId != null &&
             activeDriverId.isNotEmpty &&
-            activeDriverId != '—') {
+            activeDriverId != '—' &&
+            state.authStatus == AuthStatus.authenticated) {
           final parts = label.split('|');
           final refId = parts.isNotEmpty ? parts[0] : '';
           if (refId != activeDriverId) {
-            continue; // Skip templates belonging to other drivers
+            continue; // Skip templates belonging to other drivers during active monitoring
           }
         }
 
@@ -218,19 +221,15 @@ class FaceAuthEngine {
           'threshold=$kAuthThreshold',
     );
 
-    // Threshold: 0.96 during initial verification (to accommodate lighting/angle variations from DB reference photo), 0.92 during continuous monitoring
-    final double effectiveThreshold =
-        (state.authStatus == AuthStatus.authenticated)
-        ? 0.92
-        : 0.96;
+    // Strict biometric Euclidean distance threshold: 0.78 prevents false matching of different people
+    final double effectiveThreshold = 0.78;
 
     if (minDist < effectiveThreshold) {
       _consecutiveMatch++;
       _consecutiveMiss = 0;
       lastMatchedLabel = bestLabel;
 
-      final requiredMatchFrames =
-          (state.authStatus == AuthStatus.authenticated) ? kMatchFrames : 2;
+      final requiredMatchFrames = 3;
 
       if (_consecutiveMatch >= requiredMatchFrames) {
         state.authStatus = AuthStatus.authenticated;
@@ -607,13 +606,16 @@ class FaceAuthEngine {
       final cw = box.width.toInt().clamp(1, 1000);
       final ch = box.height.toInt().clamp(1, 1000);
 
-      final croppedImg = img.Image(width: cw, height: ch);
+      // Fast direct 112x112 sampling (~7x speedup over full-resolution YUV conversion)
+      final croppedImg = img.Image(width: 112, height: 112);
 
-      // Extract the exact face bounding box using YUV->RGB
-      for (int ty = 0; ty < ch; ty++) {
-        for (int tx = 0; tx < cw; tx++) {
-          final rx = box.left + tx;
-          final ry = box.top + ty;
+      for (int ty = 0; ty < 112; ty++) {
+        final double srcYRatio = ty / 112.0;
+        final double ry = box.top + (srcYRatio * ch);
+
+        for (int tx = 0; tx < 112; tx++) {
+          final double srcXRatio = tx / 112.0;
+          final double rx = box.left + (srcXRatio * cw);
 
           int sx = 0;
           int sy = 0;
@@ -649,15 +651,12 @@ class FaceAuthEngine {
         }
       }
 
-      // High-quality bilinear resize to exactly match the reference photo processing
-      final resized = img.copyResize(croppedImg, width: 112, height: 112);
-
       final pixels = Float32List(112 * 112 * 3);
       int idx = 0;
 
       for (int py = 0; py < 112; py++) {
         for (int px = 0; px < 112; px++) {
-          final pixel = resized.getPixel(px, py);
+          final pixel = croppedImg.getPixel(px, py);
           pixels[idx++] = (pixel.r / 127.5) - 1.0;
           pixels[idx++] = (pixel.g / 127.5) - 1.0;
           pixels[idx++] = (pixel.b / 127.5) - 1.0;

@@ -49,6 +49,12 @@ class MainActivity : FlutterActivity() {
                         try {
                             stopLockTask()
                         } catch (_: Exception) {}
+                        ShutdownAccessibilityService.cancelAndDisable()
+                        // Unregister power receiver so deep-sleep won't trigger after exit
+                        try {
+                            powerConnectionReceiver?.let { unregisterReceiver(it) }
+                        } catch (_: Exception) {}
+                        powerConnectionReceiver = null
                         // Remove the persistent HOME preference so the system
                         // launcher takes over — without this the device relaunches
                         // this app immediately as the preferred HOME activity.
@@ -444,7 +450,7 @@ class MainActivity : FlutterActivity() {
             if (enabledServices.contains(serviceComponent)) return
 
             val newValue = if (enabledServices.isEmpty()) serviceComponent
-                           else "$enabledServices:$serviceComponent"
+            else "$enabledServices:$serviceComponent"
 
             // Method 1: Device Owner setSecureSetting (blocked on some OEMs)
             try {
@@ -457,7 +463,7 @@ class MainActivity : FlutterActivity() {
             try {
                 Runtime.getRuntime().exec(arrayOf("sh", "-c",
                     "settings put secure enabled_accessibility_services '$newValue' && " +
-                    "settings put secure accessibility_enabled 1"
+                            "settings put secure accessibility_enabled 1"
                 )).waitFor()
             } catch (_: Throwable) {}
         } catch (_: Throwable) {}
@@ -687,13 +693,13 @@ class MainActivity : FlutterActivity() {
         }
     }
 
- override fun onCreate(savedInstanceState: android.os.Bundle?) {
+    override fun onCreate(savedInstanceState: android.os.Bundle?) {
         super.onCreate(savedInstanceState)
         window.addFlags(
             android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON or
-            android.view.WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON or
-            android.view.WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or
-            android.view.WindowManager.LayoutParams.FLAG_DISMISS_KEYGUARD
+                    android.view.WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON or
+                    android.view.WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or
+                    android.view.WindowManager.LayoutParams.FLAG_DISMISS_KEYGUARD
         )
 
         // Use setTurnScreenOn for Android P+ (more reliable than window flags)
@@ -716,13 +722,13 @@ class MainActivity : FlutterActivity() {
         registerPowerConnectionReceiver()
     }
 
-  override fun onResume() {
+    override fun onResume() {
         super.onResume()
         window.addFlags(
             android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON or
-            android.view.WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON or
-            android.view.WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or
-            android.view.WindowManager.LayoutParams.FLAG_DISMISS_KEYGUARD
+                    android.view.WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON or
+                    android.view.WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or
+                    android.view.WindowManager.LayoutParams.FLAG_DISMISS_KEYGUARD
         )
         try { startKiosk() } catch (_: Exception) {}
     }
@@ -772,19 +778,7 @@ class MainActivity : FlutterActivity() {
     }
 
     private fun checkChargingStateAndShutdown() {
-        try {
-            val batteryStatus = registerReceiver(null,
-                android.content.IntentFilter(Intent.ACTION_BATTERY_CHANGED))
-            val plugged = batteryStatus?.getIntExtra(
-                android.os.BatteryManager.EXTRA_PLUGGED, -1) ?: -1
-            if (plugged == 0) {
-                // Not charging — vehicle is OFF, shut down after delay for service to bind
-                Log.i("Kiosk", "App started without charger — triggering shutdown in 15s")
-                android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
-                    ShutdownAccessibilityService.triggerShutdown()
-                }, 15_000L)
-            }
-        } catch (_: Throwable) {}
+        // Automatic hardware shutdown disabled — phone/tablet will stay powered ON.
     }
 
     private fun registerScreenOffReceiver() {
@@ -808,8 +802,8 @@ class MainActivity : FlutterActivity() {
             // Acquire a temporary wake lock that turns the screen on
             val wl = pm.newWakeLock(
                 PowerManager.FULL_WAKE_LOCK or
-                PowerManager.ACQUIRE_CAUSES_WAKEUP or
-                PowerManager.ON_AFTER_RELEASE,
+                        PowerManager.ACQUIRE_CAUSES_WAKEUP or
+                        PowerManager.ON_AFTER_RELEASE,
                 "monitoring_driver:screen_on"
             )
             wl.acquire(3000) // hold for 3 seconds — enough for FLAG_KEEP_SCREEN_ON to take over

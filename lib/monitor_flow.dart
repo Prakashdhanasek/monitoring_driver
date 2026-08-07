@@ -312,14 +312,14 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       return;
     }
 
-    if (_state.vehicleSpeed > 3.0) {
+    if (_state.vehicleSpeed > 3.0 || _accelSpeedEstimateKmH >= 3.0) {
       _consecutiveSpeedTicks++;
     } else {
       _consecutiveSpeedTicks = 0;
     }
 
     final bool isVehicleMoving =
-        _consecutiveSpeedTicks >= 1 || _state.vehicleSpeed > 3.0;
+        _consecutiveSpeedTicks >= 1 || _state.vehicleSpeed > 3.0 || _accelSpeedEstimateKmH >= 3.0;
 
     // Transition to monitoring ONLY when vehicle is actually moving (> 3 km/h)
     if (isVehicleMoving && !_isRefreshingDrivers) {
@@ -329,14 +329,10 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       _verifyingStartedAt = null;
       _unmatchedFaceSince = null;
       _consecutiveSpeedTicks = 0;
-      if (isVehicleMoving) {
-        _isSpeedTriggeredTrip = true;
-        _faceCapturedThisTrip = false;
-        _stationarySpeedSince = null;
-      } else {
-        _isSpeedTriggeredTrip = false;
-        _faceCapturedThisTrip = false;
-      }
+      _isSpeedTriggeredTrip = true;
+      _faceCapturedThisTrip = false;
+      _stationarySpeedSince = null;
+
       _reportIncident('Unverified Driver', 'Medium', 0.80);
       _onVerified(isMatched: false);
     }
@@ -544,15 +540,19 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
         if (_accelSpeedEstimateKmH < 0.1) _accelSpeedEstimateKmH = 0.0;
       }
 
-      // If GPS speed is lagging (e.g. 0.0 in tunnels/indoors), update vehicleSpeed with accelerometer motion estimate
-      if (_state.vehicleSpeed <= 0.5 && _accelSpeedEstimateKmH >= 3.0) {
+      // Accelerometer motion: update vehicleSpeed ONLY during sustained vehicle driving (> 2.5s continuous acceleration)
+      if (_phase != Phase.verifying &&
+          _state.vehicleSpeed <= 0.5 &&
+          _accelSpeedEstimateKmH >= 3.0 &&
+          _accelSustainedMotionTicks >= 12) {
         _state.vehicleSpeed = _accelSpeedEstimateKmH;
       }
 
       // If Trip Completed screen is active and vehicle starts moving >= 3.0 km/h:
-      if (_tripCompleted && _accelSpeedEstimateKmH >= 3.0) {
+      if (_tripCompleted && (_accelSpeedEstimateKmH >= 3.0 || _state.vehicleSpeed > 3.0)) {
         _startReverification().then((_) => _checkVerifyingPhaseFallback());
-      } else if (_phase == Phase.verifying && _accelSpeedEstimateKmH >= 3.0) {
+      } else if (_phase == Phase.verifying &&
+          (_state.vehicleSpeed > 3.0 || _accelSpeedEstimateKmH >= 3.0)) {
         _checkVerifyingPhaseFallback();
       }
     }, onError: (e) {
@@ -1555,6 +1555,9 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
         _lastGpsPos = position;
         _lastGpsTime = now;
 
+        if (_phase == Phase.verifying && speedKmH > 3.0) {
+          _checkVerifyingPhaseFallback();
+        } 
         _state.gpsLat = position.latitude;
         _state.gpsLng = position.longitude;
         _state.vehicleSpeed = speedKmH;
@@ -1788,8 +1791,21 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
                       _driverId = label;
                     }
                   }
+                  // Fallback: Resolve driver ID from local cache by driverName if ID is missing
+                  if (_driverId == '—' || _driverId == 'unknown' || _driverId.isEmpty) {
+                    final allDrivers = _driversService.getCachedDrivers();
+                    for (final d in allDrivers) {
+                      final dName = (d['fullName'] ?? d['name'] ?? d['driverName'] ?? d['nameEn'])?.toString().trim().toLowerCase();
+                      if (dName != null && _driverName.trim().toLowerCase().isNotEmpty && dName.contains(_driverName.trim().toLowerCase())) {
+                        _driverId = d['id']?.toString() ?? _driverId;
+                        break;
+                      }
+                    }
+                  }
                   _state.isUnknownDriver = false;
                   _tts.speak(AlertMessages.welcome(_tts.currentLang, _driverName));
+                  debugPrint('[Flow] Mid-trip driver verification successful: ID=$_driverId, Name=$_driverName. Updating trip start...');
+                  _sendTripStart();
                 } else if (_state.authStatus == AuthStatus.unauthorized) {
                   _isSpeedTriggeredTrip = false;
                   _state.isUnknownDriver = true;
@@ -2014,8 +2030,19 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
         }
       }
 
-      // Immediately resolve actual driver name from local cache prior to any UI render
-      final cachedDriver = _driversService.getDriverById(driverId);
+      // Resolve actual driver ID & name from local cache
+      Map<String, dynamic>? cachedDriver = _driversService.getDriverById(driverId);
+      if (cachedDriver == null || cachedDriver.isEmpty) {
+        final allDrivers = _driversService.getCachedDrivers();
+        for (final d in allDrivers) {
+          final dName = (d['fullName'] ?? d['name'] ?? d['driverName'] ?? d['nameEn'])?.toString().trim().toLowerCase();
+          if (dName != null && driverName.trim().toLowerCase().isNotEmpty && dName.contains(driverName.trim().toLowerCase())) {
+            cachedDriver = d;
+            break;
+          }
+        }
+      }
+
       if (cachedDriver != null && cachedDriver.isNotEmpty) {
         final rawCachedName =
             cachedDriver['fullName'] ??
@@ -2026,10 +2053,15 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
             rawCachedName.toString().trim().isNotEmpty) {
           driverName = rawCachedName.toString().trim();
         }
+        final cachedId = cachedDriver['id']?.toString();
+        if (cachedId != null && cachedId.isNotEmpty) {
+          driverId = cachedId;
+        }
       }
 
       _driverId = driverId;
       _driverName = driverName;
+      debugPrint('[Flow] Face matched driver: ID=$_driverId, Name=$_driverName');
 
       try {
         // Fetch live API data for the licence check.
@@ -2198,8 +2230,8 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       // Announce welcome message with driver name
       _tts.speak(AlertMessages.welcome(_tts.currentLang, _driverName));
 
-      // Hold on the confirmation screen for 3.0 seconds so driver sees their name & verification success
-      await Future.delayed(const Duration(milliseconds: 3000));
+      // Hold on the confirmation screen for 1.5 seconds so driver sees their name & verification success
+      await Future.delayed(const Duration(milliseconds: 1500));
       if (!mounted) return;
     } else if (!_isSpeedTriggeredTrip) {
       // Speak "Driver verification failed..." only if NOT a speed-triggered trip
@@ -2259,23 +2291,12 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   Future<void> _refreshDriversOnFaceDetection() async {
     _lastDriversRefreshAt = DateTime.now();
     if (!_isOnline) {
-      debugPrint('[Flow] Device is offline. Skipping API driver list refresh.');
+      debugPrint('[Flow] Device is offline. Using local cached driver templates.');
       if (!_authEngine.isEnrolled) {
-        debugPrint(
-          '[Flow] Auth engine not enrolled. Initializing from local storage/cache...',
-        );
         try {
-          setState(() {
-            _isRefreshingDrivers = true;
-            _state.authStatus = AuthStatus.scanning;
-          });
           await _authEngine.initialize();
         } catch (e) {
           debugPrint('[Flow] Error initializing auth engine offline: $e');
-        } finally {
-          if (mounted) {
-            setState(() => _isRefreshingDrivers = false);
-          }
         }
       }
       return;
@@ -5168,14 +5189,14 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
                 children: [
                   Icon(
                     Icons.language_rounded,
-                    color: _isOnline ? const Color(0xFF22C55E) : Colors.white,
+                    color: _isOnline ? const Color(0xFF22C55E) : const Color(0xFFEF4444),
                     size: 14,
                   ),
                   const SizedBox(width: 3),
                   Text(
                     _isOnline ? 'ONLINE' : 'OFFLINE',
-                    style: const TextStyle(
-                      color: Colors.white,
+                    style: TextStyle(
+                      color: _isOnline ? Colors.white : const Color(0xFFEF4444),
                       fontSize: 8,
                       fontWeight: FontWeight.w800,
                       letterSpacing: 0.3,
@@ -5190,14 +5211,14 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
                 children: [
                   Icon(
                     _isWifi ? Icons.wifi_rounded : Icons.wifi_off_rounded,
-                    color: _isWifi ? const Color(0xFF22C55E) : Colors.white,
+                    color: _isWifi ? const Color(0xFF22C55E) : const Color(0xFFEF4444),
                     size: 14,
                   ),
                   const SizedBox(width: 3),
-                  const Text(
-                    'WIFI',
+                  Text(
+                    _isWifi ? 'WIFI' : 'NO WIFI',
                     style: TextStyle(
-                      color: Colors.white,
+                      color: _isWifi ? Colors.white : const Color(0xFFEF4444),
                       fontSize: 8,
                       fontWeight: FontWeight.w800,
                       letterSpacing: 0.3,
@@ -5244,6 +5265,44 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
         ),
         _esp32StatusBanner(),
       ],
+    );
+  }
+
+  Widget _noNetworkWarningCard() {
+    if (_isOnline) return const SizedBox.shrink();
+
+    return Container(
+      margin: const EdgeInsets.only(bottom: 20),
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+      decoration: BoxDecoration(
+        color: const Color(0xFFDC2626).withValues(alpha: 0.90),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: Colors.white24, width: 1),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.4),
+            blurRadius: 10,
+            offset: const Offset(0, 4),
+          ),
+        ],
+      ),
+      child: const Row(
+        mainAxisSize: MainAxisSize.min,
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Icon(Icons.wifi_off_rounded, color: Colors.white, size: 20),
+          SizedBox(width: 10),
+          Text(
+            '⚠️  NO NETWORK CONNECTED',
+            style: TextStyle(
+              color: Colors.white,
+              fontSize: 13,
+              fontWeight: FontWeight.w800,
+              letterSpacing: 0.5,
+            ),
+          ),
+        ],
+      ),
     );
   }
 
@@ -5406,15 +5465,11 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
               mainAxisSize: MainAxisSize.min,
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
+                // Warning card when both Mobile Data and Wi-Fi are disconnected
+                _noNetworkWarningCard(),
                 // Centered Status Info Header
                 Text(
-                  _initializing
-                      ? 'Verifying your face…'
-                      : (isUnverified
-                            ? 'Unverified'
-                            : (isAuthenticating
-                                  ? 'Authenticating...'
-                                  : 'Verifying your face…')),
+                  isUnverified ? 'Unverified' : 'Verifying your face…',
                   style: TextStyle(
                     color: isUnverified ? Colors.redAccent : Colors.white,
                     fontSize: 24,
@@ -5424,15 +5479,11 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
                 ),
                 const SizedBox(height: 6),
                 Text(
-                  _initializing
-                      ? 'Hold still and look at the camera'
-                      : (_state.faceCount == 0
-                            ? 'Look at the camera'
-                            : (isUnverified
-                                  ? 'Face not recognised — keep looking'
-                                  : (isAuthenticating
-                                        ? 'Processing your face, please wait...'
-                                        : 'Hold still…'))),
+                  _state.faceCount == 0
+                      ? 'Look at the camera'
+                      : (isUnverified
+                            ? 'Face not recognised — keep looking'
+                            : 'Hold still and look at the camera'),
                   style: const TextStyle(
                     color: Colors.white70,
                     fontSize: 14,
@@ -5508,7 +5559,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
                           ),
                         ),
 
-                        // Small circular progress spinner or error icon at the center
+                        // Small circular progress spinner when processing, error icon when unverified, or clean person icon when waiting
                         Align(
                           alignment: Alignment.center,
                           child: SizedBox(
@@ -5520,10 +5571,16 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
                                     color: Colors.redAccent,
                                     size: 54,
                                   )
-                                : CircularProgressIndicator(
-                                    strokeWidth: 3,
-                                    color: themeColor,
-                                  ),
+                                : (isAuthenticating || _isRefreshingDrivers
+                                      ? CircularProgressIndicator(
+                                          strokeWidth: 3,
+                                          color: themeColor,
+                                        )
+                                      : const Icon(
+                                          Icons.person_outline_rounded,
+                                          color: Colors.white30,
+                                          size: 54,
+                                        )),
                           ),
                         ),
                       ],
