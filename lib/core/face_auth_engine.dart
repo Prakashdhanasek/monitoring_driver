@@ -43,6 +43,7 @@ class FaceAuthEngine {
 
   int _consecutiveMatch = 0;
   int _consecutiveMiss = 0;
+  DateTime? _unmatchedSince;
   static const int kMatchFrames = 3;
   static const int kMissFrames = 5;
 
@@ -152,6 +153,7 @@ class FaceAuthEngine {
         face.trackingId == state.authenticatedTrackingId) {
       _consecutiveMiss = 0;
       _consecutiveMatch = kMatchFrames;
+      _unmatchedSince = null;
       return;
     }
 
@@ -189,20 +191,6 @@ class FaceAuthEngine {
       bestLabel = '—|Unknown Driver';
     } else {
       for (int i = 0; i < _referenceEmbeddings.length; i++) {
-        final label = _referenceLabels[i];
-        // During initial verification (Phase.verifying), match against ALL enrolled drivers in local DB.
-        // Filter by activeDriverId ONLY during an active authenticated session.
-        if (activeDriverId != null &&
-            activeDriverId.isNotEmpty &&
-            activeDriverId != '—' &&
-            state.authStatus == AuthStatus.authenticated) {
-          final parts = label.split('|');
-          final refId = parts.isNotEmpty ? parts[0] : '';
-          if (refId != activeDriverId) {
-            continue; // Skip templates belonging to other drivers during active monitoring
-          }
-        }
-
         final d = _euclidean(_referenceEmbeddings[i], liveEmbedding);
         if (d < minDist) {
           minDist = d;
@@ -216,14 +204,28 @@ class FaceAuthEngine {
 
     state.authDistance = minDist;
 
+    // During active monitoring, only treat as match if best match is the active driver
+    bool isActiveDriverMatch = true;
+    if (activeDriverId != null &&
+        activeDriverId.isNotEmpty &&
+        activeDriverId != '—' &&
+        state.authStatus == AuthStatus.authenticated &&
+        bestLabel != null) {
+      final matchedId = bestLabel!.split('|').first;
+      if (matchedId != activeDriverId) {
+        isActiveDriverMatch = false;
+      }
+    }
+
     print(
       '[AuthDBG] minDist=$minDist bestLabel=$bestLabel '
-      'threshold=$kAuthThreshold',
+      'threshold=$kAuthThreshold activeMatch=$isActiveDriverMatch',
     );
 
-    if (minDist < kAuthThreshold) {
+    if (minDist < kAuthThreshold && isActiveDriverMatch) {
       _consecutiveMatch++;
       _consecutiveMiss = 0;
+      _unmatchedSince = null;
       lastMatchedLabel = bestLabel;
 
       final requiredMatchFrames = 3;
@@ -235,22 +237,40 @@ class FaceAuthEngine {
         }
       } else if (state.authStatus == AuthStatus.authenticated &&
           face.trackingId != null) {
-        // Already verified — re-lock tracking ID immediately on single match
         state.authenticatedTrackingId = face.trackingId;
       }
-    } else {
+    } else if (minDist < kAuthThreshold && !isActiveDriverMatch) {
+      // A DIFFERENT enrolled driver positively matched
       _consecutiveMiss++;
       _consecutiveMatch = 0;
+      _unmatchedSince = null;
       lastMatchedLabel = null;
 
-      // More frames required when already authenticated to avoid false "Driver Changed"
-      final requiredMisses = state.authStatus == AuthStatus.authenticated
-          ? 15
-          : 6;
-
+      final requiredMisses =
+          state.authStatus == AuthStatus.authenticated ? 15 : 6;
       if (_consecutiveMiss >= requiredMisses) {
         state.authStatus = AuthStatus.unauthorized;
         state.authenticatedTrackingId = null;
+      }
+    } else {
+      // No match at all
+      _consecutiveMatch = 0;
+      lastMatchedLabel = null;
+
+      if (state.authStatus == AuthStatus.authenticated) {
+        // Time-based: 5s of continuous no-match needed to trigger driver change
+        _unmatchedSince ??= DateTime.now();
+        if (DateTime.now().difference(_unmatchedSince!).inSeconds >= 5) {
+          state.authStatus = AuthStatus.unauthorized;
+          state.authenticatedTrackingId = null;
+          _unmatchedSince = null;
+        }
+      } else {
+        _consecutiveMiss++;
+        if (_consecutiveMiss >= 6) {
+          state.authStatus = AuthStatus.unauthorized;
+          state.authenticatedTrackingId = null;
+        }
       }
     }
   }
@@ -264,6 +284,7 @@ class FaceAuthEngine {
     lastMatchedLabel = null;
     _consecutiveMatch = 0;
     _consecutiveMiss = 0;
+    _unmatchedSince = null;
     await _enrollFromReferencePhotos();
   }
 
@@ -272,6 +293,7 @@ class FaceAuthEngine {
     lastMatchedLabel = null;
     _consecutiveMatch = 0;
     _consecutiveMiss = 0;
+    _unmatchedSince = null;
   }
 
   /// Synchronously clears all enrolled face data so [processAuth] cannot
@@ -287,6 +309,7 @@ class FaceAuthEngine {
     lastMatchedLabel = null;
     _consecutiveMatch = 0;
     _consecutiveMiss = 0;
+    _unmatchedSince = null;
   }
 
   Future<void> clearCache() async {
@@ -298,6 +321,7 @@ class FaceAuthEngine {
     lastMatchedLabel = null;
     _consecutiveMatch = 0;
     _consecutiveMiss = 0;
+    _unmatchedSince = null;
   }
   // ── MobileFaceNet Model Loading ────────────────────────────────────────────
 

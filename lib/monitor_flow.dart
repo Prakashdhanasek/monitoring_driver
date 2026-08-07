@@ -225,6 +225,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   Map<String, int> _apiCooldownSeconds = {};
   final Map<String, DateTime> _lastVoiceAlertAt = {};
   final Map<String, DateTime> _lastCooldownLogAt = {};
+  final Map<String, DateTime> _lastFrontendAlertAt = {};
   String? _activeBannerKey;
   DateTime? _activeBannerAt;
   static const Duration _kBannerVisibleDuration = Duration(seconds: 3);
@@ -277,12 +278,15 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   double _accelSpeedEstimateKmH = 0.0;
   DateTime? _lastAccelTime;
   int _accelSustainedMotionTicks = 0;
-  static const int _kTripEndSeconds = 30; // 10 minutes
+  static const int _kTripEndSeconds = 30;
+  static const int _kNoFaceGraceSeconds = 5;
 
   bool _isDriverChangedActive() {
     // Only trigger Driver Changed if the trip session started as a verified registered driver.
     // Unknown driver trips should never trigger Driver Changed alerts.
-    if (_state.isUnknownDriver || _driverId == '—' || _driverName == 'Unknown Driver') {
+    if (_state.isUnknownDriver ||
+        _driverId == '—' ||
+        _driverName == 'Unknown Driver') {
       return false;
     }
     // 5-second grace period after entering monitoring screen so initial camera frames lock on cleanly
@@ -303,7 +307,8 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   }
 
   void _checkVerifyingPhaseFallback() {
-    if (_phase != Phase.verifying || _isRefreshingDrivers || _initializing) return;
+    if (_phase != Phase.verifying || _isRefreshingDrivers || _initializing)
+      return;
     final now = DateTime.now();
     _verifyingStartedAt ??= now;
 
@@ -319,7 +324,9 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     }
 
     final bool isVehicleMoving =
-        _consecutiveSpeedTicks >= 1 || _state.vehicleSpeed > 3.0 || _accelSpeedEstimateKmH >= 3.0;
+        _consecutiveSpeedTicks >= 1 ||
+        _state.vehicleSpeed > 3.0 ||
+        _accelSpeedEstimateKmH >= 3.0;
 
     // Transition to monitoring ONLY when vehicle is actually moving (> 3 km/h)
     if (isVehicleMoving && !_isRefreshingDrivers) {
@@ -509,55 +516,64 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
 
   void _startAccelerometerMotionDetection() {
     _accelMotionSub?.cancel();
-    _accelMotionSub = userAccelerometerEventStream(
-      samplingPeriod: SensorInterval.normalInterval,
-    ).listen((UserAccelerometerEvent event) {
-      final now = DateTime.now();
-      if (_lastAccelTime == null) {
-        _lastAccelTime = now;
-        return;
-      }
-      final dt = now.difference(_lastAccelTime!).inMilliseconds / 1000.0;
-      _lastAccelTime = now;
+    _accelMotionSub =
+        userAccelerometerEventStream(
+          samplingPeriod: SensorInterval.normalInterval,
+        ).listen(
+          (UserAccelerometerEvent event) {
+            final now = DateTime.now();
+            if (_lastAccelTime == null) {
+              _lastAccelTime = now;
+              return;
+            }
+            final dt = now.difference(_lastAccelTime!).inMilliseconds / 1000.0;
+            _lastAccelTime = now;
 
-      // Calculate 3D linear acceleration magnitude (m/s^2) excluding gravity
-      final mag = sqrt(event.x * event.x + event.y * event.y + event.z * event.z);
+            // Calculate 3D linear acceleration magnitude (m/s^2) excluding gravity
+            final mag = sqrt(
+              event.x * event.x + event.y * event.y + event.z * event.z,
+            );
 
-      // Filter out hand movements: Real vehicle acceleration requires sustained magnitude > 1.3 m/s²
-      if (mag > 1.3 && dt > 0.01 && dt < 1.0) {
-        _accelSustainedMotionTicks++;
-        // Require at least 8 continuous sustained motion ticks (~1.5s of vehicle acceleration)
-        if (_accelSustainedMotionTicks >= 8) {
-          _accelSpeedEstimateKmH += (mag * dt) * 3.6;
-          if (_accelSpeedEstimateKmH > 35.0) {
-            _accelSpeedEstimateKmH = 35.0; // clamp max estimate
-          }
-        }
-      } else {
-        _accelSustainedMotionTicks = 0;
-        // Fast decay when device is held by hand or stationary
-        _accelSpeedEstimateKmH *= 0.70;
-        if (_accelSpeedEstimateKmH < 0.1) _accelSpeedEstimateKmH = 0.0;
-      }
+            // Filter out hand movements: Real vehicle acceleration requires sustained magnitude > 1.3 m/s²
+            if (mag > 1.3 && dt > 0.01 && dt < 1.0) {
+              _accelSustainedMotionTicks++;
+              // Require at least 8 continuous sustained motion ticks (~1.5s of vehicle acceleration)
+              if (_accelSustainedMotionTicks >= 8) {
+                _accelSpeedEstimateKmH += (mag * dt) * 3.6;
+                if (_accelSpeedEstimateKmH > 35.0) {
+                  _accelSpeedEstimateKmH = 35.0; // clamp max estimate
+                }
+              }
+            } else {
+              _accelSustainedMotionTicks = 0;
+              // Fast decay when device is held by hand or stationary
+              _accelSpeedEstimateKmH *= 0.70;
+              if (_accelSpeedEstimateKmH < 0.1) _accelSpeedEstimateKmH = 0.0;
+            }
 
-      // Accelerometer motion: update vehicleSpeed ONLY during sustained vehicle driving (> 2.5s continuous acceleration)
-      if (_phase != Phase.verifying &&
-          _state.vehicleSpeed <= 0.5 &&
-          _accelSpeedEstimateKmH >= 3.0 &&
-          _accelSustainedMotionTicks >= 12) {
-        _state.vehicleSpeed = _accelSpeedEstimateKmH;
-      }
+            // Accelerometer motion: update vehicleSpeed ONLY during sustained vehicle driving (> 2.5s continuous acceleration)
+            if (_phase != Phase.verifying &&
+                _state.vehicleSpeed <= 0.5 &&
+                _accelSpeedEstimateKmH >= 3.0 &&
+                _accelSustainedMotionTicks >= 12) {
+              _state.vehicleSpeed = _accelSpeedEstimateKmH;
+            }
 
-      // If Trip Completed screen is active and vehicle starts moving >= 3.0 km/h:
-      if (_tripCompleted && (_accelSpeedEstimateKmH >= 3.0 || _state.vehicleSpeed > 3.0)) {
-        _startReverification().then((_) => _checkVerifyingPhaseFallback());
-      } else if (_phase == Phase.verifying &&
-          (_state.vehicleSpeed > 3.0 || _accelSpeedEstimateKmH >= 3.0)) {
-        _checkVerifyingPhaseFallback();
-      }
-    }, onError: (e) {
-      debugPrint('[MotionSensor] Accelerometer error: $e');
-    });
+            // If Trip Completed screen is active and vehicle starts moving >= 3.0 km/h:
+            if (_tripCompleted &&
+                (_accelSpeedEstimateKmH >= 3.0 || _state.vehicleSpeed > 3.0)) {
+              _startReverification().then(
+                (_) => _checkVerifyingPhaseFallback(),
+              );
+            } else if (_phase == Phase.verifying &&
+                (_state.vehicleSpeed > 3.0 || _accelSpeedEstimateKmH >= 3.0)) {
+              _checkVerifyingPhaseFallback();
+            }
+          },
+          onError: (e) {
+            debugPrint('[MotionSensor] Accelerometer error: $e');
+          },
+        );
   }
 
   /// Loads per-incident interval settings from the API and maps the API's
@@ -1557,7 +1573,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
 
         if (_phase == Phase.verifying && speedKmH > 3.0) {
           _checkVerifyingPhaseFallback();
-        } 
+        }
         _state.gpsLat = position.latitude;
         _state.gpsLng = position.longitude;
         _state.vehicleSpeed = speedKmH;
@@ -1738,8 +1754,9 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
               // Face present but does not match any enrolled DB driver.
               // Proceed to monitoring as Unknown Driver if vehicle is moving > 3 km/h OR after 3 seconds.
               _unmatchedFaceSince ??= DateTime.now();
-              final elapsedMs =
-                  DateTime.now().difference(_unmatchedFaceSince!).inMilliseconds;
+              final elapsedMs = DateTime.now()
+                  .difference(_unmatchedFaceSince!)
+                  .inMilliseconds;
               if (_state.vehicleSpeed > 3.0 || elapsedMs >= 3000) {
                 _verifyingStartedAt = null;
                 _unmatchedFaceSince = null;
@@ -1787,25 +1804,42 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
                     if (label.contains('|')) {
                       final parts = label.split('|');
                       _driverId = parts.isNotEmpty ? parts[0] : '—';
-                      _driverName = parts.length > 1 ? parts.sublist(1).join('|') : '';
+                      _driverName = parts.length > 1
+                          ? parts.sublist(1).join('|')
+                          : '';
                     } else {
                       _driverId = label;
                     }
                   }
                   // Fallback: Resolve driver ID from local cache by driverName if ID is missing
-                  if (_driverId == '—' || _driverId == 'unknown' || _driverId.isEmpty) {
+                  if (_driverId == '—' ||
+                      _driverId == 'unknown' ||
+                      _driverId.isEmpty) {
                     final allDrivers = _driversService.getCachedDrivers();
                     for (final d in allDrivers) {
-                      final dName = (d['fullName'] ?? d['name'] ?? d['driverName'] ?? d['nameEn'])?.toString().trim().toLowerCase();
-                      if (dName != null && _driverName.trim().toLowerCase().isNotEmpty && dName.contains(_driverName.trim().toLowerCase())) {
+                      final dName =
+                          (d['fullName'] ??
+                                  d['name'] ??
+                                  d['driverName'] ??
+                                  d['nameEn'])
+                              ?.toString()
+                              .trim()
+                              .toLowerCase();
+                      if (dName != null &&
+                          _driverName.trim().toLowerCase().isNotEmpty &&
+                          dName.contains(_driverName.trim().toLowerCase())) {
                         _driverId = d['id']?.toString() ?? _driverId;
                         break;
                       }
                     }
                   }
                   _state.isUnknownDriver = false;
-                  _tts.speak(AlertMessages.welcome(_tts.currentLang, _driverName));
-                  debugPrint('[Flow] Mid-trip driver verification successful: ID=$_driverId, Name=$_driverName. Updating trip start...');
+                  _tts.speak(
+                    AlertMessages.welcome(_tts.currentLang, _driverName),
+                  );
+                  debugPrint(
+                    '[Flow] Mid-trip driver verification successful: ID=$_driverId, Name=$_driverName. Updating trip start...',
+                  );
                   _sendTripStart();
                 } else if (_state.authStatus == AuthStatus.unauthorized) {
                   _isSpeedTriggeredTrip = false;
@@ -1816,7 +1850,9 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
 
             if (_tripCompleted) {
               if (_state.vehicleSpeed > 3.0 || _accelSpeedEstimateKmH >= 3.0) {
-                _startReverification().then((_) => _checkVerifyingPhaseFallback());
+                _startReverification().then(
+                  (_) => _checkVerifyingPhaseFallback(),
+                );
                 break;
               }
               if (_tripCompletedAt != null &&
@@ -1837,7 +1873,9 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
               _multiFace = 0;
               final face = faces.first;
               // Continuous identity check — run ONLY IF trip started as a verified registered driver
-              if (!_state.isUnknownDriver && _driverId != '—' && _driverName != 'Unknown Driver') {
+              if (!_state.isUnknownDriver &&
+                  _driverId != '—' &&
+                  _driverName != 'Unknown Driver') {
                 final now = DateTime.now();
                 if (_lastAuthAttemptAt == null ||
                     now.difference(_lastAuthAttemptAt!).inMilliseconds >= 100) {
@@ -1890,7 +1928,9 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
               if (_state.vehicleSpeed <= 3.0) {
                 _stationarySpeedSince ??= DateTime.now();
                 if (!_tripCompleted &&
-                    DateTime.now().difference(_stationarySpeedSince!).inSeconds >=
+                    DateTime.now()
+                            .difference(_stationarySpeedSince!)
+                            .inSeconds >=
                         _kTripEndSeconds) {
                   _tripCompleted = true;
                   _tripCompletedAt = DateTime.now();
@@ -1908,7 +1948,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
               _noFaceSince ??= DateTime.now();
               if (!_tripCompleted &&
                   DateTime.now().difference(_noFaceSince!).inSeconds >=
-                      _kTripEndSeconds) {
+                      _kNoFaceGraceSeconds + _kTripEndSeconds) {
                 _tripCompleted = true;
                 _tripCompletedAt = DateTime.now();
                 _breakAlertTimer?.cancel();
@@ -2032,12 +2072,20 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       }
 
       // Resolve actual driver ID & name from local cache
-      Map<String, dynamic>? cachedDriver = _driversService.getDriverById(driverId);
+      Map<String, dynamic>? cachedDriver = _driversService.getDriverById(
+        driverId,
+      );
       if (cachedDriver == null || cachedDriver.isEmpty) {
         final allDrivers = _driversService.getCachedDrivers();
         for (final d in allDrivers) {
-          final dName = (d['fullName'] ?? d['name'] ?? d['driverName'] ?? d['nameEn'])?.toString().trim().toLowerCase();
-          if (dName != null && driverName.trim().toLowerCase().isNotEmpty && dName.contains(driverName.trim().toLowerCase())) {
+          final dName =
+              (d['fullName'] ?? d['name'] ?? d['driverName'] ?? d['nameEn'])
+                  ?.toString()
+                  .trim()
+                  .toLowerCase();
+          if (dName != null &&
+              driverName.trim().toLowerCase().isNotEmpty &&
+              dName.contains(driverName.trim().toLowerCase())) {
             cachedDriver = d;
             break;
           }
@@ -2062,7 +2110,9 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
 
       _driverId = driverId;
       _driverName = driverName;
-      debugPrint('[Flow] Face matched driver: ID=$_driverId, Name=$_driverName');
+      debugPrint(
+        '[Flow] Face matched driver: ID=$_driverId, Name=$_driverName',
+      );
 
       try {
         // Fetch live API data for the licence check.
@@ -2292,7 +2342,9 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   Future<void> _refreshDriversOnFaceDetection() async {
     _lastDriversRefreshAt = DateTime.now();
     if (!_isOnline) {
-      debugPrint('[Flow] Device is offline. Using local cached driver templates.');
+      debugPrint(
+        '[Flow] Device is offline. Using local cached driver templates.',
+      );
       if (!_authEngine.isEnrolled) {
         try {
           await _authEngine.initialize();
@@ -2910,6 +2962,18 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     'drinking': 60,
   };
 
+  // Map banner keys to incident cooldown labels for API-interval gating
+  static const Map<String, String> _kBannerToCooldownLabel = {
+    'phone': 'Phone Usage',
+    'smoke': 'Smoking',
+    'eating': 'Eating',
+    'drinking': 'Drinking',
+    'distracted': 'Distraction',
+    'multiple': 'Distraction',
+    'asleep': 'Sleepiness',
+    'drowsy': 'Drowsiness',
+  };
+
   int _getCooldownForLabel(String label) {
     return _apiCooldownSeconds[label] ?? _kIncidentCooldownSeconds[label] ?? 60;
     // return _kIncidentCooldownSeconds[label] ?? 60; // default 60s
@@ -2952,6 +3016,24 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     return false;
   }
 
+  bool _checkFrontendCooldown(String label) {
+    final now = DateTime.now();
+    final cooldown = _getCooldownForLabel(label);
+    final last = _lastFrontendAlertAt[label];
+    if (last != null && now.difference(last).inSeconds < cooldown) return false;
+    _lastFrontendAlertAt[label] = now;
+    return true;
+  }
+
+  // Read-only check: true if within cooldown and past the initial 3s banner display
+  bool _isBannerInCooldown(String label) {
+    final last = _lastFrontendAlertAt[label];
+    if (last == null) return false;
+    final elapsed = DateTime.now().difference(last).inSeconds;
+    if (elapsed <= 3) return false;
+    return elapsed < _getCooldownForLabel(label);
+  }
+
   Future<void> _handleAlertSounds(CameraImage? currentImage) async {
     final now = DateTime.now();
     final phone = _state.hasPhone;
@@ -2972,15 +3054,13 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
           }
         }
 
-        // Report driver changed incident to API immediately upon detection
-        _reportIncident('Driver Changed', 'High', 1.0);
-        _tts.speak(AlertMessages.unauthorized(_tts.currentLang));
-        _playAlert('audio/alert_loud.mp3');
+        if (_checkFrontendCooldown('Driver Changed')) {
+          _reportIncident('Driver Changed', 'High', 1.0);
+          _tts.speak(AlertMessages.unauthorized(_tts.currentLang));
+          _playAlert('audio/alert_loud.mp3');
+          _driverChangedBannerAt = now;
+        }
 
-        // Trigger banner on screen for 5 seconds
-        _driverChangedBannerAt = now;
-
-        // Start 5-minute (300s) cooldown after reporting
         _lastDriverChangedReportAt = now;
         _unauthorizedStart = null;
       }
@@ -2998,6 +3078,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
         now.difference(_monitoringStartedAt!).inSeconds <
             _kSeatbeltGraceSeconds;
     if (!_state.seatbeltBuckled &&
+        _state.calibrated &&
         _phase == Phase.monitoring &&
         !_tripCompleted &&
         !seatbeltGraceActive) {
@@ -3021,18 +3102,19 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
         _seatbeltPhaseStart = now;
       }
 
-      // Play beep during beep phase (uses global 3s cooldown below)
-      if (_seatbeltInBeepPhase) {
+      // Beep + report + voice all gated by API interval
+      if (_seatbeltInBeepPhase && _checkFrontendCooldown('seatbelt')) {
         soft = true;
       }
 
-      // Report incident with Medium severity
       if (_checkCooldown('seatbelt')) {
         _reportIncident('Seatbelt Not Worn', 'Medium', 1.0);
       }
 
-      // Speak warning once immediately, then once every 1 minute if still unbuckled
-      if (_checkVoiceCooldown('seatbelt', const Duration(minutes: 1))) {
+      if (_checkVoiceCooldown(
+        'seatbelt',
+        Duration(seconds: _getCooldownForLabel('seatbelt')),
+      )) {
         _tts.speak(AlertMessages.seatbelt(_tts.currentLang));
       }
     } else {
@@ -3043,20 +3125,20 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       _lastVoiceAlertAt.remove('seatbelt');
     }
     if (_state.drowsinessLevel == DrowsinessLevel.asleep) {
-      loud = true;
+      if (_checkFrontendCooldown('Sleepiness')) loud = true;
 
       if (_checkCooldown('Sleepiness')) {
         _reportIncident('Sleepiness', 'Critical', 1.0);
       }
     } else if (_state.drowsinessLevel == DrowsinessLevel.drowsy) {
-      soft = true;
+      if (_checkFrontendCooldown('Drowsiness')) soft = true;
 
       if (_checkCooldown('Drowsiness')) {
         _reportIncident('Drowsiness', 'Critical', 0.8);
       }
     }
     if (_state.distractionStatus == DistractionStatus.distracted) {
-      soft = true;
+      if (_checkFrontendCooldown('Distraction')) soft = true;
       if (_checkCooldown('Distraction')) {
         _reportIncident('Distraction', 'High', 0.8);
       }
@@ -3064,11 +3146,14 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
 
     // ── OVERSPEED ALERT ──────────────────────────────────────
     if (_overspeedThreshold > 0 && _state.vehicleSpeed > _overspeedThreshold) {
-      loud = true;
+      if (_checkFrontendCooldown('Overspeeding')) loud = true;
       if (_checkCooldown('Overspeeding')) {
         _reportIncident('Overspeeding', 'High', 1.0);
       }
-      if (_checkVoiceCooldown('overspeed', const Duration(seconds: 15))) {
+      if (_checkVoiceCooldown(
+        'overspeed',
+        Duration(seconds: _getCooldownForLabel('Overspeeding')),
+      )) {
         _tts.speak(AlertMessages.overspeed(_tts.currentLang));
       }
     }
@@ -3086,7 +3171,6 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       final threshold = reportThresholds[label];
       if (threshold == null || obj.confidence <= threshold) continue;
       if (label == 'seatbelt') continue;
-      loud = true;
 
       String eventType = label;
       if (label == 'phone') eventType = 'Phone Usage';
@@ -3094,7 +3178,8 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       if (label == 'eating') eventType = 'Eating';
       if (label == 'drinking') eventType = 'Drinking';
 
-      // Severity: Phone/Smoking/Eating/Drinking = Medium
+      if (_checkFrontendCooldown(eventType)) loud = true;
+
       if (_checkCooldown(eventType)) {
         _reportIncident(eventType, 'Medium', obj.confidence);
       }
@@ -3113,8 +3198,10 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
 
     // --- Unified TTS Logic based on Banner Priority ---
     if (currentBannerKey != null && currentBannerKey != 'harsh') {
-      final int cooldownSeconds =
-          _kVoiceCooldownSeconds[currentBannerKey] ?? 30;
+      final cooldownLabel = _kBannerToCooldownLabel[currentBannerKey];
+      final int cooldownSeconds = cooldownLabel != null
+          ? _getCooldownForLabel(cooldownLabel)
+          : (_kVoiceCooldownSeconds[currentBannerKey] ?? 30);
 
       if (_checkVoiceCooldown(
         currentBannerKey,
@@ -5190,7 +5277,9 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
                 children: [
                   Icon(
                     Icons.language_rounded,
-                    color: _isOnline ? const Color(0xFF22C55E) : const Color(0xFFEF4444),
+                    color: _isOnline
+                        ? const Color(0xFF22C55E)
+                        : const Color(0xFFEF4444),
                     size: 14,
                   ),
                   const SizedBox(width: 3),
@@ -5212,7 +5301,9 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
                 children: [
                   Icon(
                     _isWifi ? Icons.wifi_rounded : Icons.wifi_off_rounded,
-                    color: _isWifi ? const Color(0xFF22C55E) : const Color(0xFFEF4444),
+                    color: _isWifi
+                        ? const Color(0xFF22C55E)
+                        : const Color(0xFFEF4444),
                     size: 14,
                   ),
                   const SizedBox(width: 3),
@@ -5345,7 +5436,8 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     // }
 
     final isVerified =
-        _state.authStatus == AuthStatus.authenticated && !_state.isUnknownDriver;
+        _state.authStatus == AuthStatus.authenticated &&
+        !_state.isUnknownDriver;
 
     if (isVerified) {
       return Container(
@@ -5363,7 +5455,10 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
                     decoration: BoxDecoration(
                       color: const Color(0xFF10B981).withValues(alpha: 0.2),
                       shape: BoxShape.circle,
-                      border: Border.all(color: const Color(0xFF10B981), width: 3),
+                      border: Border.all(
+                        color: const Color(0xFF10B981),
+                        width: 3,
+                      ),
                       boxShadow: [
                         BoxShadow(
                           color: const Color(0xFF10B981).withValues(alpha: 0.4),
@@ -5391,16 +5486,25 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
                   ),
                   const SizedBox(height: 10),
                   Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 16,
+                      vertical: 8,
+                    ),
                     decoration: BoxDecoration(
                       color: const Color(0xFF10B981).withValues(alpha: 0.15),
                       borderRadius: BorderRadius.circular(20),
-                      border: Border.all(color: const Color(0xFF10B981).withValues(alpha: 0.4)),
+                      border: Border.all(
+                        color: const Color(0xFF10B981).withValues(alpha: 0.4),
+                      ),
                     ),
                     child: const Row(
                       mainAxisSize: MainAxisSize.min,
                       children: [
-                        Icon(Icons.verified_rounded, color: Color(0xFF10B981), size: 18),
+                        Icon(
+                          Icons.verified_rounded,
+                          color: Color(0xFF10B981),
+                          size: 18,
+                        ),
                         SizedBox(width: 8),
                         Text(
                           'Driver Verification Successful',
@@ -5426,7 +5530,10 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
                   if (_vehicleRegNo != null && _vehicleRegNo!.isNotEmpty) ...[
                     const SizedBox(height: 20),
                     Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 14,
+                        vertical: 6,
+                      ),
                       decoration: BoxDecoration(
                         color: Colors.white10,
                         borderRadius: BorderRadius.circular(12),
@@ -5587,8 +5694,6 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
                       ],
                     ),
                   ),
-
-
 
                 // Centered feedback card below scanner (only when a face is detected)
                 if (_state.faceCount > 0 &&
@@ -5865,6 +5970,8 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
           // _deviceMotionCard(),
           const SizedBox(height: 10),
           if (_noFaceSince != null &&
+              DateTime.now().difference(_noFaceSince!).inSeconds >=
+                  _kNoFaceGraceSeconds &&
               !_tripCompleted &&
               !(_isSpeedTriggeredTrip && !_faceCapturedThisTrip))
             _noDriverCountdown(),
@@ -6179,7 +6286,9 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   /// Shown while no driver is in view — counts down the seconds until the
   /// current trip auto-completes (_kTripEndSeconds).
   Widget _noDriverCountdown() {
-    final elapsed = DateTime.now().difference(_noFaceSince!).inSeconds;
+    final elapsed =
+        DateTime.now().difference(_noFaceSince!).inSeconds -
+        _kNoFaceGraceSeconds;
     final remaining = (_kTripEndSeconds - elapsed).clamp(0, _kTripEndSeconds);
     final mins = remaining ~/ 60;
     final secs = remaining % 60;
@@ -6686,7 +6795,8 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     }
 
     final bannerStart = _activeBannerAt;
-    if (bannerStart != null &&
+    if (currentKey != 'unauthorized' &&
+        bannerStart != null &&
         DateTime.now().difference(bannerStart) > _kBannerVisibleDuration) {
       return const SizedBox.shrink();
     }
@@ -6738,7 +6848,8 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       fg = Colors.black;
       text = '⚠  DISTRACTION DETECTED EYES ON THE ROAD';
     } else if (currentKey == 'unauthorized' ||
-        (_state.authStatus == AuthStatus.unauthorized && !_state.isUnknownDriver)) {
+        (_state.authStatus == AuthStatus.unauthorized &&
+            !_state.isUnknownDriver)) {
       bg = const Color(0xFFDC2626);
       text = '⚠  DRIVER CHANGED';
     } else if (_state.authStatus == AuthStatus.multipleFaces) {
@@ -6774,13 +6885,21 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
         DateTime.now().difference(_harshEventAt!) <= _kBannerVisibleDuration) {
       return 'harsh';
     }
-    if (phone) return 'phone';
-    if (_state.drowsinessLevel == DrowsinessLevel.asleep) return 'asleep';
-    if (smoke) return 'smoke';
-    if (_state.hasEating || _state.isChewing) return 'eating';
-    if (_state.hasDrinking) return 'drinking';
-    if (_state.drowsinessLevel == DrowsinessLevel.drowsy) return 'drowsy';
-    if (_state.distractionStatus == DistractionStatus.distracted)
+    if (phone && !_isBannerInCooldown('Phone Usage')) return 'phone';
+    if (_state.drowsinessLevel == DrowsinessLevel.asleep &&
+        !_isBannerInCooldown('Sleepiness'))
+      return 'asleep';
+    if (smoke && !_isBannerInCooldown('Smoking')) return 'smoke';
+    if ((_state.hasEating || _state.isChewing) &&
+        !_isBannerInCooldown('Eating'))
+      return 'eating';
+    if (_state.hasDrinking && !_isBannerInCooldown('Drinking'))
+      return 'drinking';
+    if (_state.drowsinessLevel == DrowsinessLevel.drowsy &&
+        !_isBannerInCooldown('Drowsiness'))
+      return 'drowsy';
+    if (_state.distractionStatus == DistractionStatus.distracted &&
+        !_isBannerInCooldown('Distraction'))
       return 'distracted';
     if (_state.authStatus == AuthStatus.unauthorized && !_state.isUnknownDriver)
       return 'unauthorized';
