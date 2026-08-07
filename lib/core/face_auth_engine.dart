@@ -222,7 +222,8 @@ class FaceAuthEngine {
     );
 
     // Strict biometric Euclidean distance threshold: 0.78 prevents false matching of different people
-    final double effectiveThreshold = 0.78;
+    final double effectiveThreshold =
+    0.78;
 
     if (minDist < effectiveThreshold) {
       _consecutiveMatch++;
