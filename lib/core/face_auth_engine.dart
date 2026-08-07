@@ -246,8 +246,9 @@ class FaceAuthEngine {
       _unmatchedSince = null;
       lastMatchedLabel = null;
 
-      final requiredMisses =
-          state.authStatus == AuthStatus.authenticated ? 15 : 6;
+      final requiredMisses = state.authStatus == AuthStatus.authenticated
+          ? 15
+          : 6;
       if (_consecutiveMiss >= requiredMisses) {
         state.authStatus = AuthStatus.unauthorized;
         state.authenticatedTrackingId = null;
