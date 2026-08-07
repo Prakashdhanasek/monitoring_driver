@@ -1734,12 +1734,13 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
               _unmatchedFaceSince = null;
               _capturedFace = _captureFaceJpeg(image, targetWidth: 480);
               _onVerified(isMatched: true);
-            } else if (_state.authStatus == AuthStatus.unauthorized &&
-                _state.vehicleSpeed > 3.0) {
-              // Face present but doesn't match. Proceed ONLY if vehicle is moving > 3 km/h
+            } else if (_state.authStatus == AuthStatus.unauthorized) {
+              // Face present but does not match any enrolled DB driver.
+              // Proceed to monitoring as Unknown Driver if vehicle is moving > 3 km/h OR after 3 seconds.
               _unmatchedFaceSince ??= DateTime.now();
-              if (DateTime.now().difference(_unmatchedFaceSince!).inSeconds >=
-                  10) {
+              final elapsedMs =
+                  DateTime.now().difference(_unmatchedFaceSince!).inMilliseconds;
+              if (_state.vehicleSpeed > 3.0 || elapsedMs >= 3000) {
                 _verifyingStartedAt = null;
                 _unmatchedFaceSince = null;
                 _capturedFace = _captureFaceJpeg(image, targetWidth: 480);
