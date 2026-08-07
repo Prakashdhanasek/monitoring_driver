@@ -53,10 +53,10 @@ class FaceAuthEngine {
   }
 
   List<double>? extractLiveEmbedding(
-      CameraImage image,
-      int rotation,
-      Rect boundingBox,
-      ) {
+    CameraImage image,
+    int rotation,
+    Rect boundingBox,
+  ) {
     return _embedFaceFromCameraImage(image, rotation, boundingBox);
   }
 
@@ -120,12 +120,12 @@ class FaceAuthEngine {
 
   /// Called every N frames with the live MLKit face and raw camera YUV bytes
   void processAuth(
-      Face face,
-      MonitorState state,
-      CameraImage image,
-      int rotation, {
-        String? activeDriverId,
-      }) {
+    Face face,
+    MonitorState state,
+    CameraImage image,
+    int rotation, {
+    String? activeDriverId,
+  }) {
     // Model still loading -> keep scanning.
     if (!_modelLoaded) {
       state.authStatus = AuthStatus.scanning;
@@ -218,14 +218,10 @@ class FaceAuthEngine {
 
     print(
       '[AuthDBG] minDist=$minDist bestLabel=$bestLabel '
-          'threshold=$kAuthThreshold',
+      'threshold=$kAuthThreshold',
     );
 
-    // Strict biometric Euclidean distance threshold: 0.78 prevents false matching of different people
-    final double effectiveThreshold =
-    0.78;
-
-    if (minDist < effectiveThreshold) {
+    if (minDist < kAuthThreshold) {
       _consecutiveMatch++;
       _consecutiveMiss = 0;
       lastMatchedLabel = bestLabel;
@@ -235,16 +231,22 @@ class FaceAuthEngine {
       if (_consecutiveMatch >= requiredMatchFrames) {
         state.authStatus = AuthStatus.authenticated;
         if (face.trackingId != null) {
-          state.authenticatedTrackingId = face.trackingId; // Lock on to physical face
+          state.authenticatedTrackingId = face.trackingId;
         }
+      } else if (state.authStatus == AuthStatus.authenticated &&
+          face.trackingId != null) {
+        // Already verified — re-lock tracking ID immediately on single match
+        state.authenticatedTrackingId = face.trackingId;
       }
     } else {
       _consecutiveMiss++;
       _consecutiveMatch = 0;
       lastMatchedLabel = null;
 
-      // Driver swap: 6 consecutive mismatch frames (~0.6s) when a DIFFERENT physical person sits down
-      const requiredMisses = 6;
+      // More frames required when already authenticated to avoid false "Driver Changed"
+      final requiredMisses = state.authStatus == AuthStatus.authenticated
+          ? 15
+          : 6;
 
       if (_consecutiveMiss >= requiredMisses) {
         state.authStatus = AuthStatus.unauthorized;
@@ -358,7 +360,9 @@ class FaceAuthEngine {
           if (faces.isNotEmpty) {
             embedding = _embedFaceFromJpeg(imageBytes, faces.first.boundingBox);
           } else {
-            print('[Auth] ML Kit detected 0 faces in $fileName — using full image fallback.');
+            print(
+              '[Auth] ML Kit detected 0 faces in $fileName — using full image fallback.',
+            );
             embedding = _embedFaceFromJpeg(imageBytes, null);
           }
 
@@ -369,8 +373,7 @@ class FaceAuthEngine {
             if (fileName.contains('__')) {
               final parts = fileName.split('__');
               if (parts.isNotEmpty) driverId = parts[0];
-              if (parts.length >= 2)
-                driverName = parts[1].replaceAll('_', ' ');
+              if (parts.length >= 2) driverName = parts[1].replaceAll('_', ' ');
             } else {
               final parts = fileName.split('_');
               if (parts.isNotEmpty) {
@@ -515,7 +518,7 @@ class FaceAuthEngine {
         );
         print(
           '[Auth] Now storing ${_referenceEmbeddings.length} total embeddings '
-              'in secure storage.',
+          'in secure storage.',
         );
       } catch (e) {
         print('[Auth] Storage write failed: $e');
@@ -581,10 +584,10 @@ class FaceAuthEngine {
   // ── Face Embedding from YUV camera frame (live auth) ──────────────────────
 
   List<double>? _embedFaceFromCameraImage(
-      CameraImage image,
-      int rotation,
-      Rect box,
-      ) {
+    CameraImage image,
+    int rotation,
+    Rect box,
+  ) {
     if (image.planes.isEmpty) return null;
 
     try {
