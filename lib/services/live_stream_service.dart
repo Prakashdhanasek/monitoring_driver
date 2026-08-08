@@ -24,13 +24,23 @@ class LiveStreamService {
   DateTime? _streamingStartedAt;
   String _deviceTabletId = '';
 
-  // ─── Adaptive JPEG quality ────────────────────────────
+  // ─── Adaptive JPEG quality + frame rate ─────────────────
   // Tracks dropped frames (blocked by _isSending) vs total attempts every 3s.
-  // Drop rate > 30% → quality 40 | 10–30% → quality 60 | < 10% → quality 80
+  // Drop rate > 60% → quality 20, 2 FPS  (extreme congestion)
+  // Drop rate > 30% → quality 40, 10 FPS (poor network)
+  // Drop rate > 10% → quality 60, 10 FPS (medium network)
+  // Drop rate < 10% → quality 80, 10 FPS (good network)
   int _jpegQuality = 80;
+  int _frameIntervalMs = 100; // adaptive: 100 ms (10 FPS) or 500 ms (2 FPS)
   int _frameAttempts = 0;
   int _droppedFrames = 0;
-  
+
+  // ─── Keepalive ────────────────────────────────────────────
+  // Allow up to 2 consecutive missed PONGs before declaring a zombie.
+  // This tolerates a single delayed PONG on a congested network.
+  int _missedPongs = 0;
+  static const int _kMaxMissedPongs = 2;
+
 
   // ─── Audio ───────────────────────────────────────────
   final AudioRecorder _recorder = AudioRecorder();
@@ -40,6 +50,12 @@ class LiveStreamService {
   final List<Uint8List> _audioBuffer = [];
   Timer? _audioFlushTimer;
   bool _waitingForPong = false; // true after PING sent; false once PONG received
+
+  // ─── Alert dedup ─────────────────────────────────────
+  // Tracks the last time each alert type was sent. Prevents any duplicate
+  // alert message from reaching the backend within a 5-second window, even
+  // if the caller fires sendAlertMessage more than once due to edge cases.
+  final Map<String, DateTime> _lastAlertSentAt = {};
 
   // ─── Fleet GPS WebSocket ─────────────────────────────
   WebSocketChannel? _fleetChannel;
@@ -96,11 +112,16 @@ class LiveStreamService {
     try {
       _channel = WebSocketChannel.connect(Uri.parse(wsUrl));
 
-      // Check when connection handshake successfully completes
-      _channel!.ready.then((_) {
+      // Check when connection handshake successfully completes.
+      // timeout(15s): WebSocketChannel.connect() has no built-in timeout.
+      // On a congested network the TCP SYN can hang indefinitely — the ready
+      // future never resolves and the reconnect timer never fires, leaving the
+      // app stuck with a dead pending channel and no log output.
+      _channel!.ready.timeout(const Duration(seconds: 15)).then((_) {
         isConnected.value = true;
         _isReconnecting = false;
         _jpegQuality = 80;
+        _frameIntervalMs = 100;
         _frameAttempts = 0;
         _droppedFrames = 0;
         _startKeepAlive();
@@ -108,8 +129,10 @@ class LiveStreamService {
         _initAudioPlayer();
         debugPrint('[Stream] WebSocket connection successfully established!');
       }).catchError((err) {
-        debugPrint('[Stream] WebSocket connection failed: $err');
+        debugPrint('[Stream] WebSocket connection failed / timed out: $err');
         isConnected.value = false;
+        try { _channel?.sink.close(); } catch (_) {}
+        _channel = null;
         _startReconnectTimer();
       });
 
@@ -164,12 +187,26 @@ class LiveStreamService {
   void _startKeepAlive() {
     _keepAliveTimer?.cancel();
     _waitingForPong = false;
+    _missedPongs = 0;
+    // Send an immediate PING so the server's idle timer resets right away.
+    // Without this, the first periodic PING arrives exactly when the server's
+    // ~30-second idle timeout fires — a race the device always loses.
+    try {
+      _channel?.sink.add('PING');
+      _waitingForPong = true;
+      debugPrint('[Stream] ♥ Initial ping sent on connect');
+    } catch (_) {}
+    // 10-second interval keeps the server's idle timer well within its ~30-second
+    // threshold. Two consecutive missed PONGs (20 s of silence) trigger reconnect.
     _keepAliveTimer = Timer.periodic(const Duration(seconds: 10), (_) {
       if (!isConnected.value || _channel == null) return;
-      // If still waiting for the previous PONG, the connection is a zombie
       if (_waitingForPong) {
-        debugPrint('[Stream] \u2717 No PONG since last PING \u2014 zombie connection, forcing reconnect');
-        _forceReconnect();
+        _missedPongs++;
+        debugPrint('[Stream] \u2717 No PONG received (missed: $_missedPongs / $_kMaxMissedPongs)');
+        if (_missedPongs >= _kMaxMissedPongs) {
+          debugPrint('[Stream] \u2717 $_kMaxMissedPongs consecutive PONGs missed \u2014 zombie connection, forcing reconnect');
+          _forceReconnect();
+        }
         return;
       }
       try {
@@ -186,20 +223,29 @@ class LiveStreamService {
       if (_frameAttempts == 0) return;
       final dropRate = _droppedFrames / _frameAttempts;
       final int newQuality;
-      if (dropRate > 0.30) {
-        newQuality = 40; // poor network
+      final int newIntervalMs;
+      if (dropRate > 0.60) {
+        newQuality = 20;  // extreme congestion — bare-minimum quality
+        newIntervalMs = 500; // 2 FPS — frees bandwidth for PONG/control messages
+      } else if (dropRate > 0.30) {
+        newQuality = 40;  // poor network
+        newIntervalMs = 100; // 10 FPS
       } else if (dropRate > 0.10) {
-        newQuality = 60; // medium network
+        newQuality = 60;  // medium network
+        newIntervalMs = 100;
       } else {
-        newQuality = 80; // good network
+        newQuality = 80;  // good network
+        newIntervalMs = 100;
       }
-      if (newQuality != _jpegQuality) {
+      if (newQuality != _jpegQuality || newIntervalMs != _frameIntervalMs) {
         debugPrint(
-          '[Stream] Quality: $_jpegQuality → $newQuality '
+          '[Stream] Quality: $_jpegQuality → $newQuality, '
+          'FPS: ${(1000 ~/ _frameIntervalMs)} → ${1000 ~/ newIntervalMs} '
           '(drop rate: ${(dropRate * 100).toStringAsFixed(0)}% '
           'over $_frameAttempts frames)',
         );
         _jpegQuality = newQuality;
+        _frameIntervalMs = newIntervalMs;
       }
       // Reset window counters
       _frameAttempts = 0;
@@ -253,7 +299,15 @@ class LiveStreamService {
       _streamingStartedAt = null;
     } else if (raw.toUpperCase() == 'PONG') {
       _waitingForPong = false;
+      _missedPongs = 0; // reset streak on successful PONG
       debugPrint('[Stream] ♥ PONG received — connection confirmed alive');
+    } else if (raw.toUpperCase() == 'PING') {
+      // Server is doing its own keepalive check — reply immediately.
+      // Without this the server gets no PONG and closes the connection at ~25-30 s.
+      try {
+        _channel?.sink.add('PONG');
+        debugPrint('[Stream] ← Server PING → replied PONG');
+      } catch (_) {}
     }
   }
 
@@ -306,7 +360,7 @@ class LiveStreamService {
       debugPrint('[Audio] ✅ Playing assembled admin audio ($totalBytes bytes)');
       // Clean up temp file after a delay (give player time to read it)
       Future.delayed(const Duration(seconds: 30), () {
-        tempFile.delete().catchError((_) {});
+        tempFile.delete().catchError((_) => tempFile);
       });
     } catch (e) {
       debugPrint('[Audio] Playback error: $e');
@@ -381,8 +435,8 @@ class LiveStreamService {
     if (!_isStreaming || _channel == null || _isProcessing || _isSending) return;
 
     final now = DateTime.now();
-    // Throttle to 10 FPS (1 frame per 100 milliseconds)
-    if (_lastFrameTime != null && now.difference(_lastFrameTime!).inMilliseconds < 100) {
+    // Throttle to adaptive FPS (100 ms = 10 FPS normal, 500 ms = 2 FPS under extreme congestion)
+    if (_lastFrameTime != null && now.difference(_lastFrameTime!).inMilliseconds < _frameIntervalMs) {
       return;
     }
 
@@ -486,22 +540,21 @@ class LiveStreamService {
     }
   }
 
-  final Map<String, DateTime> _lastAlertSocketSent = {};
-
   /// Sends a text-based alert message over the WebSocket to notify web dashboard.
+  /// Has a built-in 5-second per-type debounce so the same alert can never
+  /// reach the backend twice in quick succession regardless of caller behaviour.
   void sendAlertMessage(String alertType) {
-    if (_channel != null && _isStreaming) {
-      final now = DateTime.now();
-      final lastSent = _lastAlertSocketSent[alertType];
-      if (lastSent != null && now.difference(lastSent).inSeconds < 5) {
-        debugPrint('[Stream] Throttled duplicate socket alert message: $alertType');
-        return;
-      }
-      _lastAlertSocketSent[alertType] = now;
-      final jsonMsg = '{"event": "alert", "type": "$alertType", "timestamp": "${now.toIso8601String()}"}';
-      _channel!.sink.add(jsonMsg);
-      debugPrint('[Stream] Sent alert metadata over WebSocket: $jsonMsg');
+    if (_channel == null || !_isStreaming) return;
+    final now = DateTime.now();
+    final last = _lastAlertSentAt[alertType];
+    if (last != null && now.difference(last).inSeconds < 5) {
+      debugPrint('[Stream] Alert "$alertType" debounced (${now.difference(last).inMilliseconds} ms since last send)');
+      return;
     }
+    _lastAlertSentAt[alertType] = now;
+    final jsonMsg = '{"event": "alert", "type": "$alertType", "timestamp": "${now.toIso8601String()}"}';
+    _channel!.sink.add(jsonMsg);
+    debugPrint('[Stream] Sent alert metadata over WebSocket: $jsonMsg');
   }
 
   /// Force-closes a zombie connection and immediately triggers a reconnect.
