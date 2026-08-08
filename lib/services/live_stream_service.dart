@@ -112,8 +112,12 @@ class LiveStreamService {
     try {
       _channel = WebSocketChannel.connect(Uri.parse(wsUrl));
 
-      // Check when connection handshake successfully completes
-      _channel!.ready.then((_) {
+      // Check when connection handshake successfully completes.
+      // timeout(15s): WebSocketChannel.connect() has no built-in timeout.
+      // On a congested network the TCP SYN can hang indefinitely — the ready
+      // future never resolves and the reconnect timer never fires, leaving the
+      // app stuck with a dead pending channel and no log output.
+      _channel!.ready.timeout(const Duration(seconds: 15)).then((_) {
         isConnected.value = true;
         _isReconnecting = false;
         _jpegQuality = 80;
@@ -125,8 +129,10 @@ class LiveStreamService {
         _initAudioPlayer();
         debugPrint('[Stream] WebSocket connection successfully established!');
       }).catchError((err) {
-        debugPrint('[Stream] WebSocket connection failed: $err');
+        debugPrint('[Stream] WebSocket connection failed / timed out: $err');
         isConnected.value = false;
+        try { _channel?.sink.close(); } catch (_) {}
+        _channel = null;
         _startReconnectTimer();
       });
 
