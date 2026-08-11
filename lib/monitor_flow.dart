@@ -645,7 +645,9 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
           map['seatbelt'] = secs; // _checkCooldown uses the 'seatbelt' key
           break;
         case 'Unauthorized Driver':
+        case 'Driver Changed':
           map['Unauthorized Driver'] = secs;
+          map['Driver Changed'] = secs;
           break;
         case 'Unverified Driver':
           map['Unverified Driver'] = secs;
@@ -2933,7 +2935,8 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     // 'Medical Emergency': 30,
     // High (every 1 minute)
     'Distraction': 60,
-    // 'Unauthorized Driver': 60,
+    'Unauthorized Driver': 60,
+    'Driver Changed': 60,
     'Unverified Driver': 60,
     'Overspeeding': 60,
     // Medium (every 3 minutes)
@@ -2972,6 +2975,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     'multiple': 'Distraction',
     'asleep': 'Sleepiness',
     'drowsy': 'Drowsiness',
+    'unauthorized': 'Driver Changed',
   };
 
   int _getCooldownForLabel(String label) {
@@ -3068,6 +3072,8 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       _unauthorizedStart = null;
       if (_state.authStatus == AuthStatus.authenticated) {
         _lastDriverChangedReportAt = null;
+        _lastFrontendAlertAt.remove('Driver Changed');
+        _lastVoiceAlertAt.remove('unauthorized');
       }
     }
 
@@ -3203,10 +3209,11 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
           ? _getCooldownForLabel(cooldownLabel)
           : (_kVoiceCooldownSeconds[currentBannerKey] ?? 30);
 
-      if (_checkVoiceCooldown(
-        currentBannerKey,
-        Duration(seconds: cooldownSeconds),
-      )) {
+      if (currentBannerKey != 'unauthorized' &&
+          _checkVoiceCooldown(
+            currentBannerKey,
+            Duration(seconds: cooldownSeconds),
+          )) {
         String voice = '';
         if (currentBannerKey == 'phone') {
           voice = AlertMessages.phone(_tts.currentLang);
