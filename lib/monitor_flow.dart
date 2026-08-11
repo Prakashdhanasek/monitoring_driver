@@ -317,7 +317,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       return;
     }
 
-    if (_state.vehicleSpeed > 3.0 || _accelSpeedEstimateKmH >= 3.0) {
+    if (_state.vehicleSpeed > 30.0 || _accelSpeedEstimateKmH >= 30.0) {
       _consecutiveSpeedTicks++;
     } else {
       _consecutiveSpeedTicks = 0;
@@ -325,10 +325,10 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
 
     final bool isVehicleMoving =
         _consecutiveSpeedTicks >= 1 ||
-        _state.vehicleSpeed > 3.0 ||
-        _accelSpeedEstimateKmH >= 3.0;
+        _state.vehicleSpeed > 30.0 ||
+        _accelSpeedEstimateKmH >= 30.0;
 
-    // Transition to monitoring ONLY when vehicle is actually moving (> 3 km/h)
+    // Transition to monitoring ONLY when vehicle is actually moving (> 30 km/h)
     if (isVehicleMoving && !_isRefreshingDrivers) {
       debugPrint(
         '[Flow] Verification fallback triggered (speed=${_state.vehicleSpeed}km/h) — transitioning to Phase.monitoring.',
@@ -559,14 +559,14 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
               _state.vehicleSpeed = _accelSpeedEstimateKmH;
             }
 
-            // If Trip Completed screen is active and vehicle starts moving >= 3.0 km/h:
+            // If Trip Completed screen is active and vehicle starts moving >= 30.0 km/h:
             if (_tripCompleted &&
-                (_accelSpeedEstimateKmH >= 3.0 || _state.vehicleSpeed > 3.0)) {
+                (_accelSpeedEstimateKmH >= 30.0 || _state.vehicleSpeed > 30.0)) {
               _startReverification().then(
                 (_) => _checkVerifyingPhaseFallback(),
               );
             } else if (_phase == Phase.verifying &&
-                (_state.vehicleSpeed > 3.0 || _accelSpeedEstimateKmH >= 3.0)) {
+                (_state.vehicleSpeed > 30.0 || _accelSpeedEstimateKmH >= 30.0)) {
               _checkVerifyingPhaseFallback();
             }
           },
@@ -1577,7 +1577,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
         _lastGpsPos = position;
         _lastGpsTime = now;
 
-        if (_phase == Phase.verifying && speedKmH > 3.0) {
+        if (_phase == Phase.verifying && speedKmH > 30.0) {
           _checkVerifyingPhaseFallback();
         }
         _state.gpsLat = position.latitude;
@@ -1595,7 +1595,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
           position.speed > 0 ? position.speed : 0.0,
           position.heading,
         );
-        if (_tripCompleted && speedKmH >= 3.0) {
+        if (_tripCompleted && speedKmH >= 30.0) {
           _startReverification().then((_) => _checkVerifyingPhaseFallback());
         } else {
           _checkVerifyingPhaseFallback();
@@ -1763,7 +1763,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
               final elapsedMs = DateTime.now()
                   .difference(_unmatchedFaceSince!)
                   .inMilliseconds;
-              if (_state.vehicleSpeed > 3.0 || elapsedMs >= 3000) {
+              if (_state.vehicleSpeed > 30.0 || elapsedMs >= 3000) {
                 _verifyingStartedAt = null;
                 _unmatchedFaceSince = null;
                 _capturedFace = _captureFaceJpeg(image, targetWidth: 480);
@@ -1855,7 +1855,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
             }
 
             if (_tripCompleted) {
-              if (_state.vehicleSpeed > 3.0 || _accelSpeedEstimateKmH >= 3.0) {
+              if (_state.vehicleSpeed > 30.0 || _accelSpeedEstimateKmH >= 30.0) {
                 _startReverification().then(
                   (_) => _checkVerifyingPhaseFallback(),
                 );
