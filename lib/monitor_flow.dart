@@ -912,6 +912,10 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     _isCheckingUpdate = false;
     if (!mounted) return;
     if (updateInfo != null) {
+      // End any active trip before starting the update — the install kills
+      // the process so dispose() never runs.
+      if (_tripId != null) await _sendTripEnd();
+
       // Pause camera ML and ALL background tasks to give download full resources.
       _updatingApp = true;
       final wasStreaming = _streaming;
@@ -3940,8 +3944,10 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       builder: (ctx) {
         return StatefulBuilder(
           builder: (dialogContext, setDialogState) {
-            void verifyAndSubmit(String pin) {
+            Future<void> verifyAndSubmit(String pin) async {
               if (pin == kAdminPin) {
+                // End any active trip before exiting kiosk mode
+                if (_tripId != null) await _sendTripEnd();
                 Navigator.pop(ctx);
                 Kiosk.stop();
                 if (mounted) {
