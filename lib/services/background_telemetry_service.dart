@@ -89,8 +89,8 @@ class BackgroundTelemetryService {
         // Get current position immediately (don't wait for movement)
         try {
           final pos = await Geolocator.getCurrentPosition(
-            locationSettings: const LocationSettings(
-              accuracy: LocationAccuracy.high,
+            locationSettings: AndroidSettings(
+              accuracy: LocationAccuracy.bestForNavigation,
             ),
           ).timeout(const Duration(seconds: 10));
           latitude = pos.latitude;
@@ -106,9 +106,10 @@ class BackgroundTelemetryService {
         // Then listen for updates on movement
         _positionSubscription =
             Geolocator.getPositionStream(
-              locationSettings: const LocationSettings(
-                accuracy: LocationAccuracy.high,
-                distanceFilter: 10,
+              locationSettings: AndroidSettings(
+                accuracy: LocationAccuracy.bestForNavigation,
+                distanceFilter: 0,
+                intervalDuration: const Duration(seconds: 1),
               ),
             ).listen((Position position) {
               final speedKmH = position.speed > 0

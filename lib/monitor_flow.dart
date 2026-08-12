@@ -1537,8 +1537,8 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       // Get initial position immediately so telemetry doesn't send 0,0
       try {
         final pos = await Geolocator.getCurrentPosition(
-          locationSettings: const LocationSettings(
-            accuracy: LocationAccuracy.high,
+          locationSettings: AndroidSettings(
+            accuracy: LocationAccuracy.bestForNavigation,
           ),
         ).timeout(const Duration(seconds: 10));
         _state.gpsLat = pos.latitude;
@@ -1555,9 +1555,10 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       }
 
       Geolocator.getPositionStream(
-        locationSettings: const LocationSettings(
-          accuracy: LocationAccuracy.high,
+        locationSettings: AndroidSettings(
+          accuracy: LocationAccuracy.bestForNavigation,
           distanceFilter: 0,
+          intervalDuration: const Duration(seconds: 1),
         ),
       ).listen((Position position) {
         final now = DateTime.now();
@@ -2434,7 +2435,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     // 3) Fresh current position from Geolocator
     try {
       final curPos = await Geolocator.getCurrentPosition(
-        locationSettings: const LocationSettings(accuracy: LocationAccuracy.high),
+        locationSettings: AndroidSettings(accuracy: LocationAccuracy.bestForNavigation),
       ).timeout(const Duration(seconds: 3));
       if (curPos.latitude != 0.0 && curPos.longitude != 0.0) {
         _state.gpsLat = curPos.latitude;

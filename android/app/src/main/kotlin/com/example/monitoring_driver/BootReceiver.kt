@@ -38,7 +38,11 @@ class BootReceiver : BroadcastReceiver() {
                     dpm.setGlobalSetting(admin, "mobile_data", "1")
 
                     try {
+                        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.P) {
+                            dpm.setLocationEnabled(admin, true)
+                        }
                         dpm.setSecureSetting(admin, "location_mode", "3")
+                        dpm.setSecureSetting(admin, "location_providers_allowed", "+gps,+network")
                     } catch (_: Throwable) {}
 
                     // Register as preferred HOME so Android's HOME intent

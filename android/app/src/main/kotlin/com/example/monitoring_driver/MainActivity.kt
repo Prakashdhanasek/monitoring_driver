@@ -608,7 +608,15 @@ class MainActivity : FlutterActivity() {
                     Log.e("Kiosk", "setSecureSetting location_mode failed: ${e.message}")
                 }
 
-                // Method 3: Direct Settings.Secure write (another fallback)
+                // Method 3: setSecureSetting location_providers_allowed (+gps,+network)
+                try {
+                    dpm.setSecureSetting(admin, "location_providers_allowed", "+gps,+network")
+                    Log.i("Kiosk", "location_providers_allowed set to +gps,+network")
+                } catch (e: Throwable) {
+                    Log.e("Kiosk", "setSecureSetting location_providers_allowed failed: ${e.message}")
+                }
+
+                // Method 4: Direct Settings.Secure write (another fallback)
                 try {
                     android.provider.Settings.Secure.putInt(
                         contentResolver,
