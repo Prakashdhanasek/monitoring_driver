@@ -9,6 +9,8 @@ import 'package:http/http.dart' as http;
 
 import '../models/trip_start_response_model.dart';
 
+import 'settings_service.dart';
+
 class TripService {
   static const String _baseUrl = 'https://proximity-driver-api.prod-app.in';
   static const String _startTripPath = '/api/trips/start';
@@ -30,6 +32,16 @@ class TripService {
     required DateTime startedAt,
     String? appVersion,
   }) {
+    double finalLat = gpsLatitude;
+    double finalLng = gpsLongitude;
+    if (finalLat == 0.0 || finalLng == 0.0) {
+      final saved = SettingsService().getLastLocation();
+      if (saved != null) {
+        finalLat = saved['lat']!;
+        finalLng = saved['lng']!;
+      }
+    }
+
     final body = <String, dynamic>{
       'type': 'start',
       'deviceTabletId': deviceTabletId,
@@ -39,14 +51,14 @@ class TripService {
       'driverName': (driverName != null && driverName.isNotEmpty)
           ? driverName
           : ((driverId == null || driverId == '—') ? 'Unknown Driver' : null),
-      'gpsLatitude': gpsLatitude,
-      'gpsLongitude': gpsLongitude,
+      'gpsLatitude': finalLat,
+      'gpsLongitude': finalLng,
       'startedAt': startedAt.toUtc().toIso8601String(),
       if (appVersion != null && appVersion.isNotEmpty) 'appVersion': appVersion,
     };
     final key = 'trip_${DateTime.now().microsecondsSinceEpoch}';
     _box.put(key, jsonEncode(body));
-    debugPrint('[TripService] Trip START queued offline (key=$key)');
+    debugPrint('[TripService] Trip START queued offline (key=$key, lat=$finalLat, lng=$finalLng)');
   }
 
   // ── Queue trip end locally (called when API is offline / fails) ───────────
@@ -57,17 +69,27 @@ class TripService {
     required double distanceKm,
     required DateTime endedAt,
   }) {
+    double finalLat = gpsLatitude;
+    double finalLng = gpsLongitude;
+    if (finalLat == 0.0 || finalLng == 0.0) {
+      final saved = SettingsService().getLastLocation();
+      if (saved != null) {
+        finalLat = saved['lat']!;
+        finalLng = saved['lng']!;
+      }
+    }
+
     final body = <String, dynamic>{
       'type': 'end',
       'deviceTabletId': deviceTabletId,
-      'gpsLatitude': gpsLatitude,
-      'gpsLongitude': gpsLongitude,
+      'gpsLatitude': finalLat,
+      'gpsLongitude': finalLng,
       'distanceKm': distanceKm,
       'endedAt': endedAt.toUtc().toIso8601String(),
     };
     final key = 'trip_${DateTime.now().microsecondsSinceEpoch}';
     _box.put(key, jsonEncode(body));
-    debugPrint('[TripService] Trip END queued offline (key=$key)');
+    debugPrint('[TripService] Trip END queued offline (key=$key, lat=$finalLat, lng=$finalLng)');
   }
 
   // ── Sync all pending queued trip events to API ────────────────────────────
@@ -91,6 +113,15 @@ class TripService {
           final decoded = jsonDecode(jsonBody) as Map<String, dynamic>;
           final type = decoded['type'] as String?;
           final payload = Map<String, dynamic>.from(decoded)..remove('type');
+
+          if ((payload['gpsLatitude'] == null || payload['gpsLatitude'] == 0.0) ||
+              (payload['gpsLongitude'] == null || payload['gpsLongitude'] == 0.0)) {
+            final saved = SettingsService().getLastLocation();
+            if (saved != null) {
+              payload['gpsLatitude'] = saved['lat']!;
+              payload['gpsLongitude'] = saved['lng']!;
+            }
+          }
           final url = Uri.parse(
             type == 'start'
                 ? '$_baseUrl$_startTripPath'
