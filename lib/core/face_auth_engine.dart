@@ -38,7 +38,7 @@ class FaceAuthEngine {
 
   // Balanced threshold:
   // 1.0 allows valid reference drivers under different lighting/angles to match reliably while preventing false positives.
-  static const double kAuthThreshold = 1.0;
+  static const double kAuthThreshold = 0.90;
 
   int _consecutiveMatch = 0;
   int _consecutiveMiss = 0;
