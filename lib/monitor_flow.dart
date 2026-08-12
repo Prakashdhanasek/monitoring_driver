@@ -317,7 +317,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       return;
     }
 
-    if (_state.vehicleSpeed > 30.0 || _accelSpeedEstimateKmH >= 30.0) {
+    if (_state.vehicleSpeed > 20.0 || _accelSpeedEstimateKmH >= 20.0) {
       _consecutiveSpeedTicks++;
     } else {
       _consecutiveSpeedTicks = 0;
@@ -325,10 +325,10 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
 
     final bool isVehicleMoving =
         _consecutiveSpeedTicks >= 1 ||
-        _state.vehicleSpeed > 30.0 ||
-        _accelSpeedEstimateKmH >= 30.0;
+        _state.vehicleSpeed > 20.0 ||
+        _accelSpeedEstimateKmH >= 20.0;
 
-    // Transition to monitoring ONLY when vehicle is actually moving (> 30 km/h)
+    // Transition to monitoring ONLY when vehicle is actually moving (> 20 km/h)
     if (isVehicleMoving && !_isRefreshingDrivers) {
       debugPrint(
         '[Flow] Verification fallback triggered (speed=${_state.vehicleSpeed}km/h) — transitioning to Phase.monitoring.',
@@ -548,7 +548,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
               _accelSustainedMotionTicks = 0;
               // Fast decay when device is held by hand or stationary
               _accelSpeedEstimateKmH *= 0.70;
-              if (_accelSpeedEstimateKmH < 0.1) _accelSpeedEstimateKmH = 0.0;
+              if (_accelSpeedEstimateKmH < 6.0) _accelSpeedEstimateKmH = 0.0;
             }
 
             // Accelerometer motion: update vehicleSpeed ONLY during sustained vehicle driving (> 2.5s continuous acceleration)
@@ -559,14 +559,14 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
               _state.vehicleSpeed = _accelSpeedEstimateKmH;
             }
 
-            // If Trip Completed screen is active and vehicle starts moving >= 30.0 km/h:
+            // If Trip Completed screen is active and vehicle starts moving >= 20.0 km/h:
             if (_tripCompleted &&
-                (_accelSpeedEstimateKmH >= 30.0 || _state.vehicleSpeed > 30.0)) {
+                (_accelSpeedEstimateKmH >= 20.0 || _state.vehicleSpeed > 20.0)) {
               _startReverification().then(
                 (_) => _checkVerifyingPhaseFallback(),
               );
             } else if (_phase == Phase.verifying &&
-                (_state.vehicleSpeed > 30.0 || _accelSpeedEstimateKmH >= 30.0)) {
+                (_state.vehicleSpeed > 20.0 || _accelSpeedEstimateKmH >= 20.0)) {
               _checkVerifyingPhaseFallback();
             }
           },
@@ -1577,12 +1577,13 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
         _lastGpsPos = position;
         _lastGpsTime = now;
 
-        if (_phase == Phase.verifying && speedKmH > 30.0) {
+        if (_phase == Phase.verifying && speedKmH > 20.0) {
           _checkVerifyingPhaseFallback();
         }
         _state.gpsLat = position.latitude;
         _state.gpsLng = position.longitude;
         _state.vehicleSpeed = speedKmH;
+        _settings.saveLastLocation(position.latitude, position.longitude);
         // Keep background telemetry in sync with latest position
         BackgroundTelemetryService.instance.updatePosition(
           position.latitude,
@@ -1595,7 +1596,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
           position.speed > 0 ? position.speed : 0.0,
           position.heading,
         );
-        if (_tripCompleted && speedKmH >= 30.0) {
+        if (_tripCompleted && speedKmH >= 20.0) {
           _startReverification().then((_) => _checkVerifyingPhaseFallback());
         } else {
           _checkVerifyingPhaseFallback();
@@ -1758,12 +1759,12 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
               _onVerified(isMatched: true);
             } else if (_state.authStatus == AuthStatus.unauthorized) {
               // Face present but does not match any enrolled DB driver.
-              // Proceed to monitoring as Unknown Driver if vehicle is moving > 3 km/h OR after 3 seconds.
+              // Proceed to monitoring as Unknown Driver ONLY if vehicle is moving > 20 km/h OR after 10 seconds of continuous non-DB face detection.
               _unmatchedFaceSince ??= DateTime.now();
               final elapsedMs = DateTime.now()
                   .difference(_unmatchedFaceSince!)
                   .inMilliseconds;
-              if (_state.vehicleSpeed > 30.0 || elapsedMs >= 3000) {
+              if (_state.vehicleSpeed > 20.0 || elapsedMs >= 10000) {
                 _verifyingStartedAt = null;
                 _unmatchedFaceSince = null;
                 _capturedFace = _captureFaceJpeg(image, targetWidth: 480);
@@ -1788,12 +1789,26 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
           break;
 
         case Phase.monitoring:
+          if (_tripCompleted) {
+            if (_state.vehicleSpeed > 20.0 || _accelSpeedEstimateKmH >= 20.0) {
+              _startReverification().then(
+                (_) => _checkVerifyingPhaseFallback(),
+              );
+              break;
+            }
+            if (_tripCompletedAt != null &&
+                DateTime.now().difference(_tripCompletedAt!).inSeconds < 10) {
+              break;
+            }
+            _startReverification();
+            break;
+          }
+
           if (faces.isNotEmpty) {
             // A driver is in view.
             _noFaceSince = null;
             _stationarySpeedSince = null;
             if (_isSpeedTriggeredTrip && !_faceCapturedThisTrip) {
-              _faceCapturedThisTrip = true;
               if (faces.length == 1) {
                 final face = faces.first;
                 final now = DateTime.now();
@@ -1805,6 +1820,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
                 );
                 if (_state.authStatus == AuthStatus.authenticated) {
                   _isSpeedTriggeredTrip = false;
+                  _faceCapturedThisTrip = true;
                   final label = _authEngine.lastMatchedLabel;
                   if (label != null && label.isNotEmpty) {
                     if (label.contains('|')) {
@@ -1849,25 +1865,13 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
                   _sendTripStart();
                 } else if (_state.authStatus == AuthStatus.unauthorized) {
                   _isSpeedTriggeredTrip = false;
+                  _faceCapturedThisTrip = true;
                   _state.isUnknownDriver = true;
                 }
               }
             }
 
-            if (_tripCompleted) {
-              if (_state.vehicleSpeed > 30.0 || _accelSpeedEstimateKmH >= 30.0) {
-                _startReverification().then(
-                  (_) => _checkVerifyingPhaseFallback(),
-                );
-                break;
-              }
-              if (_tripCompletedAt != null &&
-                  DateTime.now().difference(_tripCompletedAt!).inSeconds < 10) {
-                break;
-              }
-              _startReverification();
-              break;
-            }
+
 
             if (faces.length > 1) {
               _multiFace++;
@@ -1930,8 +1934,8 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
 
             if (_isSpeedTriggeredTrip && !_faceCapturedThisTrip) {
               // Speed-triggered trip without captured face: DO NOT trigger "No Human Detected" alert/timer.
-              // Instead, check for speed-based trip completion (stationary speed <= 3.0 km/h for >= 30s).
-              if (_state.vehicleSpeed <= 3.0) {
+              // Instead, check for speed-based trip completion (stationary speed <= 6.0 km/h for >= 30s).
+              if (_state.vehicleSpeed <= 6.0) {
                 _stationarySpeedSince ??= DateTime.now();
                 if (!_tripCompleted &&
                     DateTime.now()
@@ -2398,9 +2402,66 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   //   }
   // }
 
+  Future<void> _ensureGpsLocation() async {
+    if (_state.gpsLat != 0.0 && _state.gpsLng != 0.0) {
+      _settings.saveLastLocation(_state.gpsLat, _state.gpsLng);
+      return;
+    }
+
+    // 1) BackgroundTelemetryService
+    final bgLat = BackgroundTelemetryService.instance.latitude;
+    final bgLng = BackgroundTelemetryService.instance.longitude;
+    if (bgLat != 0.0 && bgLng != 0.0) {
+      _state.gpsLat = bgLat;
+      _state.gpsLng = bgLng;
+      _settings.saveLastLocation(bgLat, bgLng);
+      debugPrint('[Flow] Recovered GPS from BackgroundTelemetry: ($bgLat, $bgLng)');
+      return;
+    }
+
+    // 2) Last known position from Geolocator
+    try {
+      final lastPos = await Geolocator.getLastKnownPosition();
+      if (lastPos != null && lastPos.latitude != 0.0 && lastPos.longitude != 0.0) {
+        _state.gpsLat = lastPos.latitude;
+        _state.gpsLng = lastPos.longitude;
+        _settings.saveLastLocation(lastPos.latitude, lastPos.longitude);
+        debugPrint('[Flow] Recovered GPS from getLastKnownPosition: (${lastPos.latitude}, ${lastPos.longitude})');
+        return;
+      }
+    } catch (_) {}
+
+    // 3) Fresh current position from Geolocator
+    try {
+      final curPos = await Geolocator.getCurrentPosition(
+        locationSettings: const LocationSettings(accuracy: LocationAccuracy.high),
+      ).timeout(const Duration(seconds: 3));
+      if (curPos.latitude != 0.0 && curPos.longitude != 0.0) {
+        _state.gpsLat = curPos.latitude;
+        _state.gpsLng = curPos.longitude;
+        _settings.saveLastLocation(curPos.latitude, curPos.longitude);
+        debugPrint('[Flow] Recovered GPS from getCurrentPosition: (${curPos.latitude}, ${curPos.longitude})');
+        return;
+      }
+    } catch (e) {
+      debugPrint('[Flow] Could not fetch fresh GPS position: $e');
+    }
+
+    // 4) Saved Hive location fallback
+    final savedLoc = _settings.getLastLocation();
+    if (savedLoc != null) {
+      _state.gpsLat = savedLoc['lat']!;
+      _state.gpsLng = savedLoc['lng']!;
+      debugPrint('[Flow] Recovered GPS from saved Hive location: (${_state.gpsLat}, ${_state.gpsLng})');
+    }
+  }
+
   Future<void> _sendTripStart() async {
     final deviceId = _settings.getDeviceId();
     if (deviceId == null || deviceId.isEmpty) return;
+
+    await _ensureGpsLocation();
+
     try {
       final trip = await _tripService.startTrip(
         deviceTabletId: deviceId,
@@ -2614,6 +2675,8 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   Future<void> _sendTripEnd() async {
     final deviceId = _settings.getDeviceId();
     if (deviceId == null || deviceId.isEmpty) return;
+
+    await _ensureGpsLocation();
 
     // Always queue first — guarantees trip end is never lost even if offline
     _tripService.queueTripEnd(

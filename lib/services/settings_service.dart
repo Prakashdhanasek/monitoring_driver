@@ -67,6 +67,26 @@ class SettingsService {
     _box.put('cooldown_$eventType', time.millisecondsSinceEpoch);
   }
 
+  // ── Location Persistence ───────────────────────────────────
+
+  /// Save last known valid GPS location to Hive.
+  void saveLastLocation(double lat, double lng) {
+    if (lat != 0.0 && lng != 0.0) {
+      _box.put('last_valid_lat', lat);
+      _box.put('last_valid_lng', lng);
+    }
+  }
+
+  /// Get last known valid GPS location from Hive.
+  Map<String, double>? getLastLocation() {
+    final lat = _box.get('last_valid_lat');
+    final lng = _box.get('last_valid_lng');
+    if (lat is double && lng is double && lat != 0.0 && lng != 0.0) {
+      return {'lat': lat, 'lng': lng};
+    }
+    return null;
+  }
+
   // ── Clear ─────────────────────────────────────────────────
 
   /// Clear all settings (used for factory reset / debugging).

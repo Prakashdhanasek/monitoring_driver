@@ -37,9 +37,8 @@ class FaceAuthEngine {
   String? lastMatchedLabel;
 
   // Balanced threshold:
-  // 0.72 was too strict and caused all faces to fail.
-  // 0.85 allows valid reference drivers while still blocking many unknown faces.
-  static const double kAuthThreshold = 0.90;
+  // 1.0 allows valid reference drivers under different lighting/angles to match reliably while preventing false positives.
+  static const double kAuthThreshold = 1.0;
 
   int _consecutiveMatch = 0;
   int _consecutiveMiss = 0;
@@ -186,19 +185,25 @@ class FaceAuthEngine {
     int bestIdx = -1;
     String? bestLabel;
 
-    if (activeTripEmbedding != null) {
-      minDist = _euclidean(activeTripEmbedding!, liveEmbedding);
-      bestLabel = '—|Unknown Driver';
-    } else {
-      for (int i = 0; i < _referenceEmbeddings.length; i++) {
-        final d = _euclidean(_referenceEmbeddings[i], liveEmbedding);
-        if (d < minDist) {
-          minDist = d;
-          bestIdx = i;
-        }
+    // 1. Always search enrolled DB reference drivers first
+    for (int i = 0; i < _referenceEmbeddings.length; i++) {
+      final d = _euclidean(_referenceEmbeddings[i], liveEmbedding);
+      if (d < minDist) {
+        minDist = d;
+        bestIdx = i;
       }
-      if (bestIdx >= 0 && bestIdx < _referenceLabels.length) {
-        bestLabel = _referenceLabels[bestIdx];
+    }
+    if (bestIdx >= 0 && bestIdx < _referenceLabels.length) {
+      bestLabel = _referenceLabels[bestIdx];
+    }
+
+    // 2. Only if no enrolled DB driver matches (< kAuthThreshold) and activeTripEmbedding exists,
+    // check if it matches the active unknown trip embedding
+    if (minDist >= kAuthThreshold && activeTripEmbedding != null) {
+      final dTrip = _euclidean(activeTripEmbedding!, liveEmbedding);
+      if (dTrip < kAuthThreshold) {
+        minDist = dTrip;
+        bestLabel = '—|Unknown Driver';
       }
     }
 
@@ -248,7 +253,7 @@ class FaceAuthEngine {
 
       final requiredMisses = state.authStatus == AuthStatus.authenticated
           ? 15
-          : 6;
+          : 20;
       if (_consecutiveMiss >= requiredMisses) {
         state.authStatus = AuthStatus.unauthorized;
         state.authenticatedTrackingId = null;
@@ -268,7 +273,7 @@ class FaceAuthEngine {
         }
       } else {
         _consecutiveMiss++;
-        if (_consecutiveMiss >= 6) {
+        if (_consecutiveMiss >= 20) {
           state.authStatus = AuthStatus.unauthorized;
           state.authenticatedTrackingId = null;
         }
