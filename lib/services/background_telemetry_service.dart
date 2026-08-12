@@ -36,11 +36,37 @@ class BackgroundTelemetryService {
     });
   }
 
+  double _lastSentLat = 0.0;
+  double _lastSentLng = 0.0;
+  DateTime? _lastSentTime;
+
   /// Update position from an external source (e.g. MonitorFlow's GPS stream).
-  void updatePosition(double lat, double lng, double speedKmH) {
+  void updatePosition(double lat, double lng, double speedKmH, {double accuracy = 0.0}) {
+    if (lat == 0.0 && lng == 0.0) return;
+
+    // Ignore inaccurate GPS fixes (> 30m error radius)
+    if (accuracy > 30.0) {
+      debugPrint('[BackgroundTelemetry] Discarded low-accuracy fix (${accuracy.toStringAsFixed(1)}m)');
+      return;
+    }
+
+    final double effectiveSpeed = speedKmH > 0.8 ? speedKmH : 0.0;
+
+    // If stationary / noise drift (< 1.5 km/h AND moved < 5m from last sent position),
+    // lock position to last valid coordinates to prevent spiky zigzag route lines.
+    if (_lastSentLat != 0.0 && _lastSentLng != 0.0) {
+      final dist = Geolocator.distanceBetween(_lastSentLat, _lastSentLng, lat, lng);
+      if (effectiveSpeed < 1.5 && dist < 5.0) {
+        latitude = _lastSentLat;
+        longitude = _lastSentLng;
+        speed = 0.0;
+        return;
+      }
+    }
+
     latitude = lat;
     longitude = lng;
-    speed = speedKmH;
+    speed = effectiveSpeed;
   }
 
   Future<void> _initGps() async {
@@ -93,9 +119,7 @@ class BackgroundTelemetryService {
               accuracy: LocationAccuracy.bestForNavigation,
             ),
           ).timeout(const Duration(seconds: 10));
-          latitude = pos.latitude;
-          longitude = pos.longitude;
-          speed = pos.speed > 0 ? (pos.speed * 3.6) : 0.0;
+          updatePosition(pos.latitude, pos.longitude, pos.speed > 0 ? (pos.speed * 3.6) : 0.0, accuracy: pos.accuracy);
           debugPrint(
             '[BackgroundTelemetry] Initial position: $latitude, $longitude',
           );
@@ -115,9 +139,12 @@ class BackgroundTelemetryService {
               final speedKmH = position.speed > 0
                   ? (position.speed * 3.6)
                   : 0.0;
-              latitude = position.latitude;
-              longitude = position.longitude;
-              speed = speedKmH;
+              updatePosition(
+                position.latitude,
+                position.longitude,
+                speedKmH,
+                accuracy: position.accuracy,
+              );
             });
         debugPrint('[BackgroundTelemetry] GPS position stream started.');
       }
@@ -130,6 +157,23 @@ class BackgroundTelemetryService {
     final deviceId = _settings.getDeviceId();
     if (deviceId == null || deviceId.isEmpty) return;
     if (latitude == 0.0 && longitude == 0.0) return;
+
+    final now = DateTime.now();
+
+    // Avoid sending duplicate jitter positions when vehicle is parked/stationary.
+    // Send only if moved >= 5m OR if 30s heartbeat interval passed.
+    if (_lastSentLat != 0.0 && _lastSentLng != 0.0 && _lastSentTime != null) {
+      final dist = Geolocator.distanceBetween(_lastSentLat, _lastSentLng, latitude, longitude);
+      final elapsedSec = now.difference(_lastSentTime!).inSeconds;
+
+      if (speed < 1.5 && dist < 5.0 && elapsedSec < 30) {
+        return;
+      }
+    }
+
+    _lastSentLat = latitude;
+    _lastSentLng = longitude;
+    _lastSentTime = now;
 
     await _telemetryService.sendLocationTelemetry(
       deviceTabletId: deviceId,

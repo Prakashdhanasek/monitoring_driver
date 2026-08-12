@@ -1585,11 +1585,12 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
         _state.gpsLng = position.longitude;
         _state.vehicleSpeed = speedKmH;
         _settings.saveLastLocation(position.latitude, position.longitude);
-        // Keep background telemetry in sync with latest position
+        // Keep background telemetry in sync with latest position & filtered accuracy
         BackgroundTelemetryService.instance.updatePosition(
           position.latitude,
           position.longitude,
           speedKmH,
+          accuracy: position.accuracy,
         );
         _reversingDetector?.updateGps(
           position.latitude,
@@ -2968,13 +2969,11 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       return;
     }
 
-    // Send telemetry (queues locally if offline)
-    await _telemetryService.sendLocationTelemetry(
-      deviceTabletId: deviceId,
-      latitude: _state.gpsLat,
-      longitude: _state.gpsLng,
-      speed: _state.vehicleSpeed,
-      isOnline: _isOnline,
+    // Send telemetry via BackgroundTelemetryService (handles deduplication & GPS drift filtering)
+    BackgroundTelemetryService.instance.updatePosition(
+      _state.gpsLat,
+      _state.gpsLng,
+      _state.vehicleSpeed,
     );
 
     // Also send GPS over fleet WebSocket for real-time dashboard tracking
