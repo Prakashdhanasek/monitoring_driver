@@ -124,7 +124,7 @@ class TelemetryService {
             headers: {'Content-Type': 'application/json', 'accept': '*/*'},
             body: jsonEncode(sendBody),
           )
-          .timeout(const Duration(seconds: 10));
+          .timeout(const Duration(seconds: 4));
 
       if (response.statusCode >= 200 && response.statusCode < 300) {
         return true;

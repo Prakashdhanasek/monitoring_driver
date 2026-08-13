@@ -980,6 +980,9 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
 
   @override
   void dispose() {
+    if (_tripId != null) {
+      _sendTripEnd();
+    }
     _syncTimer?.cancel();
     _connectivityTimer?.cancel();
     _telemetryTimer?.cancel();
@@ -1368,6 +1371,9 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   }
 
   Future<void> _init() async {
+    if (_tripId != null) {
+      await _sendTripEnd();
+    }
     // Reset in-memory driver state to defaults
     _driverId = '—';
     _driverName = 'Driver';
@@ -2405,7 +2411,24 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   // }
 
   Future<void> _ensureGpsLocation({bool forceFresh = false}) async {
-    if (!forceFresh && _state.gpsLat != 0.0 && _state.gpsLng != 0.0) {
+    if (forceFresh) {
+      try {
+        final curPos = await Geolocator.getCurrentPosition(
+          locationSettings: AndroidSettings(accuracy: LocationAccuracy.bestForNavigation),
+        ).timeout(const Duration(seconds: 3));
+        if (curPos.latitude != 0.0 && curPos.longitude != 0.0) {
+          _state.gpsLat = curPos.latitude;
+          _state.gpsLng = curPos.longitude;
+          _settings.saveLastLocation(curPos.latitude, curPos.longitude);
+          debugPrint('[Flow] Fresh GPS fix for Trip End: (${curPos.latitude}, ${curPos.longitude})');
+          return;
+        }
+      } catch (e) {
+        debugPrint('[Flow] Fresh GPS fix for Trip End timed out / failed: $e');
+      }
+    }
+
+    if (_state.gpsLat != 0.0 && _state.gpsLng != 0.0) {
       _settings.saveLastLocation(_state.gpsLat, _state.gpsLng);
       return;
     }
@@ -2418,26 +2441,10 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       _state.gpsLng = bgLng;
       _settings.saveLastLocation(bgLat, bgLng);
       debugPrint('[Flow] Recovered GPS from BackgroundTelemetry: ($bgLat, $bgLng)');
-      if (!forceFresh) return;
+      return;
     }
 
-    // 2) Fresh current position from Geolocator (8 second timeout for slow indoor fixes)
-    try {
-      final curPos = await Geolocator.getCurrentPosition(
-        locationSettings: AndroidSettings(accuracy: LocationAccuracy.bestForNavigation),
-      ).timeout(const Duration(seconds: 8));
-      if (curPos.latitude != 0.0 && curPos.longitude != 0.0) {
-        _state.gpsLat = curPos.latitude;
-        _state.gpsLng = curPos.longitude;
-        _settings.saveLastLocation(curPos.latitude, curPos.longitude);
-        debugPrint('[Flow] Recovered GPS from getCurrentPosition: (${curPos.latitude}, ${curPos.longitude})');
-        return;
-      }
-    } catch (e) {
-      debugPrint('[Flow] Could not fetch fresh GPS position: $e');
-    }
-
-    // 3) Last known position from Geolocator
+    // 2) Last known position from Geolocator
     try {
       final lastPos = await Geolocator.getLastKnownPosition();
       if (lastPos != null && lastPos.latitude != 0.0 && lastPos.longitude != 0.0) {
@@ -2449,9 +2456,25 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       }
     } catch (_) {}
 
+    // 3) Fresh current position from Geolocator
+    try {
+      final curPos = await Geolocator.getCurrentPosition(
+        locationSettings: AndroidSettings(accuracy: LocationAccuracy.bestForNavigation),
+      ).timeout(const Duration(seconds: 3));
+      if (curPos.latitude != 0.0 && curPos.longitude != 0.0) {
+        _state.gpsLat = curPos.latitude;
+        _state.gpsLng = curPos.longitude;
+        _settings.saveLastLocation(curPos.latitude, curPos.longitude);
+        debugPrint('[Flow] Recovered GPS from getCurrentPosition: (${curPos.latitude}, ${curPos.longitude})');
+        return;
+      }
+    } catch (e) {
+      debugPrint('[Flow] Could not fetch fresh GPS position: $e');
+    }
+
     // 4) Saved Hive location fallback
     final savedLoc = _settings.getLastLocation();
-    if (savedLoc != null && savedLoc['lat'] != 0.0 && savedLoc['lng'] != 0.0) {
+    if (savedLoc != null && savedLoc['lat'] != null && savedLoc['lng'] != null) {
       _state.gpsLat = savedLoc['lat']!;
       _state.gpsLng = savedLoc['lng']!;
       debugPrint('[Flow] Recovered GPS from saved Hive location: (${_state.gpsLat}, ${_state.gpsLng})');
@@ -2462,7 +2485,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     final deviceId = _settings.getDeviceId();
     if (deviceId == null || deviceId.isEmpty) return;
 
-    await _ensureGpsLocation(forceFresh: true);
+    await _ensureGpsLocation();
 
     try {
       final trip = await _tripService.startTrip(
@@ -2678,7 +2701,19 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     final deviceId = _settings.getDeviceId();
     if (deviceId == null || deviceId.isEmpty) return;
 
+    // Force fresh real-time location check on trip end
     await _ensureGpsLocation(forceFresh: true);
+
+    // Ultimate fallback if coordinates are still 0.0
+    if (_state.gpsLat == 0.0 || _state.gpsLng == 0.0) {
+      final savedLoc = _settings.getLastLocation();
+      if (savedLoc != null) {
+        _state.gpsLat = savedLoc['lat']!;
+        _state.gpsLng = savedLoc['lng']!;
+      }
+    }
+
+    debugPrint('[Flow] Ending trip $_tripId at location: (${_state.gpsLat}, ${_state.gpsLng})');
 
     // Always queue first — guarantees trip end is never lost even if offline
     _tripService.queueTripEnd(
