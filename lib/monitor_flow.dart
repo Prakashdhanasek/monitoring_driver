@@ -1764,6 +1764,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
               _verifyingStartedAt = null;
               _unmatchedFaceSince = null;
               _capturedFace = _captureFaceJpeg(image, targetWidth: 480);
+
               _onVerified(isMatched: true);
             } else if (_state.authStatus == AuthStatus.unauthorized) {
               // Face present but does not match any enrolled DB driver.

@@ -1,0 +1,454 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Driver Verification to Trip Completion — Complete Flow</title>
+<style>
+  @page {
+    size: A4;
+    margin: 16mm 14mm 16mm 14mm;
+  }
+  
+  body {
+    font-family: 'Segoe UI', Arial, sans-serif;
+    color: #1e293b;
+    line-height: 1.5;
+    font-size: 13px;
+    background-color: #ffffff;
+    margin: 0;
+    padding: 0;
+  }
+
+  .header-banner {
+    background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%);
+    color: #ffffff;
+    padding: 22px 26px;
+    border-radius: 10px;
+    margin-bottom: 22px;
+  }
+
+  .header-banner h1 {
+    margin: 0 0 6px 0;
+    font-size: 22px;
+    font-weight: 700;
+    color: #38bdf8;
+  }
+
+  .header-banner p {
+    margin: 0;
+    font-size: 13px;
+    color: #94a3b8;
+  }
+
+  .badge-container {
+    margin-top: 12px;
+    display: flex;
+    gap: 8px;
+  }
+
+  .badge {
+    background: rgba(56, 189, 248, 0.15);
+    color: #38bdf8;
+    padding: 3px 10px;
+    border-radius: 15px;
+    font-size: 11px;
+    font-weight: 600;
+    border: 1px solid rgba(56, 189, 248, 0.3);
+  }
+
+  h2 {
+    color: #0f172a;
+    font-size: 16px;
+    border-bottom: 2px solid #e2e8f0;
+    padding-bottom: 5px;
+    margin-top: 22px;
+    margin-bottom: 12px;
+    font-weight: 700;
+  }
+
+  h3 {
+    color: #0284c7;
+    font-size: 14px;
+    margin-top: 16px;
+    margin-bottom: 8px;
+    font-weight: 600;
+  }
+
+  h4 {
+    color: #334155;
+    font-size: 13px;
+    margin-top: 10px;
+    margin-bottom: 4px;
+    font-weight: 600;
+  }
+
+  p {
+    margin: 0 0 8px 0;
+  }
+
+  ul, ol {
+    margin: 4px 0 10px 0;
+    padding-left: 20px;
+  }
+
+  li {
+    margin-bottom: 4px;
+  }
+
+  .card {
+    background: #f8fafc;
+    border: 1px solid #e2e8f0;
+    border-left: 4px solid #0284c7;
+    border-radius: 6px;
+    padding: 12px 16px;
+    margin-bottom: 16px;
+    page-break-inside: avoid;
+  }
+
+  .card-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 8px;
+  }
+
+  .card-title {
+    font-weight: 700;
+    font-size: 14.5px;
+    color: #0f172a;
+  }
+
+  .tag {
+    background: #e0f2fe;
+    color: #0369a1;
+    font-size: 10.5px;
+    font-weight: 700;
+    padding: 2px 8px;
+    border-radius: 4px;
+    text-transform: uppercase;
+  }
+
+  .tag-danger {
+    background: #fef2f2;
+    color: #991b1b;
+  }
+
+  .tag-warning {
+    background: #fffbeb;
+    color: #92400e;
+  }
+
+  .tag-success {
+    background: #f0fdf4;
+    color: #166534;
+  }
+
+  .info-box {
+    background: #eff6ff;
+    border: 1px solid #bfdbfe;
+    border-radius: 6px;
+    padding: 10px 14px;
+    margin: 10px 0;
+    font-size: 12.5px;
+  }
+
+  .script-box {
+    background: #f0fdf4;
+    border: 1px solid #bbf7d0;
+    border-left: 4px solid #16a34a;
+    border-radius: 6px;
+    padding: 14px 18px;
+    margin-top: 14px;
+    font-style: italic;
+    color: #14532d;
+    line-height: 1.6;
+    page-break-inside: avoid;
+  }
+
+  .script-box-title {
+    font-style: normal;
+    font-weight: 700;
+    color: #15803d;
+    margin-bottom: 8px;
+    font-size: 13.5px;
+  }
+
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-top: 12px;
+    margin-bottom: 16px;
+    font-size: 12px;
+    page-break-inside: avoid;
+  }
+
+  th {
+    background: #0f172a;
+    color: #ffffff;
+    text-align: left;
+    padding: 9px 11px;
+    font-weight: 600;
+    border: 1px solid #0f172a;
+  }
+
+  td {
+    padding: 8px 11px;
+    border: 1px solid #cbd5e1;
+    color: #334155;
+  }
+
+  tr:nth-child(even) {
+    background: #f8fafc;
+  }
+
+  .no-break {
+    page-break-inside: avoid;
+  }
+
+  .grid-2 {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+    margin-bottom: 12px;
+  }
+
+  .step-num {
+    display: inline-block;
+    width: 18px;
+    height: 18px;
+    background: #0284c7;
+    color: white;
+    border-radius: 50%;
+    text-align: center;
+    font-size: 11px;
+    font-weight: bold;
+    line-height: 18px;
+    margin-right: 6px;
+  }
+</style>
+</head>
+<body>
+
+  <div class="header-banner">
+    <h1>Driver Verification to Trip Completion</h1>
+    <p>Complete Operational Flow &amp; Technical System Architecture Document</p>
+    <div class="badge-container">
+      <span class="badge">Driver Monitoring System (DMS)</span>
+      <span class="badge">Technical Specification</span>
+      <span class="badge">Demo &amp; Presentation Guide</span>
+    </div>
+  </div>
+
+  <h2>1. Overall Flow Overview</h2>
+  <p>The system execution workflow moves through the following standardized lifecycle:</p>
+  <ol>
+    <td>Application starts and initializes system modules.</td>
+    <td><strong>Face Verification Screen</strong> opens and front camera activates.</td>
+    <td>Driver verification attempt begins using facial recognition.</td>
+    <td>System routes to the appropriate flow based on:
+      <ul>
+        <td><strong>Case 1: Verified Driver</strong> (Registered face match)</td>
+        <td><strong>Case 2: Unknown Driver</strong> (Unregistered face / Verification failure)</td>
+        <td><strong>Case 3: Speed-Triggered Trip — No Face Detected</strong> (Vehicle motion &gt; 20 km/h)</td>
+      </ul>
+    </td>
+    <td>Trip session starts officially.</td>
+    <td><strong>Monitoring Screen</strong> runs continuously with AI detection engines.</td>
+    <td>Incidents, alerts, and live GPS/video telemetry are transmitted to the backend.</td>
+    <td>Trip-end conditions are evaluated continuously.</td>
+    <td>Trip completes, data synchronizes, and app returns to the Face Verification Screen.</td>
+  </ol>
+
+  <h2>2. Detailed Case Execution Workflows</h2>
+
+  <!-- CASE 1 -->
+  <div class="card">
+    <div class="card-header">
+      <div class="card-title">Case 1: Registered Driver — Face Matches</div>
+      <span class="tag tag-success">Normal Successful Flow</span>
+    </div>
+    
+    <h4>Step-by-Step Order:</h4>
+    <ol>
+      <td><strong>App Launches:</strong> System opens the Face Verification screen and turns ON the front camera to monitor the driver seat area.</td>
+      <td><strong>Driver Seated:</strong> Driver sits in front of the camera; live face frame is captured.</td>
+      <td><strong>Face Comparison:</strong> Live facial features are matched against enrolled driver face templates uploaded via the Admin Panel.</td>
+      <td><strong>Consistent Match Check:</strong> Verification requires <strong>2 to 3 seconds</strong> of continuous matching (or ~3 consecutive matching frames) within configured confidence thresholds to prevent false positives.</td>
+      <td><strong>Verification Succeeds:</strong>
+        <ul>
+          <td>Green Verified screen is displayed with message: <em>“Welcome, [Driver Name]!”</em></td>
+          <td>Voice greeting plays in driver's preferred language (Supports: <strong>English, Hindi, Malayalam, Tamil, Kannada</strong>).</td>
+        </ul>
+      </td>
+      <td><strong>Trip Starts:</strong> System transitions to the Monitoring screen. A <code>Trip Start</code> telemetry payload is dispatched to the backend with:
+        <em>Device ID, Driver ID, Driver Name, GPS Coordinates, and Timestamp</em>.
+      </td>
+    </ol>
+
+    <h4>During the Trip:</h4>
+    <ul>
+      <td><strong>Continuous Detections:</strong> Drowsiness, Sleep, Distraction, Phone usage, Smoking, Eating/drinking, Seatbelt usage, Overspeed, Geofence breach.</td>
+      <td><strong>Telemetry Stream:</strong> GPS telemetry pushed every 3 seconds to backend. Incidents reported following cooldown rules.</td>
+      <td><strong>Driver Continuity Check:</strong> System continuously checks if the verified driver remains in the seat. If a different face is continuously detected for <strong>5 seconds</strong>, a <code>DRIVER CHANGED</code> alert is triggered and reported.</td>
+    </ul>
+
+    <h4>Trip Ending Logic:</h4>
+    <p>If the driver's face disappears from frame:</p>
+    <ul>
+      <td>A <strong>5-second grace period</strong> initiates.</td>
+      <td>Followed by a <strong>30-second countdown</strong>.</td>
+      <td>If face remains absent for a total of <strong>35 seconds</strong>, the trip completes, data synchronizes, and system returns to Face Verification.</td>
+    </ul>
+  </div>
+
+  <!-- CASE 2 -->
+  <div class="card">
+    <div class="card-header">
+      <div class="card-title">Case 2: Unregistered Person — Face Does Not Match</div>
+      <span class="tag tag-warning">Unverified / Stationed Driver Flow</span>
+    </div>
+    
+    <h4>Step-by-Step Order:</h4>
+    <ol>
+      <td><strong>App Starts &amp; Face Captured:</strong> Camera detects a person sitting in the driver's seat.</td>
+      <td><strong>Face Comparison:</strong> System compares face against enrolled drivers; threshold is not met.</td>
+      <td><strong>Retry / Continuous Checking Phase (10 Seconds):</strong> The system continues attempting matching for approximately <strong>10 seconds</strong> to prevent false failures from poor lighting or head angles.</td>
+      <td><strong>Verification Failure:</strong> If no match is found after 10 seconds:
+        <ul>
+          <td>Voice alert plays: <em>“Driver verification failed.”</em></td>
+          <td>Driver identity marked as <strong>Unknown Driver</strong>.</td>
+        </ul>
+      </td>
+      <td><strong>Trip Starts as Unknown Driver:</strong> System moves to Monitoring screen. <code>Trip Start</code> payload sent with:
+        <em>Driver ID = null / unknown, Driver Name = Unknown Driver</em>.
+      </td>
+      <td><strong>Monitoring Active:</strong> All major safety features run (Drowsiness, Distraction, Phone, Smoking, Seatbelt, Overspeed, Geofence). <em>Driver Change Detection is disabled</em> (no baseline identity).</td>
+      <td><strong>Trip Ends:</strong> Trip finishes based on standard driver-leaving rules (35s absence countdown), shows Trip Completed screen, and resets.</td>
+    </ol>
+  </div>
+
+  <!-- CASE 3 -->
+  <div class="card">
+    <div class="card-header">
+      <div class="card-title">Case 3: Speed-Triggered Trip — No Face Detected</div>
+      <span class="tag tag-danger">Safety Priority Flow (Speed > 20 km/h)</span>
+    </div>
+    
+    <h4>Step-by-Step Order:</h4>
+    <ol>
+      <td><strong>App Starts &amp; Camera Active:</strong> App is on Verification Screen. Driver seat is empty or face is unreadable (camera blocked / bad angle).</td>
+      <td><strong>Vehicle Motion Detected:</strong> Vehicle speed exceeds <strong>20 km/h</strong>.</td>
+      <td><strong>Verification Skipped:</strong> Safety system skips verification phase immediately to prioritize driver safety monitoring.</td>
+      <td><strong>Trip Starts Immediately:</strong> Opens Monitoring Screen with no identified driver. An <code>Unverified Driver</code> incident is logged to the backend.</td>
+      <td><strong>Active Monitoring &amp; Late Driver Identification:</strong>
+        <ul>
+          <td>All safety monitoring modules run continuously.</td>
+          <td><strong>Mid-Trip Identification:</strong> If a face appears later and matches a registered driver, the active trip is dynamically updated with the <em>Driver Name &amp; ID</em>, restoring Driver Continuity checks. If non-matching, it remains an Unknown Driver trip.</td>
+        </ul>
+      </td>
+      <td><strong>Speed-Triggered Trip End Logic:</strong>
+        When vehicle speed drops below <strong>6 km/h</strong> and remains below 6 km/h continuously for <strong>30 seconds</strong>, the trip completes, data syncs, and system resets to Face Verification.
+      </td>
+    </ol>
+  </div>
+
+  <h2>3. Monitoring Order &amp; Core Detection Modules</h2>
+  <div class="info-box">
+    <strong>Post-Verification Monitoring Sequence:</strong> Once verification is complete or bypassed, the trip state becomes active. The status bar displays <em>Trip Number, Driver Name / Unknown, Connection Status, Vehicle Speed, and Camera Health</em>.
+  </div>
+  <p>The following continuous AI monitoring engines operate during active trips:</p>
+  <ul>
+    <td><strong>Facial Landmark &amp; Head-Pose Engine:</strong> Tracks yaw/pitch orientation for distraction.</td>
+    <td><strong>Drowsiness Engine:</strong> Calculates Eye Aspect Ratio (EAR) and PERCLOS eye closure rates.</td>
+    <td><strong>Object Detection Model:</strong> Identifies cell phones, smoking/cigarettes, eating/drinking.</td>
+    <td><strong>Safety &amp; Compliance Rules:</strong> Seatbelt status, Overspeeding thresholds, Geofence boundaries.</td>
+    <td><strong>Alert &amp; Evidence Dispatcher:</strong> Triggers visual banners, TTS audio, backend incident alerts, and snapshot/video clip evidence with configured cooldown rules.</td>
+  </ul>
+
+  <h2>4. Trip Termination Rules Summary</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>Trip Condition</th>
+        <th>Primary Termination Trigger</th>
+        <th>Grace Period / Timeout</th>
+        <th>System Action</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><strong>Standard Trip (Verified / Unknown)</strong></td>
+        <td>Driver face disappears from camera frame</td>
+        <td>5s grace + 30s countdown (<strong>35s total</strong>)</td>
+        <td>Complete trip, sync data, return to Verification Screen.</td>
+      </tr>
+      <tr>
+        <td><strong>Speed-Triggered Trip (No Face)</strong></td>
+        <td>Vehicle comes to a halt / low speed</td>
+        <td>Speed &lt; 6 km/h for <strong>30 continuous seconds</strong></td>
+        <td>Complete trip, sync data, return to Verification Screen.</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h2>5. Core Workflow Matrix</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>Case</th>
+        <th>Starting Condition</th>
+        <th>Verification Result</th>
+        <th>Trip Mode</th>
+        <th>Backend Event Action</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><strong>Case 1</strong></td>
+        <td>Registered driver detected</td>
+        <td>Match Successful (2-3s)</td>
+        <td>Verified Driver</td>
+        <td>Normal Trip Start (With Driver ID)</td>
+      </tr>
+      <tr>
+        <td><strong>Case 2</strong></td>
+        <td>Face detected, no match (Stationary)</td>
+        <td>Fails after 10 sec retry</td>
+        <td>Unknown Driver</td>
+        <td>Trip Start (Driver = Unknown)</td>
+      </tr>
+      <tr>
+        <td><strong>Case 3</strong></td>
+        <td>No face detected; speed &gt; 20 km/h</td>
+        <td>Verification Skipped</td>
+        <td>Unknown / Unidentified Driver</td>
+        <td>Immediate Trip Start + Unverified Driver Incident</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h2>6. Presentation &amp; Demonstration Script</h2>
+  <div class="script-box">
+    <div class="script-box-title">🎙️ Official Evaluator / Client Presentation Script</div>
+    <p>
+      “When the application starts, it first opens the Face Verification screen and activates the front camera. The system waits for a driver to appear. If a registered driver sits in front of the camera and the live face continuously matches the enrolled face images for approximately two to three seconds, the driver is verified, a welcome message is displayed, and the trip starts with that driver's identity.
+    </p>
+    <p>
+      If a face is detected but does not match any registered driver, the system continues trying for approximately ten seconds while the vehicle is stationary. If no valid match is found, verification fails and the trip starts as an Unknown Driver trip.
+    </p>
+    <p>
+      If no face is detected at all and the vehicle starts moving above twenty kilometers per hour, the system completely skips verification and starts the trip immediately so that safety monitoring can begin without delay. An Unverified Driver incident is also generated. If a face appears later and matches a registered driver, the current trip is updated with that driver's identity.
+    </p>
+    <p>
+      After verification or fallback, the monitoring phase begins. During the trip, the system continuously monitors drowsiness, distraction, phone usage, smoking, eating, drinking, seatbelt usage, overspeed, and geofence violations.
+    </p>
+    <p>
+      If the trip starts with a verified driver, the system also continuously checks whether the same driver remains in the driver's seat.
+    </p>
+    <p>
+      At the end of the trip, if the driver's face remains absent for the configured duration, or, in a speed-triggered no-face trip, if the vehicle remains below six kilometers per hour for thirty continuous seconds, the trip is completed. The trip data is synchronized, the Trip Completed screen is displayed, and the system returns to the Face Verification screen.”
+    </p>
+  </div>
+
+</body>
+</html>
