@@ -223,6 +223,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   AuthStatus _prevAuthSound = AuthStatus.scanning;
   final Map<String, DateTime> _lastIncidentReportAt = {};
   Map<String, int> _apiCooldownSeconds = {};
+  Map<String, String> _apiRiskLevels = {};
   final Map<String, DateTime> _lastVoiceAlertAt = {};
   final Map<String, DateTime> _lastCooldownLogAt = {};
   final Map<String, DateTime> _lastFrontendAlertAt = {};
@@ -340,7 +341,11 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       _faceCapturedThisTrip = false;
       _stationarySpeedSince = null;
 
-      _reportIncident('Unverified Driver', 'Medium', 0.80);
+      _reportIncident(
+        'Unverified Driver',
+        _getRiskLevel('Unverified Driver', 'High'),
+        0.80,
+      );
       _onVerified(isMatched: false);
     }
   }
@@ -396,13 +401,19 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   ];
 
   // ── Geofence / boundary violation ──
-  double? _boundaryLat; // geofence center latitude
-  double? _boundaryLng; // geofence center longitude
-  double? _boundaryRadiusM; // radius in meters
+  double? _boundaryLat; // geofence center latitude (Circular mode)
+  double? _boundaryLng; // geofence center longitude (Circular mode)
+  double? _boundaryRadiusM; // radius in meters (Circular mode)
   String? _geofenceId; // needed for the violation payload
   bool _boundaryViolationReported = false; // fire once per exit
   bool _outsideBoundary = false; // true while the vehicle is beyond the radius
   double _boundaryBeyondM = 0; // how far past the limit, in meters
+  String _geofenceBoundaryType = 'Circular'; // "Circular" or "Polygon"
+  String _geofenceMonitoringMode =
+      'PermittedZone'; // "PermittedZone", "RestrictedEntry", "MonitorAll"
+  List<List<double>> _polygonVertices =
+      []; // [[lng,lat], ...] for polygon geofence
+  bool _insidePolygon = false; // current inside/outside state for polygon
 
   // ── Harsh driving (accelerometer magnitude + GPS classification) ──
   // DISABLED: Harsh driving detection commented out
@@ -561,12 +572,14 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
 
             // If Trip Completed screen is active and vehicle starts moving >= 20.0 km/h:
             if (_tripCompleted &&
-                (_accelSpeedEstimateKmH >= 20.0 || _state.vehicleSpeed > 20.0)) {
+                (_accelSpeedEstimateKmH >= 20.0 ||
+                    _state.vehicleSpeed > 20.0)) {
               _startReverification().then(
                 (_) => _checkVerifyingPhaseFallback(),
               );
             } else if (_phase == Phase.verifying &&
-                (_state.vehicleSpeed > 20.0 || _accelSpeedEstimateKmH >= 20.0)) {
+                (_state.vehicleSpeed > 20.0 ||
+                    _accelSpeedEstimateKmH >= 20.0)) {
               _checkVerifyingPhaseFallback();
             }
           },
@@ -611,6 +624,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
 
   void _applyIncidentIntervals(List<dynamic> list) {
     final map = <String, int>{};
+    final riskMap = <String, String>{};
     for (final item in list) {
       if (item is! Map<String, dynamic>) continue;
       final type = item['incidentType'] as String?;
@@ -619,44 +633,67 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       final int secs = rawSecs is num
           ? rawSecs.toInt()
           : (int.tryParse(rawSecs.toString()) ?? 60);
+      final String? risk = item['riskLevel'] as String?;
 
       // Map API incidentType → the label keys used inside the app.
       switch (type) {
         case 'Drowsiness':
           map['Drowsiness'] = secs;
+          if (risk != null) riskMap['Drowsiness'] = risk;
           break;
         case 'Sleepiness':
           map['Sleepiness'] = secs;
+          if (risk != null) riskMap['Sleepiness'] = risk;
           break;
         case 'Distraction':
           map['Distraction'] = secs;
+          if (risk != null) riskMap['Distraction'] = risk;
           break;
         case 'Overspeed':
           map['Overspeeding'] = secs;
+          if (risk != null) riskMap['Overspeeding'] = risk;
           break;
         case 'Phone Usage':
           map['Phone Usage'] = secs;
+          if (risk != null) riskMap['Phone Usage'] = risk;
           break;
         case 'Smoking':
           map['Smoking'] = secs;
+          if (risk != null) riskMap['Smoking'] = risk;
           break;
         case 'Seatbelt Not Worn':
           map['Seatbelt Not Worn'] = secs;
-          map['seatbelt'] = secs; // _checkCooldown uses the 'seatbelt' key
+          map['seatbelt'] = secs;
+          if (risk != null) {
+            riskMap['Seatbelt Not Worn'] = risk;
+            riskMap['seatbelt'] = risk;
+          }
           break;
         case 'Unauthorized Driver':
         case 'Driver Changed':
           map['Unauthorized Driver'] = secs;
           map['Driver Changed'] = secs;
+          if (risk != null) {
+            riskMap['Unauthorized Driver'] = risk;
+            riskMap['Driver Changed'] = risk;
+          }
           break;
         case 'Unverified Driver':
           map['Unverified Driver'] = secs;
+          if (risk != null) riskMap['Unverified Driver'] = risk;
+          break;
+        case 'Duty Time Exceeded':
+          map['Duty Time Exceeded'] = secs;
+          if (risk != null) riskMap['Duty Time Exceeded'] = risk;
           break;
         default:
-          map[type] = secs; // Cable Unplugged, Driver Changed, future types
+          map[type] = secs;
+          if (risk != null) riskMap[type] = risk;
       }
     }
     _apiCooldownSeconds = map;
+    _apiRiskLevels = riskMap;
+    debugPrint('[Flow] Incident risk levels from API: $_apiRiskLevels');
   }
 
   Future<void> _checkConnectivity() async {
@@ -1880,8 +1917,6 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
               }
             }
 
-
-
             if (faces.length > 1) {
               _multiFace++;
               if (_multiFace > 15) {
@@ -2415,13 +2450,17 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     if (forceFresh) {
       try {
         final curPos = await Geolocator.getCurrentPosition(
-          locationSettings: AndroidSettings(accuracy: LocationAccuracy.bestForNavigation),
+          locationSettings: AndroidSettings(
+            accuracy: LocationAccuracy.bestForNavigation,
+          ),
         ).timeout(const Duration(seconds: 3));
         if (curPos.latitude != 0.0 && curPos.longitude != 0.0) {
           _state.gpsLat = curPos.latitude;
           _state.gpsLng = curPos.longitude;
           _settings.saveLastLocation(curPos.latitude, curPos.longitude);
-          debugPrint('[Flow] Fresh GPS fix for Trip End: (${curPos.latitude}, ${curPos.longitude})');
+          debugPrint(
+            '[Flow] Fresh GPS fix for Trip End: (${curPos.latitude}, ${curPos.longitude})',
+          );
           return;
         }
       } catch (e) {
@@ -2441,18 +2480,24 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       _state.gpsLat = bgLat;
       _state.gpsLng = bgLng;
       _settings.saveLastLocation(bgLat, bgLng);
-      debugPrint('[Flow] Recovered GPS from BackgroundTelemetry: ($bgLat, $bgLng)');
+      debugPrint(
+        '[Flow] Recovered GPS from BackgroundTelemetry: ($bgLat, $bgLng)',
+      );
       return;
     }
 
     // 2) Last known position from Geolocator
     try {
       final lastPos = await Geolocator.getLastKnownPosition();
-      if (lastPos != null && lastPos.latitude != 0.0 && lastPos.longitude != 0.0) {
+      if (lastPos != null &&
+          lastPos.latitude != 0.0 &&
+          lastPos.longitude != 0.0) {
         _state.gpsLat = lastPos.latitude;
         _state.gpsLng = lastPos.longitude;
         _settings.saveLastLocation(lastPos.latitude, lastPos.longitude);
-        debugPrint('[Flow] Recovered GPS from getLastKnownPosition: (${lastPos.latitude}, ${lastPos.longitude})');
+        debugPrint(
+          '[Flow] Recovered GPS from getLastKnownPosition: (${lastPos.latitude}, ${lastPos.longitude})',
+        );
         return;
       }
     } catch (_) {}
@@ -2460,13 +2505,17 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     // 3) Fresh current position from Geolocator
     try {
       final curPos = await Geolocator.getCurrentPosition(
-        locationSettings: AndroidSettings(accuracy: LocationAccuracy.bestForNavigation),
+        locationSettings: AndroidSettings(
+          accuracy: LocationAccuracy.bestForNavigation,
+        ),
       ).timeout(const Duration(seconds: 3));
       if (curPos.latitude != 0.0 && curPos.longitude != 0.0) {
         _state.gpsLat = curPos.latitude;
         _state.gpsLng = curPos.longitude;
         _settings.saveLastLocation(curPos.latitude, curPos.longitude);
-        debugPrint('[Flow] Recovered GPS from getCurrentPosition: (${curPos.latitude}, ${curPos.longitude})');
+        debugPrint(
+          '[Flow] Recovered GPS from getCurrentPosition: (${curPos.latitude}, ${curPos.longitude})',
+        );
         return;
       }
     } catch (e) {
@@ -2475,10 +2524,14 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
 
     // 4) Saved Hive location fallback
     final savedLoc = _settings.getLastLocation();
-    if (savedLoc != null && savedLoc['lat'] != null && savedLoc['lng'] != null) {
+    if (savedLoc != null &&
+        savedLoc['lat'] != null &&
+        savedLoc['lng'] != null) {
       _state.gpsLat = savedLoc['lat']!;
       _state.gpsLng = savedLoc['lng']!;
-      debugPrint('[Flow] Recovered GPS from saved Hive location: (${_state.gpsLat}, ${_state.gpsLng})');
+      debugPrint(
+        '[Flow] Recovered GPS from saved Hive location: (${_state.gpsLat}, ${_state.gpsLng})',
+      );
     }
   }
 
@@ -2502,24 +2555,56 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
         // Online success — use response data
         _tripId = trip.id;
         _vehicleId ??= trip.vehicleId;
-        if (trip.geofenceCenterLatitude != null &&
+        _geofenceId = trip.geofenceId;
+        _geofenceBoundaryType = trip.geofenceBoundaryType ?? 'Circular';
+        _geofenceMonitoringMode =
+            trip.geofenceMonitoringMode ?? 'PermittedZone';
+        _boundaryViolationReported = false;
+
+        if (_geofenceBoundaryType == 'Polygon' &&
+            trip.geofencePolygonCoordinatesJson != null) {
+          // Parse polygon vertices from JSON string: "[[lng,lat],[lng,lat],...]"
+          try {
+            final decoded = jsonDecode(trip.geofencePolygonCoordinatesJson!);
+            _polygonVertices = (decoded as List)
+                .map<List<double>>(
+                  (p) => [(p[0] as num).toDouble(), (p[1] as num).toDouble()],
+                )
+                .toList();
+            // Clear circular fields
+            _boundaryLat = null;
+            _boundaryLng = null;
+            _boundaryRadiusM = null;
+            _insidePolygon = _isPointInsidePolygon(
+              _state.gpsLat,
+              _state.gpsLng,
+              _polygonVertices,
+            );
+            debugPrint(
+              '[Boundary] Polygon geofence set: ${_polygonVertices.length} vertices, '
+              'mode=$_geofenceMonitoringMode, id=$_geofenceId',
+            );
+          } catch (e) {
+            debugPrint('[Boundary] Failed to parse polygon JSON: $e');
+            _polygonVertices = [];
+          }
+        } else if (trip.geofenceCenterLatitude != null &&
             trip.geofenceCenterLongitude != null &&
             trip.geofenceRadiusMeters != null) {
           _boundaryLat = trip.geofenceCenterLatitude;
           _boundaryLng = trip.geofenceCenterLongitude;
           _boundaryRadiusM = trip.geofenceRadiusMeters!.toDouble();
-          _geofenceId = trip.geofenceId;
-          _vehicleId ??= trip.vehicleId;
-          _boundaryViolationReported = false;
+          _polygonVertices = [];
           debugPrint(
-            '[Boundary] Geofence set: ($_boundaryLat, $_boundaryLng) '
-            'r=${_boundaryRadiusM}m id=$_geofenceId',
+            '[Boundary] Circular geofence set: ($_boundaryLat, $_boundaryLng) '
+            'r=${_boundaryRadiusM}m mode=$_geofenceMonitoringMode id=$_geofenceId',
           );
         } else {
           _boundaryLat = null;
           _boundaryLng = null;
           _boundaryRadiusM = null;
           _geofenceId = null;
+          _polygonVertices = [];
           debugPrint('[Boundary] No geofence in trip-start response.');
         }
       } else {
@@ -2714,7 +2799,9 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       }
     }
 
-    debugPrint('[Flow] Ending trip $_tripId at location: (${_state.gpsLat}, ${_state.gpsLng})');
+    debugPrint(
+      '[Flow] Ending trip $_tripId at location: (${_state.gpsLat}, ${_state.gpsLng})',
+    );
 
     // Always queue first — guarantees trip end is never lost even if offline
     _tripService.queueTripEnd(
@@ -2981,7 +3068,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
           // that actually caused the trigger, not the current (possibly 0) speed.
           _reportIncidentWithSpeed(
             'Unverified Driver',
-            'High',
+            _getRiskLevel('Unverified Driver', 'High'),
             1.0,
             triggerSpeed,
           );
@@ -3083,7 +3170,10 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
 
   int _getCooldownForLabel(String label) {
     return _apiCooldownSeconds[label] ?? _kIncidentCooldownSeconds[label] ?? 60;
-    // return _kIncidentCooldownSeconds[label] ?? 60; // default 60s
+  }
+
+  String _getRiskLevel(String eventType, String fallback) {
+    return _apiRiskLevels[eventType] ?? fallback;
   }
 
   bool _checkCooldown(String label) {
@@ -3162,7 +3252,11 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
         }
 
         if (_checkFrontendCooldown('Driver Changed')) {
-          _reportIncident('Driver Changed', 'High', 1.0);
+          _reportIncident(
+            'Driver Changed',
+            _getRiskLevel('Driver Changed', 'High'),
+            1.0,
+          );
           _tts.speak(AlertMessages.unauthorized(_tts.currentLang));
           _playAlert('audio/alert_loud.mp3');
           _driverChangedBannerAt = now;
@@ -3217,7 +3311,11 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       }
 
       if (_checkCooldown('seatbelt')) {
-        _reportIncident('Seatbelt Not Worn', 'Medium', 1.0);
+        _reportIncident(
+          'Seatbelt Not Worn',
+          _getRiskLevel('Seatbelt Not Worn', 'Medium'),
+          1.0,
+        );
       }
 
       if (_checkVoiceCooldown(
@@ -3237,19 +3335,31 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       if (_checkFrontendCooldown('Sleepiness')) loud = true;
 
       if (_checkCooldown('Sleepiness')) {
-        _reportIncident('Sleepiness', 'Critical', 1.0);
+        _reportIncident(
+          'Sleepiness',
+          _getRiskLevel('Sleepiness', 'Critical'),
+          1.0,
+        );
       }
     } else if (_state.drowsinessLevel == DrowsinessLevel.drowsy) {
       if (_checkFrontendCooldown('Drowsiness')) soft = true;
 
       if (_checkCooldown('Drowsiness')) {
-        _reportIncident('Drowsiness', 'Critical', 0.8);
+        _reportIncident(
+          'Drowsiness',
+          _getRiskLevel('Drowsiness', 'Critical'),
+          0.8,
+        );
       }
     }
     if (_state.distractionStatus == DistractionStatus.distracted) {
       if (_checkFrontendCooldown('Distraction')) soft = true;
       if (_checkCooldown('Distraction')) {
-        _reportIncident('Distraction', 'High', 0.8);
+        _reportIncident(
+          'Distraction',
+          _getRiskLevel('Distraction', 'High'),
+          0.8,
+        );
       }
     }
 
@@ -3257,7 +3367,11 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     if (_overspeedThreshold > 0 && _state.vehicleSpeed > _overspeedThreshold) {
       if (_checkFrontendCooldown('Overspeeding')) loud = true;
       if (_checkCooldown('Overspeeding')) {
-        _reportIncident('Overspeeding', 'High', 1.0);
+        _reportIncident(
+          'Overspeeding',
+          _getRiskLevel('Overspeeding', 'High'),
+          1.0,
+        );
       }
       if (_checkVoiceCooldown(
         'overspeed',
@@ -3290,7 +3404,11 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       if (_checkFrontendCooldown(eventType)) loud = true;
 
       if (_checkCooldown(eventType)) {
-        _reportIncident(eventType, 'Medium', obj.confidence);
+        _reportIncident(
+          eventType,
+          _getRiskLevel(eventType, 'Medium'),
+          obj.confidence,
+        );
       }
     }
 
@@ -4181,35 +4299,91 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     );
   }
 
+  // Ray-casting algorithm: returns true if point (lat,lng) is inside the polygon.
+  bool _isPointInsidePolygon(
+    double lat,
+    double lng,
+    List<List<double>> polygon,
+  ) {
+    if (polygon.length < 3) return false;
+    bool inside = false;
+    for (int i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
+      final xi = polygon[i][1]; // lat
+      final yi = polygon[i][0]; // lng
+      final xj = polygon[j][1];
+      final yj = polygon[j][0];
+      if (((yi > lng) != (yj > lng)) &&
+          (lat < (xj - xi) * (lng - yi) / (yj - yi) + xi)) {
+        inside = !inside;
+      }
+    }
+    return inside;
+  }
+
   void _checkBoundary() {
-    if (_boundaryLat == null ||
-        _boundaryLng == null ||
-        _boundaryRadiusM == null) {
-      return; // no geofence for this trip
+    final bool isPolygon =
+        _geofenceBoundaryType == 'Polygon' && _polygonVertices.length >= 3;
+    final bool isCircular =
+        _boundaryLat != null &&
+        _boundaryLng != null &&
+        _boundaryRadiusM != null;
+
+    if (!isPolygon && !isCircular) return;
+
+    bool currentlyInside;
+    double distance = 0;
+
+    if (isPolygon) {
+      currentlyInside = _isPointInsidePolygon(
+        _state.gpsLat,
+        _state.gpsLng,
+        _polygonVertices,
+      );
+    } else {
+      distance = Geolocator.distanceBetween(
+        _boundaryLat!,
+        _boundaryLng!,
+        _state.gpsLat,
+        _state.gpsLng,
+      );
+      currentlyInside = distance <= _boundaryRadiusM!;
     }
 
-    final distance = Geolocator.distanceBetween(
-      _boundaryLat!,
-      _boundaryLng!,
-      _state.gpsLat,
-      _state.gpsLng,
-    );
+    // Determine if this is a violation based on monitoring mode
+    bool isViolation;
+    String violationType;
+    switch (_geofenceMonitoringMode) {
+      case 'PermittedZone':
+        isViolation = !currentlyInside;
+        violationType = 'EXIT_PERMITTED_ZONE';
+        break;
+      case 'RestrictedEntry':
+        isViolation = currentlyInside;
+        violationType = 'ENTER_RESTRICTED_ZONE';
+        break;
+      case 'MonitorAll':
+        // Log entry/exit transitions but treat both as events
+        final stateChanged = currentlyInside != _insidePolygon;
+        isViolation = stateChanged;
+        violationType = currentlyInside ? 'ZONE_ENTRY' : 'ZONE_EXIT';
+        break;
+      default:
+        isViolation = !currentlyInside;
+        violationType = 'EXIT_PERMITTED_ZONE';
+    }
 
-    final outside = distance > _boundaryRadiusM!;
+    final beyond = isCircular && !currentlyInside
+        ? distance - _boundaryRadiusM!
+        : 0.0;
 
-    //final outside = distance > 5;
-
-    // Log every check, regardless of in/out state.
     debugPrint(
-      '[Boundary] distance=${distance.toStringAsFixed(1)} m | '
-      'limit=${_boundaryRadiusM!.toStringAsFixed(0)} m | '
-      '${outside ? "OUTSIDE" : "inside"}',
+      '[Boundary] ${isPolygon ? "Polygon" : "Circular"} | '
+      'inside=$currentlyInside | mode=$_geofenceMonitoringMode | '
+      '${isViolation ? "VIOLATION ($violationType)" : "OK"}'
+      '${isCircular ? " | dist=${distance.toStringAsFixed(1)}m" : ""}',
     );
 
-    if (outside) {
-      final beyond = distance - _boundaryRadiusM!; // meters past the boundary
-
-      // Update the on-screen banner (only rebuild when something changed).
+    if (isViolation) {
       if (!_outsideBoundary || (beyond - _boundaryBeyondM).abs() > 1) {
         if (mounted) {
           setState(() {
@@ -4219,18 +4393,14 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
         }
       }
 
-      // Report to server only once per exit.
       if (!_boundaryViolationReported) {
         _boundaryViolationReported = true;
-        debugPrint(
-          '[Boundary] VIOLATION — ${distance.toStringAsFixed(1)} m '
-          'from center, ${beyond.toStringAsFixed(1)} m beyond limit.',
-        );
-        _reportBoundaryViolation(beyond);
-        _tts.speak(AlertMessages.boundaryViolation(_tts.currentLang));
+        _reportBoundaryViolation(beyond, violationType: violationType);
+        if (!currentlyInside) {
+          _tts.speak(AlertMessages.boundaryViolation(_tts.currentLang));
+        }
       }
     } else {
-      // Back inside — clear banner and re-arm.
       if (_outsideBoundary && mounted) {
         setState(() {
           _outsideBoundary = false;
@@ -4238,10 +4408,12 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
         });
       }
       if (_boundaryViolationReported) {
-        _boundaryViolationReported = false; // re-arm for next exit
-        debugPrint('[Boundary] Back inside boundary.');
+        _boundaryViolationReported = false;
+        debugPrint('[Boundary] Violation cleared.');
       }
     }
+
+    _insidePolygon = currentlyInside;
   }
 
   // void _startHarshDetection() {
@@ -7051,12 +7223,16 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     );
   }
 
-  // Boundary violation banner — shows while the vehicle is outside the radius.
+  // Boundary violation banner — shows while the vehicle is in violation.
   Widget _boundaryBanner() {
     if (!_outsideBoundary) return const SizedBox.shrink();
 
-    final text =
-        '🚧  OUTSIDE BOUNDARY (${_boundaryBeyondM.toStringAsFixed(0)} m)';
+    final String text;
+    if (_boundaryBeyondM > 0) {
+      text = '🚧  OUTSIDE BOUNDARY (${_boundaryBeyondM.toStringAsFixed(0)} m)';
+    } else {
+      text = '🚧  OUTSIDE BOUNDARY';
+    }
 
     return Container(
       width: double.infinity,
@@ -7320,8 +7496,9 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   }
 
   Future<void> _reportBoundaryViolation(
-    double distanceFromBoundaryMeters,
-  ) async {
+    double distanceFromBoundaryMeters, {
+    String? violationType,
+  }) async {
     if (!_isOnline) {
       debugPrint('[Boundary] Offline — violation not sent.');
       return;
@@ -7339,6 +7516,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       distanceFromBoundaryMeters: distanceFromBoundaryMeters,
       deviceTabletId: deviceId,
       occurredAt: DateTime.now().toUtc(),
+      violationType: violationType,
     );
   }
 }

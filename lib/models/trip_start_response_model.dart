@@ -4,9 +4,11 @@
 
 import 'dart:convert';
 
-TripStartResponseModel tripStartResponseModelFromJson(String str) => TripStartResponseModel.fromJson(json.decode(str));
+TripStartResponseModel tripStartResponseModelFromJson(String str) =>
+    TripStartResponseModel.fromJson(json.decode(str));
 
-String tripStartResponseModelToJson(TripStartResponseModel data) => json.encode(data.toJson());
+String tripStartResponseModelToJson(TripStartResponseModel data) =>
+    json.encode(data.toJson());
 
 class TripStartResponseModel {
   String? id;
@@ -30,6 +32,9 @@ class TripStartResponseModel {
   String? geofenceId;
   String? geofenceName;
   String? geofenceLocationLabel;
+  String? geofenceBoundaryType;
+  String? geofencePolygonCoordinatesJson;
+  String? geofenceMonitoringMode;
 
   TripStartResponseModel({
     this.id,
@@ -53,31 +58,42 @@ class TripStartResponseModel {
     this.geofenceId,
     this.geofenceName,
     this.geofenceLocationLabel,
+    this.geofenceBoundaryType,
+    this.geofencePolygonCoordinatesJson,
+    this.geofenceMonitoringMode,
   });
 
-  factory TripStartResponseModel.fromJson(Map<String, dynamic> json) => TripStartResponseModel(
-    id: json["id"],
-    vehicleId: json["vehicleId"],
-    vehicleRegistrationNumber: json["vehicleRegistrationNumber"],
-    driverId: json["driverId"],
-    driverName: json["driverName"],
-    deviceTabletId: json["deviceTabletId"],
-    startedAt: json["startedAt"] == null ? null : DateTime.parse(json["startedAt"]),
-    endedAt: json["endedAt"],
-    startLatitude: json["startLatitude"]?.toDouble(),
-    startLongitude: json["startLongitude"]?.toDouble(),
-    endLatitude: json["endLatitude"],
-    endLongitude: json["endLongitude"],
-    distanceKm: json["distanceKm"],
-    status: json["status"],
-    createdAt: json["createdAt"] == null ? null : DateTime.parse(json["createdAt"]),
-    geofenceCenterLatitude: json["geofenceCenterLatitude"]?.toDouble(),
-    geofenceCenterLongitude: json["geofenceCenterLongitude"]?.toDouble(),
-    geofenceRadiusMeters: json["geofenceRadiusMeters"],
-    geofenceId: json["geofenceId"],
-    geofenceName: json["geofenceName"],
-    geofenceLocationLabel: json["geofenceLocationLabel"],
-  );
+  factory TripStartResponseModel.fromJson(Map<String, dynamic> json) =>
+      TripStartResponseModel(
+        id: json["id"],
+        vehicleId: json["vehicleId"],
+        vehicleRegistrationNumber: json["vehicleRegistrationNumber"],
+        driverId: json["driverId"],
+        driverName: json["driverName"],
+        deviceTabletId: json["deviceTabletId"],
+        startedAt: json["startedAt"] == null
+            ? null
+            : DateTime.parse(json["startedAt"]),
+        endedAt: json["endedAt"],
+        startLatitude: json["startLatitude"]?.toDouble(),
+        startLongitude: json["startLongitude"]?.toDouble(),
+        endLatitude: json["endLatitude"],
+        endLongitude: json["endLongitude"],
+        distanceKm: json["distanceKm"],
+        status: json["status"],
+        createdAt: json["createdAt"] == null
+            ? null
+            : DateTime.parse(json["createdAt"]),
+        geofenceCenterLatitude: json["geofenceCenterLatitude"]?.toDouble(),
+        geofenceCenterLongitude: json["geofenceCenterLongitude"]?.toDouble(),
+        geofenceRadiusMeters: json["geofenceRadiusMeters"],
+        geofenceId: json["geofenceId"],
+        geofenceName: json["geofenceName"],
+        geofenceLocationLabel: json["geofenceLocationLabel"],
+        geofenceBoundaryType: json["geofenceBoundaryType"],
+        geofencePolygonCoordinatesJson: json["geofencePolygonCoordinatesJson"],
+        geofenceMonitoringMode: json["geofenceMonitoringMode"],
+      );
 
   Map<String, dynamic> toJson() => {
     "id": id,
@@ -101,5 +117,8 @@ class TripStartResponseModel {
     "geofenceId": geofenceId,
     "geofenceName": geofenceName,
     "geofenceLocationLabel": geofenceLocationLabel,
+    "geofenceBoundaryType": geofenceBoundaryType,
+    "geofencePolygonCoordinatesJson": geofencePolygonCoordinatesJson,
+    "geofenceMonitoringMode": geofenceMonitoringMode,
   };
 }
