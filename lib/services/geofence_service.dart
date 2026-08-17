@@ -53,4 +53,27 @@ class GeofenceService {
       debugPrint('[Geofence] VIOLATION ERROR: $e');
     }
   }
+
+  Future<List<dynamic>?> getVehicleGeofenceMode(String vehicleId) async {
+    final url = Uri.parse(
+      'https://proximity-driver-api.prod-app.in/api/geofences/vehicle/$vehicleId',
+    );
+    try {
+      final response = await http
+          .get(url, headers: {'accept': '*/*'})
+          .timeout(const Duration(seconds: 15));
+
+      debugPrint('[Geofence] GET status: ${response.statusCode}');
+      debugPrint('[Geofence] GET body: ${response.body}');
+
+      if (response.statusCode == 200) {
+        final decoded = jsonDecode(response.body);
+        if (decoded is List) return decoded;
+        if (decoded is Map<String, dynamic>) return [decoded];
+      }
+    } catch (e) {
+      debugPrint('[Geofence] GET error: $e');
+    }
+    return null;
+  }
 }

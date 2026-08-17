@@ -41,12 +41,27 @@ class BackgroundTelemetryService {
   DateTime? _lastSentTime;
 
   /// Update position from an external source (e.g. MonitorFlow's GPS stream).
-  void updatePosition(double lat, double lng, double speedKmH, {double accuracy = 0.0}) {
+  void updatePosition(
+    double lat,
+    double lng,
+    double speedKmH, {
+    double accuracy = 0.0,
+  }) {
     if (lat == 0.0 && lng == 0.0) return;
 
     // Ignore inaccurate GPS fixes (> 30m error radius)
     if (accuracy > 30.0) {
-      debugPrint('[BackgroundTelemetry] Discarded low-accuracy fix (${accuracy.toStringAsFixed(1)}m)');
+      debugPrint(
+        '[BackgroundTelemetry] Discarded low-accuracy fix (${accuracy.toStringAsFixed(1)}m)',
+      );
+      return;
+    }
+
+    // Ignore absurd speeds which indicate a GPS location jump/glitch
+    if (speedKmH > 160.0) {
+      debugPrint(
+        '[BackgroundTelemetry] Discarded absurd speed glitch (${speedKmH.toStringAsFixed(1)} km/h)',
+      );
       return;
     }
 
@@ -55,7 +70,12 @@ class BackgroundTelemetryService {
     // If stationary / noise drift (< 1.5 km/h AND moved < 5m from last sent position),
     // lock position to last valid coordinates to prevent spiky zigzag route lines.
     if (_lastSentLat != 0.0 && _lastSentLng != 0.0) {
-      final dist = Geolocator.distanceBetween(_lastSentLat, _lastSentLng, lat, lng);
+      final dist = Geolocator.distanceBetween(
+        _lastSentLat,
+        _lastSentLng,
+        lat,
+        lng,
+      );
       if (effectiveSpeed < 1.5 && dist < 5.0) {
         latitude = _lastSentLat;
         longitude = _lastSentLng;
@@ -119,7 +139,12 @@ class BackgroundTelemetryService {
               accuracy: LocationAccuracy.bestForNavigation,
             ),
           ).timeout(const Duration(seconds: 10));
-          updatePosition(pos.latitude, pos.longitude, pos.speed > 0 ? (pos.speed * 3.6) : 0.0, accuracy: pos.accuracy);
+          updatePosition(
+            pos.latitude,
+            pos.longitude,
+            pos.speed > 0 ? (pos.speed * 3.6) : 0.0,
+            accuracy: pos.accuracy,
+          );
           debugPrint(
             '[BackgroundTelemetry] Initial position: $latitude, $longitude',
           );
@@ -163,7 +188,12 @@ class BackgroundTelemetryService {
     // Avoid sending duplicate jitter positions when vehicle is parked/stationary.
     // Send only if moved >= 5m OR if 30s heartbeat interval passed.
     if (_lastSentLat != 0.0 && _lastSentLng != 0.0 && _lastSentTime != null) {
-      final dist = Geolocator.distanceBetween(_lastSentLat, _lastSentLng, latitude, longitude);
+      final dist = Geolocator.distanceBetween(
+        _lastSentLat,
+        _lastSentLng,
+        latitude,
+        longitude,
+      );
       final elapsedSec = now.difference(_lastSentTime!).inSeconds;
 
       if (speed < 1.5 && dist < 5.0 && elapsedSec < 30) {

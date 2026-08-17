@@ -414,6 +414,12 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   List<List<double>> _polygonVertices =
       []; // [[lng,lat], ...] for polygon geofence
   bool _insidePolygon = false; // current inside/outside state for polygon
+  // Tracks whether the active violation is RestrictedEntry or PermittedZone
+  // so the UI shows the correct banner text.
+  String _geofenceViolationType = 'PermittedZone'; // set on each violation
+  // Cache: true = API returned [] last call; retry after 60 s instead of every 3 s
+  bool _geofenceCachedEmpty = false;
+  DateTime? _geofenceEmptyCachedAt;
 
   // ── Harsh driving (accelerometer magnitude + GPS classification) ──
   // DISABLED: Harsh driving detection commented out
@@ -479,6 +485,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     _telemetryTimer = Timer.periodic(const Duration(seconds: 3), (_) {
       _sendTelemetryTask();
       _maybeFetchIncidentIntervals();
+      _checkGeofenceStatus();
       // Check for app update every 5 minutes while online
       final now = DateTime.now();
       if (_isOnline &&
@@ -597,6 +604,156 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   void _maybeFetchIncidentIntervals() {
     if (!_isOnline) return;
     _fetchIncidentIntervals();
+  }
+
+  Future<void> _checkGeofenceStatus() async {
+    if (!_isOnline || _vehicleId == null) return;
+
+    // If the last API call returned empty, don't retry for 60 seconds.
+    if (_geofenceCachedEmpty &&
+        _geofenceEmptyCachedAt != null &&
+        DateTime.now().difference(_geofenceEmptyCachedAt!).inSeconds < 15) {
+      return;
+    }
+
+    final currentLat = BackgroundTelemetryService.instance.latitude;
+    final currentLng = BackgroundTelemetryService.instance.longitude;
+    if (currentLat == 0.0 && currentLng == 0.0) return;
+
+    final geofences = await _geofenceService.getVehicleGeofenceMode(
+      _vehicleId!,
+    );
+    if (geofences == null || geofences.isEmpty) {
+      // Cache the empty result — don't hammer the API every 3 s.
+      _geofenceCachedEmpty = true;
+      _geofenceEmptyCachedAt = DateTime.now();
+      debugPrint(
+        '[Geofence] No geofences assigned — clearing any active violation.',
+      );
+      // Clear violation banner if vehicle was removed from all geofences.
+      if (_outsideBoundary && mounted) {
+        setState(() {
+          _outsideBoundary = false;
+          _boundaryBeyondM = 0;
+        });
+      }
+      return;
+    }
+    // Got real data — clear the empty cache.
+    _geofenceCachedEmpty = false;
+    _geofenceEmptyCachedAt = null;
+
+    bool anyViolation = false;
+    String violationMode = 'PermittedZone';
+    for (final item in geofences) {
+      if (item is! Map<String, dynamic>) continue;
+      if (item['isActive'] != true) continue;
+
+      final monitoringMode = item['monitoringMode'] as String? ?? '';
+      final boundaryType = item['boundaryType'] as String? ?? '';
+
+      bool isInside = false;
+
+      if (boundaryType == 'Polygon') {
+        final coordsJson = item['polygonCoordinatesJson'] as String?;
+        if (coordsJson != null) {
+          try {
+            final rawList = jsonDecode(coordsJson) as List;
+            // coords are [[lng, lat], ...]
+            final vertices = rawList
+                .map(
+                  (c) => [
+                    (c[0] as num).toDouble(), // lng
+                    (c[1] as num).toDouble(), // lat
+                  ],
+                )
+                .toList();
+            isInside = _isInsidePolygon(currentLat, currentLng, vertices);
+          } catch (e) {
+            debugPrint('[Geofence] Polygon parse error: $e');
+          }
+        }
+      } else if (boundaryType == 'Circle') {
+        final centerLat = (item['centerLatitude'] as num?)?.toDouble() ?? 0.0;
+        final centerLng = (item['centerLongitude'] as num?)?.toDouble() ?? 0.0;
+        final radiusM = (item['radiusMeters'] as num?)?.toDouble() ?? 0.0;
+        if (centerLat != 0.0 || centerLng != 0.0) {
+          isInside = _isInsideCircle(
+            currentLat,
+            currentLng,
+            centerLat,
+            centerLng,
+            radiusM,
+          );
+        }
+      }
+
+      debugPrint(
+        '[Geofence] "${item['name']}" mode=$monitoringMode type=$boundaryType inside=$isInside',
+      );
+
+      if (monitoringMode == 'RestrictedEntry' && isInside) {
+        anyViolation = true;
+        violationMode = 'RestrictedEntry';
+        break;
+      } else if (monitoringMode == 'PermittedZone' && !isInside) {
+        anyViolation = true;
+        violationMode = 'PermittedZone';
+        break;
+      }
+    }
+
+    if (anyViolation) {
+      _reportIncident(
+        'Geofence Violation',
+        _getRiskLevel('Geofence Violation', 'High'),
+        0.90,
+      );
+      if (mounted) {
+        setState(() {
+          _outsideBoundary = true;
+          _geofenceViolationType = violationMode;
+          _activeBannerKey = 'geofence';
+          _activeBannerAt = DateTime.now();
+        });
+      }
+    } else {
+      if (_outsideBoundary && mounted) {
+        setState(() {
+          _outsideBoundary = false;
+        });
+      }
+    }
+  }
+
+  /// Ray-casting point-in-polygon.
+  /// [vertices] is a list of [lng, lat] pairs.
+  bool _isInsidePolygon(double lat, double lng, List<List<double>> vertices) {
+    bool inside = false;
+    final n = vertices.length;
+    for (int i = 0, j = n - 1; i < n; j = i++) {
+      final xi = vertices[i][0]; // lng
+      final yi = vertices[i][1]; // lat
+      final xj = vertices[j][0];
+      final yj = vertices[j][1];
+      final intersect =
+          ((yi > lat) != (yj > lat)) &&
+          (lng < (xj - xi) * (lat - yi) / (yj - yi) + xi);
+      if (intersect) inside = !inside;
+    }
+    return inside;
+  }
+
+  /// Returns true if [lat]/[lng] is within [radiusMeters] of the center.
+  bool _isInsideCircle(
+    double lat,
+    double lng,
+    double centerLat,
+    double centerLng,
+    double radiusMeters,
+  ) {
+    final dist = Geolocator.distanceBetween(centerLat, centerLng, lat, lng);
+    return dist <= radiusMeters;
   }
 
   Future<void> _fetchIncidentIntervals() async {
@@ -3095,7 +3252,9 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     );
 
     if (!_isOnline) {
-      debugPrint('[Telemetry] Device is offline — GPS telemetry stored for offline sync.');
+      debugPrint(
+        '[Telemetry] Device is offline — GPS telemetry stored for offline sync.',
+      );
       return;
     }
 
@@ -4389,6 +4548,8 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
           setState(() {
             _outsideBoundary = true;
             _boundaryBeyondM = beyond;
+            // Track which mode triggered so the banner shows the right text.
+            _geofenceViolationType = _geofenceMonitoringMode;
           });
         }
       }
@@ -7224,14 +7385,28 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   }
 
   // Boundary violation banner — shows while the vehicle is in violation.
+  // Shows "RESTRICTED AREA" for RestrictedEntry zones and
+  // "OUT OF BOUNDARY" for PermittedZone exits.
   Widget _boundaryBanner() {
     if (!_outsideBoundary) return const SizedBox.shrink();
 
+    final bool isRestricted = _geofenceViolationType == 'RestrictedEntry';
+
     final String text;
-    if (_boundaryBeyondM > 0) {
-      text = '🚧  OUTSIDE BOUNDARY (${_boundaryBeyondM.toStringAsFixed(0)} m)';
+    final Color bannerColor;
+
+    if (isRestricted) {
+      // Vehicle entered a restricted zone.
+      bannerColor = const Color(0xFF7C3AED); // purple-red for forbidden zone
+      text = '⛔  RESTRICTED AREA';
     } else {
-      text = '🚧  OUTSIDE BOUNDARY';
+      // Vehicle left a permitted zone.
+      bannerColor = const Color(0xFFDC2626); // red for out of boundary
+      if (_boundaryBeyondM > 0) {
+        text = '🚧  OUT OF BOUNDARY (${_boundaryBeyondM.toStringAsFixed(0)} m)';
+      } else {
+        text = '🚧  OUT OF BOUNDARY';
+      }
     }
 
     return Container(
@@ -7239,7 +7414,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       margin: const EdgeInsets.fromLTRB(12, 0, 12, 8),
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
-        color: const Color(0xFFDC2626).withValues(alpha: 0.95),
+        color: bannerColor.withValues(alpha: 0.95),
         borderRadius: BorderRadius.circular(16),
       ),
       child: Text(
