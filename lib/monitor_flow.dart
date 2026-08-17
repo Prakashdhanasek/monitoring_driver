@@ -688,6 +688,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
           _fetchIncidentIntervals();
 
           _syncTripsTask();
+          _telemetryService.syncPendingTelemetry();
           // Check for app update when WiFi becomes available (vehicle turned on)
           _checkForUpdateInBackground();
         }
@@ -2999,18 +3000,17 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     if (deviceId == null || deviceId.isEmpty) {
       return;
     }
-    // Only attempt to send telemetry if online
-    if (!_isOnline) {
-      debugPrint('[Telemetry] Skipping location telemetry (Device is offline)');
-      return;
-    }
-
-    // Send telemetry via BackgroundTelemetryService (handles deduplication & GPS drift filtering)
+    // Update position in BackgroundTelemetryService (handles deduplication & GPS drift filtering)
     BackgroundTelemetryService.instance.updatePosition(
       _state.gpsLat,
       _state.gpsLng,
       _state.vehicleSpeed,
     );
+
+    if (!_isOnline) {
+      debugPrint('[Telemetry] Device is offline — GPS telemetry stored for offline sync.');
+      return;
+    }
 
     // Also send GPS over fleet WebSocket for real-time dashboard tracking
     _streamService.sendGpsUpdate(
@@ -3020,7 +3020,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     );
 
     // Sync queued telemetry when back online
-    if (_isOnline && _telemetryService.pendingCount > 0) {
+    if (_telemetryService.pendingCount > 0) {
       _telemetryService.syncPendingTelemetry();
     }
   }
