@@ -17,6 +17,7 @@ class GeofenceService {
     required double distanceFromBoundaryMeters,
     required String deviceTabletId,
     required DateTime occurredAt,
+    String? violationType,
   }) async {
     final url = Uri.parse(_url);
     final body = {
@@ -29,6 +30,7 @@ class GeofenceService {
       'distanceFromBoundaryMeters': distanceFromBoundaryMeters.toInt(),
       'deviceTabletId': deviceTabletId,
       'occurredAt': occurredAt.toUtc().toIso8601String(),
+      if (violationType != null) 'violationType': violationType,
     };
 
     try {
@@ -39,10 +41,10 @@ class GeofenceService {
 
       final response = await http
           .post(
-        url,
-        headers: {'Content-Type': 'application/json', 'accept': '*/*'},
-        body: jsonEncode(body),
-      )
+            url,
+            headers: {'Content-Type': 'application/json', 'accept': '*/*'},
+            body: jsonEncode(body),
+          )
           .timeout(const Duration(seconds: 15));
 
       debugPrint('[Geofence] VIOLATION RESPONSE: ${response.statusCode}');
