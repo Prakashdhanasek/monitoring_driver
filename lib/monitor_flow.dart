@@ -417,6 +417,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   // Tracks whether the active violation is RestrictedEntry or PermittedZone
   // so the UI shows the correct banner text.
   String _geofenceViolationType = 'PermittedZone'; // set on each violation
+  Set<String> _activeViolatingGeofences = {};
   // Cache: true = API returned [] last call; retry after 60 s instead of every 3 s
   bool _geofenceCachedEmpty = false;
   DateTime? _geofenceEmptyCachedAt;
@@ -645,6 +646,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
 
     bool anyViolation = false;
     String violationMode = 'PermittedZone';
+    Set<String> currentViolations = {};
     for (final item in geofences) {
       if (item is! Map<String, dynamic>) continue;
       if (item['isActive'] != true) continue;
@@ -692,23 +694,46 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
         '[Geofence] "${item['name']}" mode=$monitoringMode type=$boundaryType inside=$isInside',
       );
 
+      final currentGeofenceId =
+          item['geofenceId']?.toString() ??
+          item['id']?.toString() ??
+          item['name']?.toString();
+      bool isViolatingThis = false;
+      String currentViolationType = '';
+
       if (monitoringMode == 'RestrictedEntry' && isInside) {
         anyViolation = true;
+        isViolatingThis = true;
+        currentViolationType = ' Inside Restricted Area';
         violationMode = 'RestrictedEntry';
-        break;
       } else if (monitoringMode == 'PermittedZone' && !isInside) {
         anyViolation = true;
+        isViolatingThis = true;
+        currentViolationType = 'Outside Boundary';
         violationMode = 'PermittedZone';
-        break;
+      }
+
+      if (isViolatingThis && currentGeofenceId != null) {
+        currentViolations.add(currentGeofenceId);
+        if (!_activeViolatingGeofences.contains(currentGeofenceId)) {
+          _activeViolatingGeofences.add(currentGeofenceId);
+          _reportBoundaryViolation(
+            0,
+            violationType: currentViolationType,
+            geofenceId: currentGeofenceId,
+          );
+          if (monitoringMode == 'PermittedZone') {
+            _tts.speak(AlertMessages.boundaryViolation(_tts.currentLang));
+          }
+        }
       }
     }
 
+    _activeViolatingGeofences.removeWhere(
+      (id) => !currentViolations.contains(id),
+    );
+
     if (anyViolation) {
-      _reportIncident(
-        'Geofence Violation',
-        _getRiskLevel('Geofence Violation', 'High'),
-        0.90,
-      );
       if (mounted) {
         setState(() {
           _outsideBoundary = true;
@@ -3206,7 +3231,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     // _state.vehicleSpeed = 10; // TODO: Remove after testing unverified driver
 
     // Boundary check runs every tick, even offline — it detects the crossing.
-    _checkBoundary();
+    // _checkBoundary(); (Legacy call removed)
 
     // ── Unverified driver moving detection ──────────────────────
     // If face not verified and vehicle is moving, report incident
@@ -5654,7 +5679,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     ).invokeMethod('setBrightness', {'brightness': value});
   }
 
-  // Status banner for verifying screen (network, wifi, ws live)
+  // Status banner for verifying screen (network, wifi, ws)
   Widget _verifyStatusBanner() {
     return Column(
       mainAxisSize: MainAxisSize.min,
@@ -7397,7 +7422,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
 
     if (isRestricted) {
       // Vehicle entered a restricted zone.
-      bannerColor = const Color(0xFF7C3AED); // purple-red for forbidden zone
+      bannerColor =  Color(0xFFDC2626); // purple-red for forbidden zone
       text = '⛔  RESTRICTED AREA';
     } else {
       // Vehicle left a permitted zone.
@@ -7673,6 +7698,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   Future<void> _reportBoundaryViolation(
     double distanceFromBoundaryMeters, {
     String? violationType,
+    String? geofenceId,
   }) async {
     if (!_isOnline) {
       debugPrint('[Boundary] Offline — violation not sent.');
@@ -7684,7 +7710,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     await _geofenceService.reportViolation(
       vehicleId: _vehicleId,
       driverId: _driverId == '—' ? null : _driverId,
-      geofenceId: _geofenceId,
+      geofenceId: geofenceId ?? _geofenceId,
       latitude: _state.gpsLat,
       longitude: _state.gpsLng,
       vehicleSpeed: _state.vehicleSpeed,
