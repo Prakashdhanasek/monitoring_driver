@@ -647,6 +647,8 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     bool anyViolation = false;
     String violationMode = 'PermittedZone';
     Set<String> currentViolations = {};
+    double maxDistanceBeyond = 0.0;
+
     for (final item in geofences) {
       if (item is! Map<String, dynamic>) continue;
       if (item['isActive'] != true) continue;
@@ -655,6 +657,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       final boundaryType = item['boundaryType'] as String? ?? '';
 
       bool isInside = false;
+      double distanceFromBoundaryMeters = 0.0;
 
       if (boundaryType == 'Polygon') {
         final coordsJson = item['polygonCoordinatesJson'] as String?;
@@ -680,18 +683,21 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
         final centerLng = (item['centerLongitude'] as num?)?.toDouble() ?? 0.0;
         final radiusM = (item['radiusMeters'] as num?)?.toDouble() ?? 0.0;
         if (centerLat != 0.0 || centerLng != 0.0) {
-          isInside = _isInsideCircle(
-            currentLat,
-            currentLng,
+          final dist = Geolocator.distanceBetween(
             centerLat,
             centerLng,
-            radiusM,
+            currentLat,
+            currentLng,
           );
+          isInside = dist <= radiusM;
+          if (!isInside) {
+            distanceFromBoundaryMeters = dist - radiusM;
+          }
         }
       }
 
       debugPrint(
-        '[Geofence] "${item['name']}" mode=$monitoringMode type=$boundaryType inside=$isInside',
+        '[Geofence] "${item['name']}" mode=$monitoringMode type=$boundaryType inside=$isInside dist=$distanceFromBoundaryMeters',
       );
 
       final currentGeofenceId =
@@ -711,6 +717,9 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
         isViolatingThis = true;
         currentViolationType = 'Outside Boundary';
         violationMode = 'PermittedZone';
+        if (distanceFromBoundaryMeters > maxDistanceBeyond) {
+          maxDistanceBeyond = distanceFromBoundaryMeters;
+        }
       }
 
       if (isViolatingThis && currentGeofenceId != null) {
@@ -718,7 +727,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
         if (!_activeViolatingGeofences.contains(currentGeofenceId)) {
           _activeViolatingGeofences.add(currentGeofenceId);
           _reportBoundaryViolation(
-            0,
+            distanceFromBoundaryMeters,
             violationType: currentViolationType,
             geofenceId: currentGeofenceId,
           );
@@ -740,6 +749,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
           _geofenceViolationType = violationMode;
           _activeBannerKey = 'geofence';
           _activeBannerAt = DateTime.now();
+          _boundaryBeyondM = maxDistanceBeyond;
         });
       }
     } else {
@@ -767,18 +777,6 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       if (intersect) inside = !inside;
     }
     return inside;
-  }
-
-  /// Returns true if [lat]/[lng] is within [radiusMeters] of the center.
-  bool _isInsideCircle(
-    double lat,
-    double lng,
-    double centerLat,
-    double centerLng,
-    double radiusMeters,
-  ) {
-    final dist = Geolocator.distanceBetween(centerLat, centerLng, lat, lng);
-    return dist <= radiusMeters;
   }
 
   Future<void> _fetchIncidentIntervals() async {
@@ -7422,7 +7420,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
 
     if (isRestricted) {
       // Vehicle entered a restricted zone.
-      bannerColor =  Color(0xFFDC2626); // purple-red for forbidden zone
+      bannerColor = Color(0xFFDC2626); // purple-red for forbidden zone
       text = '⛔  RESTRICTED AREA';
     } else {
       // Vehicle left a permitted zone.

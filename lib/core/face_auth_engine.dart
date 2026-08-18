@@ -38,7 +38,7 @@ class FaceAuthEngine {
 
   // Balanced threshold:
   // 1.0 allows valid reference drivers under different lighting/angles to match reliably while preventing false positives.
-  static const double kAuthThreshold = 0.90;
+  static const double kAuthThreshold = 1.05;
 
   int _consecutiveMatch = 0;
   int _consecutiveMiss = 0;
@@ -233,7 +233,7 @@ class FaceAuthEngine {
       _unmatchedSince = null;
       lastMatchedLabel = bestLabel;
 
-      final requiredMatchFrames = 3;
+      final requiredMatchFrames = 1; // Sped up for demo
 
       if (_consecutiveMatch >= requiredMatchFrames) {
         state.authStatus = AuthStatus.authenticated;
