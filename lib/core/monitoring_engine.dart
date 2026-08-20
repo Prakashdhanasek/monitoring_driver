@@ -406,7 +406,7 @@ class MonitoringEngine {
       state.continuousDrowsySince ??= now;
       state.continuousRecoverySince = null;
 
-      if (now.difference(state.continuousDrowsySince!).inSeconds >= 5) {
+      if (now.difference(state.continuousDrowsySince!).inMilliseconds >= 1500) {
         state.continuousDrowsySince = now; // Reset timer for next strike
         _triggerDrowsinessStrike(now);
       }
