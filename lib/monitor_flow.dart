@@ -208,6 +208,15 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   String? _tripId;
   double _overspeedThreshold = 0; // km/h from API (0 = disabled)
 
+  // Overtaking grace window — brief overspeed during overtaking is tolerated
+  DateTime? _overspeedSince;
+  double _overspeedPeakKmh = 0;
+  static const int _kOvertakingGraceSeconds = 10;
+
+  // Phone usage grace window — brief pickup-and-set-down is tolerated
+  DateTime? _phoneDetectedSince;
+  static const int _kPhoneGraceSeconds = 3;
+
   // Countdown
   int _countdown = 3;
   Timer? _countdownTimer;
@@ -3545,22 +3554,61 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       }
     }
 
-    // ── OVERSPEED ALERT ──────────────────────────────────────
+    // ── OVERSPEED ALERT (with overtaking grace window) ──────
+    debugPrint(
+      '[Overspeed-Check] vehicleSpeed=${_state.vehicleSpeed.toStringAsFixed(1)} '
+      'threshold=$_overspeedThreshold enabled=${_overspeedThreshold > 0}',
+    );
     if (_overspeedThreshold > 0 && _state.vehicleSpeed > _overspeedThreshold) {
-      if (_checkFrontendCooldown('Overspeeding')) loud = true;
-      if (_checkCooldown('Overspeeding')) {
-        _reportIncident(
-          'Overspeeding',
-          _getRiskLevel('Overspeeding', 'High'),
-          1.0,
+      if (_overspeedSince == null) {
+        _overspeedSince = DateTime.now();
+        _overspeedPeakKmh = _state.vehicleSpeed;
+      }
+      if (_state.vehicleSpeed > _overspeedPeakKmh) {
+        _overspeedPeakKmh = _state.vehicleSpeed;
+      }
+
+      final int elapsedMs = DateTime.now()
+          .difference(_overspeedSince!)
+          .inMilliseconds;
+      final bool graceExpired = elapsedMs >= (_kOvertakingGraceSeconds * 1000);
+
+      debugPrint(
+        '[Overspeed] speed=${_state.vehicleSpeed.toStringAsFixed(1)} peak=${_overspeedPeakKmh.toStringAsFixed(1)} '
+        'threshold=$_overspeedThreshold '
+        'elapsed=${(elapsedMs / 1000).toStringAsFixed(1)}s/${_kOvertakingGraceSeconds}s '
+        'graceExpired=$graceExpired',
+      );
+
+      if (graceExpired) {
+        if (_checkFrontendCooldown('Overspeeding')) loud = true;
+        if (_checkCooldown('Overspeeding')) {
+          // Report with peak speed, not current (may have dropped already)
+          _reportIncidentWithSpeed(
+            'Overspeeding',
+            _getRiskLevel('Overspeeding', 'High'),
+            1.0,
+            _overspeedPeakKmh,
+          );
+        }
+        if (_checkVoiceCooldown(
+          'overspeed',
+          Duration(seconds: _getCooldownForLabel('Overspeeding')),
+        )) {
+          _tts.speak(AlertMessages.overspeed(_tts.currentLang));
+        }
+      }
+    } else {
+      if (_overspeedSince != null) {
+        final dur = DateTime.now().difference(_overspeedSince!).inMilliseconds;
+        debugPrint(
+          '[Overspeed] Speed dropped below threshold after ${(dur / 1000).toStringAsFixed(1)}s '
+          'peak=${_overspeedPeakKmh.toStringAsFixed(1)} '
+          '— ${dur < (_kOvertakingGraceSeconds * 1000) ? "overtaking, not flagged" : "was already reported"}',
         );
       }
-      if (_checkVoiceCooldown(
-        'overspeed',
-        Duration(seconds: _getCooldownForLabel('Overspeeding')),
-      )) {
-        _tts.speak(AlertMessages.overspeed(_tts.currentLang));
-      }
+      _overspeedSince = null;
+      _overspeedPeakKmh = 0;
     }
 
     // 2. Object detections (phone, cigarette, eating, drinking)
@@ -3570,6 +3618,9 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       'eating': 0.5,
       'drinking': 0.5,
     };
+
+    // Track whether phone is detected this frame for grace window
+    bool phoneDetectedThisFrame = false;
 
     for (final obj in _state.detectedObjects) {
       final label = obj.label;
@@ -3583,6 +3634,21 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       if (label == 'eating') eventType = 'Eating';
       if (label == 'drinking') eventType = 'Drinking';
 
+      // Phone usage: require continuous detection for 3s before flagging
+      if (label == 'phone') {
+        phoneDetectedThisFrame = true;
+        _phoneDetectedSince ??= DateTime.now();
+        final elapsed = DateTime.now()
+            .difference(_phoneDetectedSince!)
+            .inSeconds;
+        if (elapsed < _kPhoneGraceSeconds) {
+          debugPrint(
+            '[PhoneUsage] Grace window (${elapsed}s/${_kPhoneGraceSeconds}s) — brief pickup',
+          );
+          continue; // skip reporting, still within grace
+        }
+      }
+
       if (_checkFrontendCooldown(eventType)) loud = true;
 
       if (_checkCooldown(eventType)) {
@@ -3592,6 +3658,15 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
           obj.confidence,
         );
       }
+    }
+
+    // Reset phone grace timer when phone is no longer detected
+    if (!phoneDetectedThisFrame && _phoneDetectedSince != null) {
+      final dur = DateTime.now().difference(_phoneDetectedSince!).inSeconds;
+      if (dur < _kPhoneGraceSeconds) {
+        debugPrint('[PhoneUsage] Brief pickup (${dur}s) — not flagged');
+      }
+      _phoneDetectedSince = null;
     }
 
     final currentBannerKey = _getMonitorBannerKey(phone, smoke);
@@ -7308,6 +7383,9 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       bg = const Color(0xFFEA580C);
       final percent = (_state.drinkingConfidence * 100).toStringAsFixed(0);
       text = '🥤  DRINKING DETECTED ($percent%)';
+    } else if (currentKey == 'overspeed') {
+      bg = const Color(0xFFDC2626);
+      text = '⚠️  OVERSPEED DETECTED';
     } else if (_state.drowsinessLevel == DrowsinessLevel.drowsy) {
       bg = const Color(0xFFD97706);
       text = '⚠  DROWSINESS DETECTED';
@@ -7353,7 +7431,13 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
         DateTime.now().difference(_harshEventAt!) <= _kBannerVisibleDuration) {
       return 'harsh';
     }
-    if (phone && !_isBannerInCooldown('Phone Usage')) return 'phone';
+    // Phone banner only after grace window expires
+    if (phone &&
+        !_isBannerInCooldown('Phone Usage') &&
+        _phoneDetectedSince != null &&
+        DateTime.now().difference(_phoneDetectedSince!).inSeconds >=
+            _kPhoneGraceSeconds)
+      return 'phone';
     if (_state.drowsinessLevel == DrowsinessLevel.asleep &&
         !_isBannerInCooldown('Sleepiness'))
       return 'asleep';
@@ -7366,6 +7450,14 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     if (_state.drowsinessLevel == DrowsinessLevel.drowsy &&
         !_isBannerInCooldown('Drowsiness'))
       return 'drowsy';
+    // Overspeed banner only after grace window expires
+    if (_overspeedThreshold > 0 &&
+        _state.vehicleSpeed > _overspeedThreshold &&
+        _overspeedSince != null &&
+        DateTime.now().difference(_overspeedSince!).inMilliseconds >=
+            (_kOvertakingGraceSeconds * 1000) &&
+        !_isBannerInCooldown('Overspeeding'))
+      return 'overspeed';
     if (_state.distractionStatus == DistractionStatus.distracted &&
         !_isBannerInCooldown('Distraction'))
       return 'distracted';

@@ -1,5 +1,4 @@
 cigarette
 phone
 seatbelt
-eating
-drinking
+
