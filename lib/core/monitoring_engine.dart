@@ -241,16 +241,8 @@ class MonitoringEngine {
 
     // ── Distraction via yaw ──────────────────────────────────────────────
     final isDistracted = yaw.abs() > _dynamicYawThreshold;
-    if (isDistracted) {
-      state.distractedSince ??= now;
-      if (now.difference(state.distractedSince!).inMilliseconds >=
-          _dynamicDistractionDurationMs) {
-        state.distractionStatus = DistractionStatus.distracted;
-      }
-    } else {
-      state.distractionStatus = DistractionStatus.forward;
-      state.distractedSince = null;
-    }
+    // Note: distractionStatus is updated in _updateDistractionStrikeSystem
+    // to benefit from the 1.5s ML-jitter grace period.
 
     // ── Head drop (sleep indicator) ──────────────────────────────────────
     // CRITICAL FIX: Only trigger head drop when NOT distracted.
@@ -443,6 +435,8 @@ class MonitoringEngine {
 
       if (now.difference(state.continuousDistractedSince!).inMilliseconds >=
           _dynamicDistractionDurationMs) {
+        state.distractionStatus = DistractionStatus.distracted;
+
         // Add strike = state.lastDistractionStrikeCooldown;
         final lastStrike = state.lastDistractionStrikeCooldown;
         if (lastStrike == null || now.difference(lastStrike).inSeconds >= 5) {
@@ -477,6 +471,7 @@ class MonitoringEngine {
       // Only break the distraction timer if they've looked forward for 1.5 seconds minimum
       if (now.difference(state.continuousForwardSince!).inMilliseconds >=
           1500) {
+        state.distractionStatus = DistractionStatus.forward;
         state.continuousDistractedSince = null;
       }
 
