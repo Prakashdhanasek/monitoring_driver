@@ -1,7 +1,9 @@
-
 enum AuthStatus { scanning, authenticated, unauthorized, multipleFaces }
+
 enum DrowsinessLevel { alert, drowsy, asleep }
+
 enum DistractionStatus { forward, distracted }
+
 enum MonitorMode { normal, sunglasses, oneEye }
 
 class AlertEvent {
@@ -31,8 +33,8 @@ class MonitorState {
   DateTime? lastSeatbeltDetected;
 
   double gpsLat = 0.0;
-double gpsLng = 0.0;
-double vehicleSpeed = 0.0;
+  double gpsLng = 0.0;
+  double vehicleSpeed = 0.0;
 
   // Calibration
   bool calibrated = false;
@@ -55,7 +57,8 @@ double vehicleSpeed = 0.0;
   DateTime? perclosExceededSince;
   DateTime? yoloYawnDetectedSince;
   DateTime? sunglassesHeadDropSince;
-  
+  List<DateTime> microSleepTimestamps = [];
+
   // Drowsiness 'Strike' System
   int drowsyAlertCount = 0;
   DateTime? continuousDrowsySince;
@@ -64,7 +67,7 @@ double vehicleSpeed = 0.0;
   DrowsinessLevel drowsinessLevel = DrowsinessLevel.alert;
   int totalDrowsyCount = 0;
   List<bool> eyeClosureHistory = [];
-  static const int perclosWindowSize = 900; 
+  static const int perclosWindowSize = 900;
 
   // MAR (sunglasses mode)
   double mar = 0.0;
@@ -107,6 +110,14 @@ double vehicleSpeed = 0.0;
   Map<String, int> consecutiveDistractions = {};
   Map<String, DateTime> distractionCooldowns = {};
 
+  // Phone continuous tracking
+  DateTime? continuousPhoneSince;
+  DateTime? continuousNoPhoneSince;
+
+  DateTime? continuousCigaretteSince;
+  DateTime? continuousNoCigaretteSince;
+  DateTime? continuousPhoneLostSince;
+
   // Distraction Strike System (looking away)
   // 1-4 strikes = audio alert, 5 strikes = major flag
   int distractionStrikeCount = 0;
@@ -116,7 +127,7 @@ double vehicleSpeed = 0.0;
 
   // Object detection
   List<DetectedObject> detectedObjects = [];
-  
+
   // YOLO Diagnostics
   String yoloInputShape = 'unknown';
   String yoloOutputShape = 'unknown';
@@ -177,6 +188,10 @@ double vehicleSpeed = 0.0;
     lastDistractionFlagTime = null;
     consecutiveDistractions.clear();
     distractionCooldowns.clear();
+    continuousNoPhoneSince = null;
+    continuousCigaretteSince = null;
+    continuousNoCigaretteSince = null;
+    continuousPhoneLostSince = null;
     distractionStrikeCount = 0;
     continuousDistractedSince = null;
     continuousForwardSince = null;
@@ -190,6 +205,7 @@ double vehicleSpeed = 0.0;
     chewingFlaggedSince = null;
     isChewing = false;
     eyeClosureHistory.clear();
+    microSleepTimestamps.clear();
     roll = 0.0;
     yoloInputShape = 'unknown';
     yoloOutputShape = 'unknown';
@@ -206,7 +222,9 @@ double vehicleSpeed = 0.0;
     consecutiveSmokeFrames = 0;
     consecutiveFoodFrames = 0;
     hasPhone = false;
+    reportPhoneViolation = false;
     hasCigarette = false;
+    reportCigaretteViolation = false;
     hasEating = false;
     hasDrinking = false;
     phoneConfidence = 0.0;
@@ -224,6 +242,8 @@ double vehicleSpeed = 0.0;
   bool hasCigarette = false;
   bool hasEating = false;
   bool hasDrinking = false;
+  bool reportPhoneViolation = false;
+  bool reportCigaretteViolation = false;
 
   double phoneConfidence = 0.0;
   double cigaretteConfidence = 0.0;

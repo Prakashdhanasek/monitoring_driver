@@ -283,6 +283,9 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   static const int _kNoFaceGraceSeconds = 5;
 
   bool _isDriverChangedActive() {
+    // Suppress Driver Changed alerts if the vehicle is parked or slow.
+    if (_state.vehicleSpeed <= 10.0) return false;
+
     // Only trigger Driver Changed if the trip session started as a verified registered driver.
     // Unknown driver trips should never trigger Driver Changed alerts.
     if (_state.isUnknownDriver ||
@@ -3415,8 +3418,8 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
 
   Future<void> _handleAlertSounds(CameraImage? currentImage) async {
     final now = DateTime.now();
-    final phone = _state.hasPhone;
-    final smoke = _state.hasCigarette;
+    final phone = _state.reportPhoneViolation;
+    final smoke = _state.reportCigaretteViolation;
 
     bool loud = false;
     bool soft = false;
@@ -3456,142 +3459,170 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       }
     }
 
-    // ── SEATBELT CYCLIC ALERT ──────────────────────────────────────
-    // Grace period: skip seatbelt alert for first 10 seconds after trip start
-    final bool seatbeltGraceActive =
-        _monitoringStartedAt != null &&
-        now.difference(_monitoringStartedAt!).inSeconds <
-            _kSeatbeltGraceSeconds;
-    if (!_state.seatbeltBuckled &&
-        _state.calibrated &&
-        _phase == Phase.monitoring &&
-        !_tripCompleted &&
-        !seatbeltGraceActive) {
-      // Start cycle if not already started
-      if (_seatbeltAlertStart == null) {
-        _seatbeltAlertStart = now;
-        _seatbeltPhaseStart = now;
+    if (_state.vehicleSpeed > 10.0) {
+      // ── SEATBELT CYCLIC ALERT ──────────────────────────────────────
+      // Grace period: skip seatbelt alert for first 10 seconds after trip start
+      final bool seatbeltGraceActive =
+          _monitoringStartedAt != null &&
+          now.difference(_monitoringStartedAt!).inSeconds <
+              _kSeatbeltGraceSeconds;
+      if (!_state.seatbeltBuckled &&
+          _state.calibrated &&
+          _phase == Phase.monitoring &&
+          !_tripCompleted &&
+          !seatbeltGraceActive) {
+        // Start cycle if not already started
+        if (_seatbeltAlertStart == null) {
+          _seatbeltAlertStart = now;
+          _seatbeltPhaseStart = now;
+          _seatbeltInBeepPhase = true;
+        }
+
+        // Determine current phase
+        final phaseElapsed = now.difference(_seatbeltPhaseStart!).inSeconds;
+        if (_seatbeltInBeepPhase && phaseElapsed >= _kSeatbeltBeepDuration) {
+          // Switch to silence phase
+          _seatbeltInBeepPhase = false;
+          _seatbeltPhaseStart = now;
+        } else if (!_seatbeltInBeepPhase &&
+            phaseElapsed >= _kSeatbeltSilenceDuration) {
+          // Switch back to beep phase
+          _seatbeltInBeepPhase = true;
+          _seatbeltPhaseStart = now;
+        }
+
+        // Beep + report + voice all gated by API interval
+        if (_seatbeltInBeepPhase && _checkFrontendCooldown('seatbelt')) {
+          soft = true;
+        }
+
+        if (_checkCooldown('seatbelt')) {
+          _reportIncident(
+            'Seatbelt Not Worn',
+            _getRiskLevel('Seatbelt Not Worn', 'Medium'),
+            1.0,
+          );
+        }
+
+        if (_checkVoiceCooldown(
+          'seatbelt',
+          Duration(seconds: _getCooldownForLabel('seatbelt')),
+        )) {
+          _tts.speak(AlertMessages.seatbelt(_tts.currentLang));
+        }
+      } else {
+        // Seatbelt is buckled — reset cycle
+        _seatbeltAlertStart = null;
+        _seatbeltPhaseStart = null;
         _seatbeltInBeepPhase = true;
+        _lastVoiceAlertAt.remove('seatbelt');
+      }
+      if (_state.drowsinessLevel == DrowsinessLevel.asleep) {
+        if (_checkFrontendCooldown('Sleepiness')) loud = true;
+
+        if (_checkCooldown('Sleepiness')) {
+          _reportIncident(
+            'Sleepiness',
+            _getRiskLevel('Sleepiness', 'Critical'),
+            1.0,
+          );
+        }
+      } else if (_state.drowsinessLevel == DrowsinessLevel.drowsy) {
+        if (_checkFrontendCooldown('Drowsiness')) soft = true;
+
+        if (_checkCooldown('Drowsiness')) {
+          _reportIncident(
+            'Drowsiness',
+            _getRiskLevel('Drowsiness', 'Critical'),
+            0.8,
+          );
+        }
+      }
+      if (_state.distractionStatus == DistractionStatus.distracted) {
+        if (_checkFrontendCooldown('Distraction')) soft = true;
+        if (_checkCooldown('Distraction')) {
+          _reportIncident(
+            'Distraction',
+            _getRiskLevel('Distraction', 'High'),
+            0.8,
+          );
+        }
       }
 
-      // Determine current phase
-      final phaseElapsed = now.difference(_seatbeltPhaseStart!).inSeconds;
-      if (_seatbeltInBeepPhase && phaseElapsed >= _kSeatbeltBeepDuration) {
-        // Switch to silence phase
-        _seatbeltInBeepPhase = false;
-        _seatbeltPhaseStart = now;
-      } else if (!_seatbeltInBeepPhase &&
-          phaseElapsed >= _kSeatbeltSilenceDuration) {
-        // Switch back to beep phase
-        _seatbeltInBeepPhase = true;
-        _seatbeltPhaseStart = now;
+      // ── OVERSPEED ALERT ──────────────────────────────────────
+      if (_overspeedThreshold > 0 &&
+          _state.vehicleSpeed > _overspeedThreshold) {
+        if (_checkFrontendCooldown('Overspeeding')) loud = true;
+        if (_checkCooldown('Overspeeding')) {
+          _reportIncident(
+            'Overspeeding',
+            _getRiskLevel('Overspeeding', 'High'),
+            1.0,
+          );
+        }
+        if (_checkVoiceCooldown(
+          'overspeed',
+          Duration(seconds: _getCooldownForLabel('Overspeeding')),
+        )) {
+          _tts.speak(AlertMessages.overspeed(_tts.currentLang));
+        }
       }
 
-      // Beep + report + voice all gated by API interval
-      if (_seatbeltInBeepPhase && _checkFrontendCooldown('seatbelt')) {
-        soft = true;
+      // 2. Object detections (eating, drinking)
+      const reportThresholds = {'eating': 0.5, 'drinking': 0.5};
+
+      for (final obj in _state.detectedObjects) {
+        final label = obj.label;
+        final threshold = reportThresholds[label];
+        if (threshold == null || obj.confidence <= threshold) continue;
+        if (label == 'seatbelt') continue;
+
+        String eventType = label;
+        if (label == 'cigarette') eventType = 'Smoking';
+        if (label == 'eating') eventType = 'Eating';
+        if (label == 'drinking') eventType = 'Drinking';
+
+        if (_checkFrontendCooldown(eventType)) loud = true;
+
+        if (_checkCooldown(eventType)) {
+          _reportIncident(
+            eventType,
+            _getRiskLevel(eventType, 'Medium'),
+            obj.confidence,
+          );
+        }
       }
 
-      if (_checkCooldown('seatbelt')) {
-        _reportIncident(
-          'Seatbelt Not Worn',
-          _getRiskLevel('Seatbelt Not Worn', 'Medium'),
-          1.0,
-        );
+      // Phone is handled via strict 3.0s duration in state:
+      if (_state.reportPhoneViolation) {
+        _state.reportPhoneViolation = false;
+        if (_checkFrontendCooldown('Phone Usage')) loud = true;
+        if (_checkCooldown('Phone Usage')) {
+          _reportIncident(
+            'Phone Usage',
+            _getRiskLevel('Phone Usage', 'Medium'),
+            1.0,
+          );
+        }
       }
 
-      if (_checkVoiceCooldown(
-        'seatbelt',
-        Duration(seconds: _getCooldownForLabel('seatbelt')),
-      )) {
-        _tts.speak(AlertMessages.seatbelt(_tts.currentLang));
+      // Cigarette is handled via strict 2.5s duration in state:
+      if (_state.reportCigaretteViolation) {
+        _state.reportCigaretteViolation = false;
+        if (_checkFrontendCooldown('Smoking')) loud = true;
+        if (_checkCooldown('Smoking')) {
+          _reportIncident('Smoking', _getRiskLevel('Smoking', 'Medium'), 1.0);
+        }
       }
     } else {
-      // Seatbelt is buckled — reset cycle
+      // Vehicle is slow/parked (<= 10.0 km/h)
+      // Safely reset cyclic timers and suppress stored incidents
       _seatbeltAlertStart = null;
       _seatbeltPhaseStart = null;
       _seatbeltInBeepPhase = true;
       _lastVoiceAlertAt.remove('seatbelt');
-    }
-    if (_state.drowsinessLevel == DrowsinessLevel.asleep) {
-      if (_checkFrontendCooldown('Sleepiness')) loud = true;
-
-      if (_checkCooldown('Sleepiness')) {
-        _reportIncident(
-          'Sleepiness',
-          _getRiskLevel('Sleepiness', 'Critical'),
-          1.0,
-        );
-      }
-    } else if (_state.drowsinessLevel == DrowsinessLevel.drowsy) {
-      if (_checkFrontendCooldown('Drowsiness')) soft = true;
-
-      if (_checkCooldown('Drowsiness')) {
-        _reportIncident(
-          'Drowsiness',
-          _getRiskLevel('Drowsiness', 'Critical'),
-          0.8,
-        );
-      }
-    }
-    if (_state.distractionStatus == DistractionStatus.distracted) {
-      if (_checkFrontendCooldown('Distraction')) soft = true;
-      if (_checkCooldown('Distraction')) {
-        _reportIncident(
-          'Distraction',
-          _getRiskLevel('Distraction', 'High'),
-          0.8,
-        );
-      }
-    }
-
-    // ── OVERSPEED ALERT ──────────────────────────────────────
-    if (_overspeedThreshold > 0 && _state.vehicleSpeed > _overspeedThreshold) {
-      if (_checkFrontendCooldown('Overspeeding')) loud = true;
-      if (_checkCooldown('Overspeeding')) {
-        _reportIncident(
-          'Overspeeding',
-          _getRiskLevel('Overspeeding', 'High'),
-          1.0,
-        );
-      }
-      if (_checkVoiceCooldown(
-        'overspeed',
-        Duration(seconds: _getCooldownForLabel('Overspeeding')),
-      )) {
-        _tts.speak(AlertMessages.overspeed(_tts.currentLang));
-      }
-    }
-
-    // 2. Object detections (phone, cigarette, eating, drinking)
-    const reportThresholds = {
-      'phone': 0.5,
-      'cigarette': 0.5,
-      'eating': 0.5,
-      'drinking': 0.5,
-    };
-
-    for (final obj in _state.detectedObjects) {
-      final label = obj.label;
-      final threshold = reportThresholds[label];
-      if (threshold == null || obj.confidence <= threshold) continue;
-      if (label == 'seatbelt') continue;
-
-      String eventType = label;
-      if (label == 'phone') eventType = 'Phone Usage';
-      if (label == 'cigarette') eventType = 'Smoking';
-      if (label == 'eating') eventType = 'Eating';
-      if (label == 'drinking') eventType = 'Drinking';
-
-      if (_checkFrontendCooldown(eventType)) loud = true;
-
-      if (_checkCooldown(eventType)) {
-        _reportIncident(
-          eventType,
-          _getRiskLevel(eventType, 'Medium'),
-          obj.confidence,
-        );
-      }
+      _state.reportPhoneViolation = false;
+      _state.reportCigaretteViolation = false;
     }
 
     final currentBannerKey = _getMonitorBannerKey(phone, smoke);
@@ -3606,7 +3637,9 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     }
 
     // --- Unified TTS Logic based on Banner Priority ---
-    if (currentBannerKey != null && currentBannerKey != 'harsh') {
+    if (_state.vehicleSpeed > 10.0 &&
+        currentBannerKey != null &&
+        currentBannerKey != 'harsh') {
       final cooldownLabel = _kBannerToCooldownLabel[currentBannerKey];
       final int cooldownSeconds = cooldownLabel != null
           ? _getCooldownForLabel(cooldownLabel)
@@ -7247,6 +7280,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   // important active state: unauthorized / multiple / asleep / phone /
   // cigarette / seatbelt / drowsy / distraction. Hidden when all is well.
   Widget _monitorBanner() {
+    if (_state.vehicleSpeed <= 10.0) return const SizedBox.shrink();
     final phone = _state.hasPhone;
     final smoke = _state.hasCigarette;
 
@@ -7376,6 +7410,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   }
 
   Widget _seatbeltIndicator() {
+    if (_state.vehicleSpeed <= 10.0) return const SizedBox.shrink();
     final on = _state.seatbeltBuckled;
     if (on) return const SizedBox.shrink();
     final bg = on ? const Color(0xFF16A34A) : const Color(0xFFDC2626);
@@ -7411,6 +7446,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   // Shows "RESTRICTED AREA" for RestrictedEntry zones and
   // "OUT OF BOUNDARY" for PermittedZone exits.
   Widget _boundaryBanner() {
+    if (_state.vehicleSpeed <= 10.0) return const SizedBox.shrink();
     if (!_outsideBoundary) return const SizedBox.shrink();
 
     final bool isRestricted = _geofenceViolationType == 'RestrictedEntry';
@@ -7421,7 +7457,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     if (isRestricted) {
       // Vehicle entered a restricted zone.
       bannerColor = Color(0xFFDC2626); // purple-red for forbidden zone
-      text = '⛔  RESTRICTED AREA';
+      text = '  RESTRICTED AREA';
     } else {
       // Vehicle left a permitted zone.
       bannerColor = const Color(0xFFDC2626); // red for out of boundary

@@ -1,0 +1,373 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <meta charset="UTF-8">
+    <title>Complete Incident Implementation Architecture</title>
+    <!-- Include html2pdf library -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script>
+
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            padding: 0;
+            margin: 0;
+            background-color: #f8f9fa;
+        }
+
+        #content-to-pdf {
+            padding: 40px;
+            color: #202124;
+            max-width: 1000px;
+            margin: auto;
+            line-height: 1.6;
+            background-color: #f8f9fa;
+        }
+
+        h1 {
+            color: #d93025;
+            font-size: 2.2em;
+            margin-bottom: 5px;
+            text-align: center;
+        }
+
+        .subtitle {
+            color: #5f6368;
+            font-size: 1.2em;
+            margin-bottom: 40px;
+            text-align: center;
+        }
+
+        .grid-container {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+        }
+
+        .engine-card {
+            background-color: #fff;
+            border: 1px solid #dadce0;
+            border-radius: 8px;
+            padding: 25px;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
+        }
+
+        .engine-card h3 {
+            margin-top: 0;
+            padding-bottom: 10px;
+            font-size: 1.5em;
+            border-bottom: 3px solid;
+        }
+
+        p {
+            color: #3c4043;
+            font-size: 1.05em;
+            margin-bottom: 10px;
+        }
+
+        ul {
+            padding-left: 20px;
+            margin-top: 5px;
+        }
+
+        li {
+            margin-bottom: 8px;
+            color: #3c4043;
+        }
+
+        .tag {
+            display: inline-block;
+            background: #e8f0fe;
+            color: #1a73e8;
+            padding: 3px 8px;
+            border-radius: 4px;
+            font-size: 0.85em;
+            font-weight: bold;
+            margin-bottom: 10px;
+        }
+
+        .full-width {
+            grid-column: span 2;
+        }
+
+        .blue-border {
+            border-bottom-color: #1a73e8 !important;
+            color: #1a73e8;
+        }
+
+        .red-border {
+            border-bottom-color: #d93025 !important;
+            color: #d93025;
+        }
+
+        .green-border {
+            border-bottom-color: #137333 !important;
+            color: #137333;
+        }
+
+        .orange-border {
+            border-bottom-color: #f29900 !important;
+            color: #f29900;
+        }
+
+        .purple-border {
+            border-bottom-color: #9334e6 !important;
+            color: #9334e6;
+        }
+
+        .dark-border {
+            border-bottom-color: #202124 !important;
+            color: #202124;
+        }
+
+        .global-box {
+            background-color: #fff3cd;
+            border: 1px solid #ffeeba;
+            border-radius: 8px;
+            padding: 20px;
+            margin-bottom: 30px;
+        }
+
+        .testing-note {
+            background-color: #e6f4ea;
+            border-left: 4px solid #137333;
+            border-radius: 4px;
+            padding: 15px;
+            margin-top: 30px;
+            font-weight: bold;
+            color: #137333;
+            font-size: 1.1em;
+            text-align: center;
+            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+        }
+
+        /* Download Button Styles */
+        .download-btn {
+            position: fixed;
+            top: 20px;
+            right: 30px;
+            background-color: #137333;
+            color: white;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 5px;
+            font-size: 1em;
+            font-weight: bold;
+            cursor: pointer;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.2);
+            transition: background-color 0.3s;
+            z-index: 1000;
+        }
+
+        .download-btn:hover {
+            background-color: #0d5323;
+        }
+
+        /* Loader Styles */
+        .loader {
+            display: none;
+            position: fixed;
+            top: 25px;
+            right: 210px;
+            color: #137333;
+            font-weight: bold;
+            z-index: 1000;
+        }
+    </style>
+</head>
+
+<body>
+
+<!-- Floating Download Button -->
+<button id="downloadBtn" class="download-btn" onclick="downloadPDF()">⬇️ Download PDF File directly</button>
+<div id="loader" class="loader">Generating PDF... Please wait...</div>
+
+<div id="content-to-pdf">
+    <h1>Deep-Dive: Incident Logic Architecture</h1>
+    <p class="subtitle">Complete technical breakdown of every single driver monitoring event.</p>
+
+    <div class="global-box">
+        <h3 style="color: #856404; margin-top:0;">GLOBAL GATING RULES (Applies to all incidents)</h3>
+        <ul>
+            <li><b>Speed Barrier:</b> ALL incident triggers (Phone, Distraction, Drowsiness, Seatbelt, Smoking,
+                Driver Changed) are hard-gated behind a <b>> 10 km/h minimum speed check</b>. If the vehicle is
+                parked, incidents are processed but NOT alerted or sent to the API.</li>
+            <li><b>API Cooldowns:</b> ALL repeats are governed by the server's cooldown map. E.g., if Phone Usage
+                has a 180s interval in the API, the app will strictly wait 3 minutes before generating another phone
+                alert, preventing spam.</li>
+        </ul>
+    </div>
+
+    <div class="grid-container">
+
+        <div class="engine-card">
+            <h3 class="blue-border">Phone Usage</h3>
+            <span class="tag">Model A YOLO</span> <span class="tag">3-Second Timer</span>
+            <ul>
+                <li><b>Implementation:</b> Driven by <i>ObjectDetectorEngine</i> processing Model A
+                    (custom_yolo.tflite).</li>
+                <li><b>Logic:</b> Triggers ONLY if YOLO predicts a phone bounding box extending past 55% confidence
+                    continuously for <b>3 seconds</b>.</li>
+                <li><b>Refinements:</b> The legacy jitter/blur logic was removed. It now uses a strict timer with a
+                    1.5s grace buffer (if a hand drops and immediately lifts, the timer resumes instead of
+                    resetting).</li>
+            </ul>
+        </div>
+
+        <div class="engine-card">
+            <h3 class="dark-border">Smoking</h3>
+            <span class="tag">Model A YOLO</span>
+            <ul>
+                <li><b>Implementation:</b> Processed alongside Phone Usage on Model A.</li>
+                <li><b>Logic:</b> Detects a smoking mechanism/gesture with YOLO confidence > 45%.</li>
+                <li><b>Refinements:</b> Relies on sustained multi-frame confirmation to prevent false ID from white
+                    pens or similar objects.</li>
+            </ul>
+        </div>
+
+        <div class="engine-card">
+            <h3 class="green-border">Seatbelt Unbuckled</h3>
+            <span class="tag">Model A YOLO</span> <span class="tag">Absence Detection</span>
+            <ul>
+                <li><b>Implementation:</b> Object absence mapping via Model A framework.</li>
+                <li><b>Logic:</b> A cyclic timer activates in the main event stream. If the YOLO model fails to
+                    return a "seatbelt" bounding box, the cyclic audio starts playing.</li>
+                <li><b>Refinements:</b> Only activates >10 km/h. Instantly shuts off the moment the unbuckled driver
+                    stops the vehicle or successfully puts the seatbelt back on.</li>
+            </ul>
+        </div>
+
+        <div class="engine-card">
+            <h3 class="purple-border">Distraction</h3>
+            <span class="tag">ML Kit Euler Yaw</span> <span class="tag">Context-Aware Math</span>
+            <ul>
+                <li><b>Implementation:</b> Dynamically mapped in <i>MonitoringEngine</i> via facial landmark
+                    rotation (Euler Angle Y).</li>
+                <li><b>Logic (Highway / > 40 km/h):</b> Yaw threshold is <b>25 Degrees</b>. Driver must look away
+                    from the road continuously for <b>3.5 seconds</b>.</li>
+                <li><b>Logic (City / < 40 km/h):</b> Yaw threshold relaxes to <b>35 Degrees</b>. Driver must look
+                    away continuously for <b>6 seconds</b> to allow for heavy mirror-checking or side-street
+                    checking at intersections.</li>
+            </ul>
+        </div>
+
+        <div class="engine-card">
+            <h3 class="orange-border">Mild Drowsiness</h3>
+            <span class="tag">PERCLOS / EAR</span> <span class="tag">MAR</span> <span class="tag">Strike
+                    System</span>
+            <ul>
+                <li><b>Implementation:</b> Tracks Eye Aspect Ratio (EAR) and Mouth Aspect Ratio (MAR).</li>
+                <li><b>Logic (Micro-sleep):</b> Logs a strike instantly if the EAR drops deeply for < 800ms, and
+                    happens 3 times within a 30-second window.</li>
+                <li><b>Logic (Yawning):</b> Logs a strike if MAR stays > 60% (mouth wide open) for 1.5 seconds.</li>
+                <li><b>Alerts:</b> Plays Strikes 1-4 audio. Logs 'Drowsiness' incident.</li>
+            </ul>
+        </div>
+
+        <div class="engine-card">
+            <h3 class="red-border">Severe Sleepiness (Wake Up)</h3>
+            <span class="tag">Continuous Timer</span> <span class="tag">Euler Pitch</span>
+            <ul>
+                <li><b>Implementation:</b> Bypasses strikes completely for immediate alarm override.</li>
+                <li><b>Logic (Actual Sleep):</b> Eyes closed continuously for <b>7 seconds</b>.</li>
+                <li><b>Logic (Head Drop):</b> Pitch angle drops drastically (< -12 Degrees or> 15 Degrees)
+                    continuously for <b>7 seconds</b>.</li>
+                <li><b>Alerts:</b> Triggers massive red Screen UI, loud blaring TTS (WAKE UP), and uploads Critical
+                    Sleepiness Incident.</li>
+            </ul>
+        </div>
+
+        <div class="engine-card">
+            <h3 class="blue-border">Driver Changed</h3>
+            <span class="tag">FaceNet Embedding Space</span> <span class="tag">12s Buffer</span>
+            <ul>
+                <li><b>Implementation:</b> Uses Mobile FaceNet inference to extract a 192-dimensional vector
+                    embedding.</li>
+                <li><b>Logic:</b> Triggers if the current active face embedding distance fails to match the original
+                    driver embedding.</li>
+                <li><b>Occlusion Fix:</b> Upgraded to tolerate exactly <b>12 continuous seconds</b> of occlusion
+                    (covering face, wearing heavy sunglasses, wiping sweat) before firing the unauthorized alarm.
+                </li>
+            </ul>
+        </div>
+
+        <div class="engine-card">
+            <h3 class="dark-border">Multiple Persons Detected</h3>
+            <span class="tag">Facial Multi-tracking</span>
+            <ul>
+                <li><b>Implementation:</b> Hooks into ML Kit's multi-face native bounding box array.</li>
+                <li><b>Logic:</b> Triggers the moment the camera captures > 1 distinct facial bounding boxes within
+                    the designated driver scanning region.</li>
+            </ul>
+        </div>
+
+        <div class="engine-card">
+            <h3 class="green-border">Camera Blocked (No Face)</h3>
+            <span class="tag">Null Detection</span>
+            <ul>
+                <li><b>Implementation:</b> Triggers when the master ML Kit frame array returns null natively.</li>
+                <li><b>Logic:</b> Given a 5-second grace countdown (to account for shadows or hand-blocks). After 5
+                    seconds, flags monitoring state to warn fleet managers that the camera is completely blocked or
+                    broken.</li>
+            </ul>
+        </div>
+
+        <div class="engine-card full-width">
+            <h3 class="purple-border">Overspeeding & Geofencing (Telemetry)</h3>
+            <span class="tag">GPS Stream</span> <span class="tag">Overtaking Buffer</span> <span class="tag">Polygon
+                    Ray-Casting</span>
+            <ul>
+                <li><b>Overspeeding 10-Second Buffer Engine:</b>
+                    <br>1. <b>Speed > Threshold</b>: Starts a silent 10-second timer (No report is triggered
+                    immediately).
+                    <br>2. <b>Speed drops within 10s</b>: Timer cancels natively without any incident logged (Allows
+                    for aggressive but brief overtaking).
+                    <br>3. <b>Speed stays high for 10+ seconds</b>: Timer completes and fires an Overspeeding
+                    incident payload containing the <i>Peak Speed</i> recorded during that window.
+                </li>
+                <li><b>Geofence Logic:</b> Uses complex mathematical Ray-Casting for Polygons and Haversine
+                    distances for Circles. Triggers RESTRICTED AREA or OUT OF BOUNDARY instantly upon GPS location
+                    breach.</li>
+            </ul>
+        </div>
+
+    </div>
+
+    <!-- TESTING DISCLAIMER -->
+    <div class="testing-note">
+        NOTICE: All of the metrics, timers, and changes detailed in this architecture document are currently in
+        active testing for final accuracy calibration.
+    </div>
+</div> <!-- End of content-to-pdf -->
+
+<script>
+    function downloadPDF() {
+        var btn = document.getElementById('downloadBtn');
+        var loader = document.getElementById('loader');
+
+        // disable button and show text
+        btn.disabled = true;
+        btn.style.backgroundColor = '#666';
+        loader.style.display = 'block';
+
+        var element = document.getElementById('content-to-pdf');
+        var opt = {
+            margin: 10,
+            filename: 'Incident_Logic_Architecture.pdf',
+            image: { type: 'jpeg', quality: 0.98 },
+            html2canvas: { scale: 2 },
+            jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' }
+        };
+
+        // Generate PDF
+        html2pdf().set(opt).from(element).save().then(function () {
+            // Restore button state
+            btn.disabled = false;
+            btn.style.backgroundColor = '#137333';
+            loader.style.display = 'none';
+        });
+    }
+</script>
+</body>
+
+</html>

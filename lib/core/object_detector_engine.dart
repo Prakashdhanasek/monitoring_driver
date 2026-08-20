@@ -240,10 +240,70 @@ class ObjectDetectorEngine {
     final now = DateTime.now();
     bool requestEvidenceDump = false;
 
-    // Leaky Bucket temporal smoothing for each banned object category
+    // Phone Tracking: Continuous 3.0s duration with 1.5s visual grace buffer
+    if (state.hasPhone) {
+      state.continuousPhoneLostSince = null;
+      state.continuousPhoneSince ??= now;
+
+      if (now.difference(state.continuousPhoneSince!).inMilliseconds >= 3000) {
+        final lastCooldown = state.distractionCooldowns['phone'];
+        if (lastCooldown == null ||
+            now.difference(lastCooldown).inSeconds >= 30) {
+          state.distractionCooldowns['phone'] = now;
+          state.totalDistractionCount++;
+
+          state.addAlert(
+            AlertEvent(
+              type: 'flag_distraction_phone',
+              message: 'FLAG: BANNED OBJECT - PHONE DETECTED',
+              needsScreenshot: true,
+              isMajorFlag: true,
+            ),
+          );
+          requestEvidenceDump = true;
+          state.reportPhoneViolation = true;
+          state.continuousPhoneSince = null; // reset to avoid spamming
+        }
+      }
+    } else {
+      if (state.continuousPhoneSince != null) {
+        state.continuousPhoneLostSince ??= now;
+        if (now.difference(state.continuousPhoneLostSince!).inMilliseconds >=
+            1500) {
+          state.continuousPhoneSince = null;
+          state.continuousPhoneLostSince = null;
+        }
+      }
+    }
+
+    // ── STRICT CONTINUOUS CIGARETTE TRACKING ──
+    const int kSustainedCigaretteMs = 2500; // 2.5s continuous smoking gesture
+    const int kCigaretteGraceMs = 1500; // 1.5s grace loop to combat ML jitter
+
+    if (state.hasCigarette) {
+      if (state.continuousCigaretteSince == null) {
+        state.continuousCigaretteSince = now;
+      } else {
+        if (now.difference(state.continuousCigaretteSince!).inMilliseconds >=
+            kSustainedCigaretteMs) {
+          state.reportCigaretteViolation = true;
+          state.continuousCigaretteSince = null;
+        }
+      }
+      state.continuousNoCigaretteSince = null;
+    } else {
+      if (state.continuousCigaretteSince != null) {
+        state.continuousNoCigaretteSince ??= now;
+        if (now.difference(state.continuousNoCigaretteSince!).inMilliseconds >=
+            kCigaretteGraceMs) {
+          state.continuousCigaretteSince = null;
+          state.continuousNoCigaretteSince = null;
+        }
+      }
+    }
+
+    // Leaky Bucket temporal smoothing for other banned object categories
     final detectionConfig = {
-      'phone': {'detected': state.hasPhone, 'step': 3, 'threshold': 10},
-      'cigarette': {'detected': state.hasCigarette, 'step': 3, 'threshold': 10},
       'eating': {'detected': state.hasEating, 'step': 2, 'threshold': 9},
       'drinking': {'detected': state.hasDrinking, 'step': 2, 'threshold': 9},
     };
@@ -398,7 +458,6 @@ void _yoloIsolateEntryPoint(IsolateInitMessage initMessage) async {
 
     // ── Pre-allocated buffers ──────────────────────────────────────────────
 
-
     final isQuantizedA =
         inA.type == TensorType.uint8 || inA.type == TensorType.int8;
     final isQuantizedB =
@@ -482,10 +541,10 @@ void _yoloIsolateEntryPoint(IsolateInitMessage initMessage) async {
           mainSendPort.send('RUN_ERROR_A: $e');
         }
 
-        // ── Run Model B (eating/drinking) every 3rd frame ──────────────────
-        
+        // ── Run Model B (eating/drinking) disabled ──
+        // DISABLED (false) to prevent false positives and save CPU cycles.
         List<DetectedObject> detectionsB = [];
-        if (frameCount % 3 == 0) {
+        if (false) {
           _fastConvertImage(
             message,
             isQuantizedB ? inputUint8B : inputFloatB,
