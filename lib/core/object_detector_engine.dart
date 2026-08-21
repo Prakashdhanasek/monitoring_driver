@@ -240,12 +240,12 @@ class ObjectDetectorEngine {
     final now = DateTime.now();
     bool requestEvidenceDump = false;
 
-    // Phone Tracking: Continuous 3.0s duration with 1.5s visual grace buffer
+    // Phone Tracking: Continuous 1.5s duration with 1.5s visual grace buffer
     if (state.hasPhone) {
       state.continuousPhoneLostSince = null;
       state.continuousPhoneSince ??= now;
 
-      if (now.difference(state.continuousPhoneSince!).inMilliseconds >= 3000) {
+      if (now.difference(state.continuousPhoneSince!).inMilliseconds >= 1500) {
         final lastCooldown = state.distractionCooldowns['phone'];
         if (lastCooldown == null ||
             now.difference(lastCooldown).inSeconds >= 30) {

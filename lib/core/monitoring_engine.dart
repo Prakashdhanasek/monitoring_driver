@@ -20,8 +20,8 @@ class MonitoringEngine {
 
   // Replaced static kYawThreshold with instance getters for dynamic speed contexts
   double get _dynamicYawThreshold {
-    if (state.vehicleSpeed >= 40.0) return 25.0; // Strict at highway speeds
-    return 35.0; // Relaxed at lower speeds for mirror/junction checks
+    if (state.vehicleSpeed >= 40.0) return 35.0; // Strict at highway speeds
+    return 45.0; // Relaxed at lower speeds for mirror/junction checks
   }
 
   int get _dynamicDistractionDurationMs {

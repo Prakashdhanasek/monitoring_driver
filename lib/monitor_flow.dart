@@ -3758,7 +3758,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   /// Called by front/rear cam overlay when YOLO detects objects.
   /// Shows an on-screen alert banner + plays sound. Does NOT report to API.
   void _onCamObjectDetected(List<dynamic> detections) {
-    if (detections.isEmpty) return;
+    if (detections.isEmpty || _state.vehicleSpeed <= 10.0) return;
     final now = DateTime.now();
 
     // Build alert text from detected labels
@@ -7436,6 +7436,9 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   }
 
   String? _getMonitorBannerKey(bool phone, bool smoke) {
+    if (_state.vehicleSpeed <= 10.0)
+      return null; // Suppress all banners when parked
+
     if (_driverChangedBannerAt != null &&
         DateTime.now().difference(_driverChangedBannerAt!).inSeconds < 5) {
       return 'unauthorized';
