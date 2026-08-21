@@ -53,7 +53,6 @@ class MonitoringEngine {
 
     // 5-second sleep checks run FIRST — before calibration guard
     _checkSleepByEyes(now);
-    _checkSleepByHeadDrop(now);
 
     if (face == null) {
       _handleNoFace(now);
@@ -132,33 +131,6 @@ class MonitoringEngine {
         ),
       );
       state.eyesClosedSince = now; // Shift to avoid instant re-trigger
-    }
-  }
-
-  // ── 5-second sleep by head drop ─────────────────────────────────────────
-
-  void _checkSleepByHeadDrop(DateTime now) {
-    if (state.headDropSince == null) return;
-    if (now.difference(state.headDropSince!).inMilliseconds < 7000) return;
-
-    // Head dropped >= 7s — always keep asleep level
-    state.drowsinessLevel = DrowsinessLevel.asleep;
-
-    final recentAlert = state.recentAlerts.any(
-      (a) =>
-          a.type == 'flag_head_drop' &&
-          now.difference(a.timestamp).inSeconds < 8,
-    );
-    if (!recentAlert) {
-      state.addAlert(
-        AlertEvent(
-          type: 'flag_head_drop',
-          message: 'WAKE UP! HEAD DROPPED >= 7.0s',
-          needsScreenshot: true,
-          isMajorFlag: true,
-        ),
-      );
-      state.headDropSince = now;
     }
   }
 
