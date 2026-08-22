@@ -232,6 +232,10 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   AuthStatus _prevAuthSound = AuthStatus.scanning;
   final Map<String, DateTime> _lastIncidentReportAt = {};
   Map<String, int> _apiCooldownSeconds = {};
+  Map<String, int> _apiHighSpeedInterval = {};
+  Map<String, int> _apiLowSpeedInterval = {};
+  Map<String, double> _apiIntervalSpeedThreshold = {};
+  Map<String, bool> _apiInstantAlert = {};
   Map<String, String> _apiRiskLevels = {};
   final Map<String, DateTime> _lastVoiceAlertAt = {};
   final Map<String, DateTime> _lastCooldownLogAt = {};
@@ -816,76 +820,95 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
 
   void _applyIncidentIntervals(List<dynamic> list) {
     final map = <String, int>{};
+    final highMap = <String, int>{};
+    final lowMap = <String, int>{};
+    final thresholdMap = <String, double>{};
+    final instantMap = <String, bool>{};
     final riskMap = <String, String>{};
     for (final item in list) {
       if (item is! Map<String, dynamic>) continue;
       final type = item['incidentType'] as String?;
-      final rawSecs = item['intervalSecs'];
-      if (type == null || rawSecs == null) continue;
-      final int secs = rawSecs is num
-          ? rawSecs.toInt()
-          : (int.tryParse(rawSecs.toString()) ?? 60);
+      if (type == null) continue;
+
+      // Parse new speed-based interval fields
+      final rawHighSpeed = item['highSpeedInterval'] ?? item['intervalSecs'];
+      final rawLowSpeed = item['lowSpeedInterval'];
+      final rawThreshold = item['speedThreshold'];
+      final bool instant = item['instant'] == true;
       final String? risk = item['riskLevel'] as String?;
 
-      // Map API incidentType → the label keys used inside the app.
+      final int? highSecs = rawHighSpeed is num
+          ? rawHighSpeed.toInt()
+          : (rawHighSpeed != null
+                ? int.tryParse(rawHighSpeed.toString())
+                : null);
+      final int? lowSecs = rawLowSpeed is num
+          ? rawLowSpeed.toInt()
+          : (rawLowSpeed != null ? int.tryParse(rawLowSpeed.toString()) : null);
+      final double? threshold = rawThreshold is num
+          ? rawThreshold.toDouble()
+          : (rawThreshold != null
+                ? double.tryParse(rawThreshold.toString())
+                : null);
+
+      // Determine app-internal keys for this incident type
+      List<String> keys = [];
       switch (type) {
         case 'Drowsiness':
-          map['Drowsiness'] = secs;
-          if (risk != null) riskMap['Drowsiness'] = risk;
+          keys = ['Drowsiness'];
           break;
         case 'Sleepiness':
-          map['Sleepiness'] = secs;
-          if (risk != null) riskMap['Sleepiness'] = risk;
+          keys = ['Sleepiness'];
           break;
         case 'Distraction':
-          map['Distraction'] = secs;
-          if (risk != null) riskMap['Distraction'] = risk;
+          keys = ['Distraction'];
           break;
         case 'Overspeed':
-          map['Overspeeding'] = secs;
-          if (risk != null) riskMap['Overspeeding'] = risk;
+          keys = ['Overspeeding'];
           break;
         case 'Phone Usage':
-          map['Phone Usage'] = secs;
-          if (risk != null) riskMap['Phone Usage'] = risk;
+          keys = ['Phone Usage'];
           break;
         case 'Smoking':
-          map['Smoking'] = secs;
-          if (risk != null) riskMap['Smoking'] = risk;
+          keys = ['Smoking'];
           break;
         case 'Seatbelt Not Worn':
-          map['Seatbelt Not Worn'] = secs;
-          map['seatbelt'] = secs;
-          if (risk != null) {
-            riskMap['Seatbelt Not Worn'] = risk;
-            riskMap['seatbelt'] = risk;
-          }
+          keys = ['Seatbelt Not Worn', 'seatbelt'];
           break;
         case 'Unauthorized Driver':
         case 'Driver Changed':
-          map['Unauthorized Driver'] = secs;
-          map['Driver Changed'] = secs;
-          if (risk != null) {
-            riskMap['Unauthorized Driver'] = risk;
-            riskMap['Driver Changed'] = risk;
-          }
+          keys = ['Unauthorized Driver', 'Driver Changed'];
           break;
         case 'Unverified Driver':
-          map['Unverified Driver'] = secs;
-          if (risk != null) riskMap['Unverified Driver'] = risk;
+          keys = ['Unverified Driver'];
           break;
         case 'Duty Time Exceeded':
-          map['Duty Time Exceeded'] = secs;
-          if (risk != null) riskMap['Duty Time Exceeded'] = risk;
+          keys = ['Duty Time Exceeded'];
           break;
         default:
-          map[type] = secs;
-          if (risk != null) riskMap[type] = risk;
+          keys = [type];
+      }
+
+      for (final key in keys) {
+        if (highSecs != null) {
+          map[key] = highSecs;
+          highMap[key] = highSecs;
+        }
+        if (lowSecs != null) lowMap[key] = lowSecs;
+        if (threshold != null) thresholdMap[key] = threshold;
+        instantMap[key] = instant;
+        if (risk != null) riskMap[key] = risk;
       }
     }
     _apiCooldownSeconds = map;
+    _apiHighSpeedInterval = highMap;
+    _apiLowSpeedInterval = lowMap;
+    _apiIntervalSpeedThreshold = thresholdMap;
+    _apiInstantAlert = instantMap;
     _apiRiskLevels = riskMap;
-    debugPrint('[Flow] Incident risk levels from API: $_apiRiskLevels');
+    debugPrint(
+      '[Flow] Incident intervals: high=$_apiHighSpeedInterval low=$_apiLowSpeedInterval threshold=$_apiIntervalSpeedThreshold instant=$_apiInstantAlert',
+    );
   }
 
   Future<void> _checkConnectivity() async {
@@ -3313,27 +3336,8 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   // ALERT AUDIO & INCIDENTS
   // ─────────────────────────────────────────────────────────
 
-  // ── Severity-based cooldowns ──
-  // Critical: 30s | High: 60s | Medium: 180s
-  static const Map<String, int> _kIncidentCooldownSeconds = {
-    // Critical (every 30 seconds)
-    'Drowsiness': 30,
-    'Sleepiness': 60,
-    // 'Medical Emergency': 30,
-    // High (every 1 minute)
-    'Distraction': 60,
-    'Unauthorized Driver': 60,
-    'Driver Changed': 60,
-    'Unverified Driver': 60,
-    'Overspeeding': 60,
-    // Medium (every 3 minutes)
-    'seatbelt': 180,
-    'Phone Usage': 180,
-    'Smoking': 180,
-    'Eating': 180,
-    'Drinking': 180,
-    // 'Cable Unplugged': 180,
-  };
+  // Fallback cooldown if API hasn't responded yet (only used on first app boot before API call)
+  static const int _kDefaultCooldownSeconds = 60;
 
   // Voice alert intervals match severity
   static const Map<String, int> _kVoiceCooldownSeconds = {
@@ -3366,7 +3370,32 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   };
 
   int _getCooldownForLabel(String label) {
-    return _apiCooldownSeconds[label] ?? _kIncidentCooldownSeconds[label] ?? 60;
+    // Speed-based interval: pick high or low based on current vehicle speed
+    final double? threshold = _apiIntervalSpeedThreshold[label];
+    if (threshold != null && threshold > 0) {
+      if (_state.vehicleSpeed >= threshold) {
+        return _apiHighSpeedInterval[label] ??
+            _apiCooldownSeconds[label] ??
+            _kDefaultCooldownSeconds;
+      } else {
+        return _apiLowSpeedInterval[label] ??
+            _apiHighSpeedInterval[label] ??
+            _apiCooldownSeconds[label] ??
+            _kDefaultCooldownSeconds;
+      }
+    }
+    return _apiCooldownSeconds[label] ?? _kDefaultCooldownSeconds;
+  }
+
+  /// Returns true if this is the first occurrence and instant alert is enabled at high speed.
+  bool _isInstantAlert(String label) {
+    if (_apiInstantAlert[label] != true) return false;
+    final double? threshold = _apiIntervalSpeedThreshold[label];
+    if (threshold == null || threshold <= 0) return false;
+    if (_state.vehicleSpeed < threshold) return false;
+    // Instant only for first occurrence — if already reported, normal cooldown applies
+    final lastReport = _settings.getLastApiReportTime(label);
+    return lastReport == null;
   }
 
   String _getRiskLevel(String eventType, String fallback) {
@@ -3374,6 +3403,14 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   }
 
   bool _checkCooldown(String label) {
+    // Instant alert: first occurrence at high speed skips cooldown
+    if (_isInstantAlert(label)) {
+      debugPrint(
+        '[IncidentCooldown] $label INSTANT (first occurrence at high speed)',
+      );
+      return true;
+    }
+
     final now = DateTime.now();
     final int cooldownDuration = _getCooldownForLabel(label);
 
