@@ -35,6 +35,7 @@ class MonitorState {
   double gpsLat = 0.0;
   double gpsLng = 0.0;
   double vehicleSpeed = 0.0;
+  bool ignitionIsOn = false;
 
   // Calibration
   bool calibrated = false;

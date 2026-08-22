@@ -3468,7 +3468,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       }
     }
 
-    if (_state.vehicleSpeed > 10.0) {
+    if (_state.vehicleSpeed > 10.0 || _state.ignitionIsOn) {
       // ── SEATBELT CYCLIC ALERT ──────────────────────────────────────
       // Grace period: skip seatbelt alert for first 10 seconds after trip start
       final bool seatbeltGraceActive =
@@ -3526,6 +3526,14 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
         _seatbeltInBeepPhase = true;
         _lastVoiceAlertAt.remove('seatbelt');
       }
+    } else {
+      _seatbeltAlertStart = null;
+      _seatbeltPhaseStart = null;
+      _seatbeltInBeepPhase = true;
+      _lastVoiceAlertAt.remove('seatbelt');
+    }
+
+    if (_state.vehicleSpeed > 10.0) {
       if (_state.drowsinessLevel == DrowsinessLevel.asleep) {
         if (_checkFrontendCooldown('Sleepiness')) loud = true;
 
@@ -7480,7 +7488,8 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   }
 
   Widget _seatbeltIndicator() {
-    if (_state.vehicleSpeed <= 10.0) return const SizedBox.shrink();
+    if (_state.vehicleSpeed <= 10.0 && !_state.ignitionIsOn)
+      return const SizedBox.shrink();
     final on = _state.seatbeltBuckled;
     if (on) return const SizedBox.shrink();
     final bg = on ? const Color(0xFF16A34A) : const Color(0xFFDC2626);

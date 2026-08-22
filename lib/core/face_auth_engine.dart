@@ -264,13 +264,9 @@ class FaceAuthEngine {
       lastMatchedLabel = null;
 
       if (state.authStatus == AuthStatus.authenticated) {
-        // Time-based: 12s of continuous no-match needed to trigger driver change
+        // Time-based: We no longer trigger 'unauthorized' on a simple no-match
+        // because it falsely triggers if the driver's face is partially obscured.
         _unmatchedSince ??= DateTime.now();
-        if (DateTime.now().difference(_unmatchedSince!).inSeconds >= 12) {
-          state.authStatus = AuthStatus.unauthorized;
-          state.authenticatedTrackingId = null;
-          _unmatchedSince = null;
-        }
       } else {
         _consecutiveMiss++;
         if (_consecutiveMiss >= 20) {

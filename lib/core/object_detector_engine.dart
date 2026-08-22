@@ -240,12 +240,16 @@ class ObjectDetectorEngine {
     final now = DateTime.now();
     bool requestEvidenceDump = false;
 
-    // Phone Tracking: Continuous 1.5s duration with 1.5s visual grace buffer
+    // Phone Tracking: Continuous 4.0s duration to prevent brief pickup flags, with 1.5s grace loop for ML jitter
+    const int kSustainedPhoneMs = 4000;
+    const int kPhoneGraceMs = 1500;
+
     if (state.hasPhone) {
       state.continuousPhoneLostSince = null;
       state.continuousPhoneSince ??= now;
 
-      if (now.difference(state.continuousPhoneSince!).inMilliseconds >= 1500) {
+      if (now.difference(state.continuousPhoneSince!).inMilliseconds >=
+          kSustainedPhoneMs) {
         final lastCooldown = state.distractionCooldowns['phone'];
         if (lastCooldown == null ||
             now.difference(lastCooldown).inSeconds >= 30) {
@@ -269,7 +273,7 @@ class ObjectDetectorEngine {
       if (state.continuousPhoneSince != null) {
         state.continuousPhoneLostSince ??= now;
         if (now.difference(state.continuousPhoneLostSince!).inMilliseconds >=
-            1500) {
+            kPhoneGraceMs) {
           state.continuousPhoneSince = null;
           state.continuousPhoneLostSince = null;
         }

@@ -380,7 +380,8 @@ class MonitoringEngine {
 
       if (now.difference(state.continuousDrowsySince!).inMilliseconds >= 1500) {
         state.continuousDrowsySince = now; // Reset timer for next strike
-        _triggerDrowsinessStrike(now);
+        // Require a pattern of repeated detections instead of immediate escalation
+        state.microSleepTimestamps.add(now);
       }
     } else {
       state.continuousRecoverySince ??= now;
@@ -391,6 +392,8 @@ class MonitoringEngine {
         state.continuousDrowsySince = null;
         state.continuousRecoverySince = null;
         state.drowsinessLevel = DrowsinessLevel.alert;
+        state.microSleepTimestamps
+            .clear(); // Clear pattern history on full recovery
       }
     }
   }
