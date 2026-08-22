@@ -15,9 +15,12 @@ class BackgroundTelemetryService {
   Timer? _telemetryTimer;
   StreamSubscription<Position>? _positionSubscription;
 
+  String? tripId; // Active trip ID for offline syncing
   double latitude = 0.0;
   double longitude = 0.0;
   double speed = 0.0; // km/h
+  double heading = 0.0;
+  double accuracy = 0.0;
 
   bool _started = false;
 
@@ -46,6 +49,7 @@ class BackgroundTelemetryService {
     double lng,
     double speedKmH, {
     double accuracy = 0.0,
+    double heading = 0.0,
   }) {
     if (lat == 0.0 && lng == 0.0) return;
 
@@ -87,6 +91,8 @@ class BackgroundTelemetryService {
     latitude = lat;
     longitude = lng;
     speed = effectiveSpeed;
+    this.accuracy = accuracy;
+    this.heading = heading;
   }
 
   Future<void> _initGps() async {
@@ -144,6 +150,7 @@ class BackgroundTelemetryService {
             pos.longitude,
             pos.speed > 0 ? (pos.speed * 3.6) : 0.0,
             accuracy: pos.accuracy,
+            heading: pos.heading,
           );
           debugPrint(
             '[BackgroundTelemetry] Initial position: $latitude, $longitude',
@@ -169,6 +176,7 @@ class BackgroundTelemetryService {
                 position.longitude,
                 speedKmH,
                 accuracy: position.accuracy,
+                heading: position.heading,
               );
             });
         debugPrint('[BackgroundTelemetry] GPS position stream started.');
@@ -207,9 +215,12 @@ class BackgroundTelemetryService {
 
     await _telemetryService.sendLocationTelemetry(
       deviceTabletId: deviceId,
+      tripId: tripId,
       latitude: latitude,
       longitude: longitude,
       speed: speed,
+      heading: heading,
+      accuracy: accuracy,
     );
   }
 

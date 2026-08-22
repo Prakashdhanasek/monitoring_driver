@@ -22,16 +22,23 @@ class TelemetryService {
   /// If offline or if the API call fails, queues it locally for later sync.
   Future<void> sendLocationTelemetry({
     required String deviceTabletId,
+    String? tripId,
     required double latitude,
     required double longitude,
     required double speed,
+    double heading = 0.0,
+    double accuracy = 0.0,
     bool isOnline = true,
   }) async {
     final body = {
       'deviceTabletId': deviceTabletId,
+      'tripId': tripId,
       'latitude': latitude,
       'longitude': longitude,
-      'speed': speed.toInt(),
+      'speed': speed
+          .toInt(), // wait, the API example says `speed: 0` float or int? Let's keep toInt() or let it strictly be double if needed, wait.
+      'heading': heading,
+      'accuracy': accuracy,
       'timestamp': DateTime.now().toUtc().toIso8601String(),
     };
 
@@ -74,32 +81,92 @@ class TelemetryService {
         '[Telemetry] Syncing ${queue.length} queued offline telemetry entries to backend...',
       );
 
-      final List<dynamic> remaining = List.from(queue);
-      while (remaining.isNotEmpty) {
-        final entry = remaining.first;
+      // Group points by tripId. Points without tripId or null tripId fallback to old API.
+      final Map<String, List<Map<String, dynamic>>> byTrip = {};
+      final List<Map<String, dynamic>> noTrip = [];
+
+      for (var entry in queue) {
         final map = Map<String, dynamic>.from(entry as Map);
-        final success = await _postTelemetry(map);
-        if (success) {
-          // Successfully sent to backend -> clear this GPS item from local offline storage immediately
-          remaining.removeAt(0);
-          await _box.put(_keyQueue, remaining);
-          debugPrint(
-            '[Telemetry] Sent 1 offline GPS telemetry entry. ${remaining.length} remaining.',
-          );
+        final tripId = map['tripId'] as String?;
+        if (tripId != null && tripId.isNotEmpty) {
+          byTrip.putIfAbsent(tripId, () => []).add(map);
         } else {
-          // Network error / failure -> stop syncing and keep remaining items queued for next retry
-          debugPrint(
-            '[Telemetry] Sync failed for current item. Keeping ${remaining.length} items queued.',
-          );
-          break;
+          noTrip.add(map);
         }
-        // Small delay to avoid flooding backend API
+      }
+
+      final List<dynamic> newRemaining = [];
+
+      // 1. Process batch points for each tripId
+      for (final tripId in byTrip.keys) {
+        final points = byTrip[tripId]!;
+        if (points.isEmpty) continue;
+
+        final deviceTabletId = points.first['deviceTabletId']?.toString() ?? '';
+        final pointsPayload = points
+            .map(
+              (p) => {
+                'latitude': p['latitude'],
+                'longitude': p['longitude'],
+                'speed': p['speed'],
+                'heading': p['heading'] ?? 0.0,
+                'accuracy': p['accuracy'] ?? 0.0,
+                'recordedAt': p['timestamp'],
+              },
+            )
+            .toList();
+
+        final batchBody = {
+          'deviceTabletId': deviceTabletId,
+          'points': pointsPayload,
+        };
+
+        final url = Uri.parse(
+          'https://proximity-driver-api.prod-app.in/api/trips/$tripId/sync-locations',
+        );
+        try {
+          final res = await http
+              .post(
+                url,
+                headers: {'Content-Type': 'application/json', 'accept': '*/*'},
+                body: jsonEncode(batchBody),
+              )
+              .timeout(const Duration(seconds: 8));
+
+          if (res.statusCode >= 200 && res.statusCode < 300) {
+            debugPrint(
+              '[Telemetry] Synced ${points.length} points for trip $tripId.',
+            );
+          } else {
+            debugPrint(
+              '[Telemetry] Batch sync failed for trip $tripId (status ${res.statusCode}).',
+            );
+            newRemaining.addAll(points);
+          }
+        } catch (e) {
+          debugPrint('[Telemetry] Batch sync exception: $e');
+          newRemaining.addAll(points);
+        }
+      }
+
+      // 2. Process old-style points (no tripId)
+      for (var map in noTrip) {
+        final success = await _postTelemetry(map);
+        if (!success) {
+          newRemaining.add(map);
+        }
         await Future.delayed(const Duration(milliseconds: 50));
       }
 
-      if (remaining.isEmpty) {
-        await _box.put(_keyQueue, []);
-        debugPrint('[Telemetry] All offline telemetry synced and queue completely cleared.');
+      await _box.put(_keyQueue, newRemaining);
+      if (newRemaining.isEmpty) {
+        debugPrint(
+          '[Telemetry] All offline telemetry synced and queue completely cleared.',
+        );
+      } else {
+        debugPrint(
+          '[Telemetry] ${newRemaining.length} offline entries failed to sync. Kept in queue for retry.',
+        );
       }
     } catch (e) {
       debugPrint('[Telemetry] Sync error: $e');
@@ -135,6 +202,9 @@ class TelemetryService {
     // Remove timestamp before sending (API expects standard payload)
     final sendBody = Map<String, dynamic>.from(body);
     sendBody.remove('timestamp');
+    sendBody.remove('tripId');
+    sendBody.remove('heading');
+    sendBody.remove('accuracy');
 
     try {
       final response = await http

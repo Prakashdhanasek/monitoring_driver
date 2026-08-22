@@ -68,42 +68,63 @@ class MonitoringEngine {
     _processEyesAndMouth(face, now);
 
     // ── Drowsiness evaluation ────────────────────────────────────────────────
-    // Clean up old micro-sleep timestamps
+    // Clean up old yawn and micro-sleep timestamps
     final thirtySecAgo = now.subtract(const Duration(seconds: 30));
+    state.yawnTimestamps.removeWhere((t) => t.isBefore(thirtySecAgo));
     state.microSleepTimestamps.removeWhere((t) => t.isBefore(thirtySecAgo));
 
-    if (state.microSleepTimestamps.length >= 3) {
-      state.microSleepTimestamps.clear();
-      _triggerDrowsinessStrike(now);
-    }
-
-    // CRITICAL: Only evaluate drowsiness when driver is facing FORWARD.
-    // When yaw is high, EAR becomes unreliable (one eye is partially hidden).
-    // (Head turns only count as distraction, not drowsiness),
-    // and should NOT pollute the PERCLOS window or drowsy frame counter.
     final isCurrentlyDistracted = state.yaw.abs() > _dynamicYawThreshold;
-    final sunglassesMode = state.monitorMode == MonitorMode.sunglasses;
-
     bool isDrowsyCurrentFrame = false;
+
     if (!isCurrentlyDistracted) {
-      if (sunglassesMode) {
-        if (state.yawningSince != null || state.headDropSince != null) {
+      // Condition 1: 1 Yawn
+      if (state.yawnTimestamps.isNotEmpty) {
+        isDrowsyCurrentFrame = true;
+      }
+
+      // Condition 2: Closed eyes 5 times in 30 seconds (micro-sleeps)
+      if (state.microSleepTimestamps.length >= 5) {
+        isDrowsyCurrentFrame = true;
+      }
+
+      // Condition 3: Head Drop (sustained for 1.5 seconds)
+      if (state.headDropSince != null) {
+        if (now.difference(state.headDropSince!).inMilliseconds >= 1500) {
           isDrowsyCurrentFrame = true;
         }
-      } else {
-        double perclos = 0.0;
-        if (state.eyeClosureHistory.isNotEmpty) {
-          perclos =
-              state.eyeClosureHistory.where((c) => c).length /
-              state.eyeClosureHistory.length;
-        }
-        if (perclos > 0.30 || state.yawningSince != null) {
+      }
+
+      // Condition 4: PERCLOS > 0.35 (just in case they fall asleep without dropping head)
+      if (state.monitorMode != MonitorMode.sunglasses &&
+          state.eyeClosureHistory.isNotEmpty) {
+        final perclos =
+            state.eyeClosureHistory.where((c) => c).length /
+            state.eyeClosureHistory.length;
+        if (perclos > 0.35) {
           isDrowsyCurrentFrame = true;
         }
       }
     }
 
-    _updateDrowsinessStatus(isDrowsyCurrentFrame, now);
+    if (isDrowsyCurrentFrame) {
+      if (state.drowsinessLevel != DrowsinessLevel.asleep) {
+        state.drowsinessLevel = DrowsinessLevel.drowsy;
+      }
+      state.continuousDrowsySince ??= now;
+      state.continuousRecoverySince = null;
+    } else {
+      state.continuousRecoverySince ??= now;
+      if (now.difference(state.continuousRecoverySince!).inSeconds >= 10) {
+        if (state.drowsinessLevel == DrowsinessLevel.drowsy ||
+            state.drowsinessLevel == DrowsinessLevel.asleep) {
+          state.drowsinessLevel = DrowsinessLevel.alert;
+        }
+        state.yawnTimestamps.clear();
+        state.microSleepTimestamps.clear();
+        state.continuousRecoverySince = null;
+      }
+    }
+
     _updateDistractionStrikeSystem(isCurrentlyDistracted, now);
   }
 
@@ -111,21 +132,21 @@ class MonitoringEngine {
 
   void _checkSleepByEyes(DateTime now) {
     if (state.eyesClosedSince == null) return;
-    if (now.difference(state.eyesClosedSince!).inMilliseconds < 7000) return;
+    if (now.difference(state.eyesClosedSince!).inMilliseconds < 4000) return;
 
-    // Eyes closed >= 7s — always keep asleep level
+    // Eyes closed >= 4s — always keep asleep level
     state.drowsinessLevel = DrowsinessLevel.asleep;
 
     final recentAlert = state.recentAlerts.any(
       (a) =>
           a.type == 'flag_sleeping' &&
-          now.difference(a.timestamp).inSeconds < 8,
+          now.difference(a.timestamp).inSeconds < 5,
     );
     if (!recentAlert) {
       state.addAlert(
         AlertEvent(
           type: 'flag_sleeping',
-          message: 'WAKE UP! EYES CLOSED >= 7.0s',
+          message: 'WAKE UP! EYES CLOSED >= 4.0s',
           needsScreenshot: true,
           isMajorFlag: true,
         ),
@@ -139,6 +160,8 @@ class MonitoringEngine {
   void _handleNoFace(DateTime now) {
     state.distractionStatus = DistractionStatus.forward;
     state.distractedSince = null;
+    state.eyesClosedSince =
+        null; // Prevent timeout triggering 'Asleep' when face is lost
     if (state.closedIntervals.isNotEmpty &&
         state.closedIntervals.last.end == null) {
       state.closedIntervals.last.end = now;
@@ -320,7 +343,10 @@ class MonitoringEngine {
     state.mar = mar;
 
     if (mar > kYawnMarThreshold) {
-      state.yawningSince ??= now;
+      if (state.yawningSince == null) {
+        state.yawningSince = now;
+        state.yawnTimestamps.add(now);
+      }
     } else {
       state.yawningSince = null;
     }
@@ -335,67 +361,6 @@ class MonitoringEngine {
     final cutoff = now.subtract(const Duration(seconds: 15));
     state.chewTimestamps.removeWhere((t) => t.isBefore(cutoff));
     state.isChewing = state.chewTimestamps.length >= 3;
-  }
-
-  // ── Drowsiness strike engine ─────────────────────────────────────────────
-
-  void _triggerDrowsinessStrike(DateTime now) {
-    state.drowsyAlertCount++;
-
-    if (state.drowsyAlertCount < 3) {
-      // Strikes 1-2: silent, update level only
-      if (state.drowsinessLevel != DrowsinessLevel.asleep) {
-        state.drowsinessLevel = DrowsinessLevel.drowsy;
-      }
-    } else if (state.drowsyAlertCount < 5) {
-      // Strikes 3-4: audio warning
-      if (state.drowsinessLevel != DrowsinessLevel.asleep) {
-        state.drowsinessLevel = DrowsinessLevel.drowsy;
-      }
-      state.addAlert(
-        AlertEvent(
-          type: 'audio_alert_soft',
-          message: '⚠ DROWSINESS WARNING: Strike ${state.drowsyAlertCount}/5',
-        ),
-      );
-    } else {
-      // Strike 5: major flag
-      state.drowsinessLevel = DrowsinessLevel.asleep;
-      state.addAlert(
-        AlertEvent(
-          type: 'flag_drowsy',
-          message: 'FLAG: SEVERE DROWSINESS (5 STRIKES)',
-          needsScreenshot: true,
-          isMajorFlag: true,
-        ),
-      );
-      state.drowsyAlertCount = 0;
-    }
-  }
-
-  void _updateDrowsinessStatus(bool isDrowsyCurrentFrame, DateTime now) {
-    if (isDrowsyCurrentFrame) {
-      state.continuousDrowsySince ??= now;
-      state.continuousRecoverySince = null;
-
-      if (now.difference(state.continuousDrowsySince!).inMilliseconds >= 1500) {
-        state.continuousDrowsySince = now; // Reset timer for next strike
-        // Require a pattern of repeated detections instead of immediate escalation
-        state.microSleepTimestamps.add(now);
-      }
-    } else {
-      state.continuousRecoverySince ??= now;
-      state.continuousDrowsySince = null;
-
-      if (now.difference(state.continuousRecoverySince!).inSeconds >= 10) {
-        state.drowsyAlertCount = 0;
-        state.continuousDrowsySince = null;
-        state.continuousRecoverySince = null;
-        state.drowsinessLevel = DrowsinessLevel.alert;
-        state.microSleepTimestamps
-            .clear(); // Clear pattern history on full recovery
-      }
-    }
   }
 
   // ── Distraction strike engine ────────────────────────────────────────────

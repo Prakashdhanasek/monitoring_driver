@@ -1610,6 +1610,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     _vehicleId = null;
     _vehicleRegNo = null;
     _tripId = null;
+    BackgroundTelemetryService.instance.tripId = null;
 
     // 0) Request location and storage permissions upfront.
     try {
@@ -2747,6 +2748,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       if (trip != null) {
         // Online success — use response data
         _tripId = trip.id;
+        BackgroundTelemetryService.instance.tripId = _tripId;
         _vehicleId ??= trip.vehicleId;
         _geofenceId = trip.geofenceId;
         _geofenceBoundaryType = trip.geofenceBoundaryType ?? 'Circular';
@@ -3005,6 +3007,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       endedAt: DateTime.now().toUtc(),
     );
     _tripId = null;
+    BackgroundTelemetryService.instance.tripId = null;
 
     // Attempt immediate sync if online
     if (_isOnline) {
@@ -7370,30 +7373,27 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     String? text;
     Color fg = Colors.white;
 
-    if (_harshEventAt != null &&
-        DateTime.now().difference(_harshEventAt!) <= _kBannerVisibleDuration &&
-        _harshBannerText != null) {
+    if (currentKey == 'harsh') {
       bg = const Color(0xFFB91C1C); // red
       text = _harshBannerText;
-    } else if (phone) {
+    } else if (currentKey == 'unauthorized') {
+      bg = const Color(0xFFDC2626);
+      text = '⚠  DRIVER CHANGED';
+    } else if (currentKey == 'multiple_faces') {
+      bg = const Color(0xFFEA580C);
+      text = '⚠  MULTIPLE PEOPLE DETECTED ';
+    } else if (currentKey == 'asleep') {
+      bg = const Color(0xFFDC2626);
+      text = '⚠  WAKE UP!  ⚠';
+    } else if (currentKey == 'phone') {
       bg = const Color(0xFF7E22CE);
       final percent = (_state.phoneConfidence * 100).toStringAsFixed(0);
       text = '📵  PHONE DETECTED ($percent%)';
-    } else if (_state.drowsinessLevel == DrowsinessLevel.asleep) {
-      bg = const Color(0xFFDC2626);
-
-      // final avgEar = (_state.leftEar + _state.rightEar) / 2;
-      // final thr = _state.earThreshold;
-      // final asleepPct = thr > 0
-      //     ? (((thr - avgEar) / thr) * 100).clamp(0, 100).toStringAsFixed(0)
-      //     : '0';
-      // text = '⚠  WAKE UP! ($asleepPct%)';
-      text = '⚠  WAKE UP!  ⚠';
-    } else if (smoke) {
+    } else if (currentKey == 'smoke') {
       bg = const Color(0xFF7E22CE);
       final percent = (_state.cigaretteConfidence * 100).toStringAsFixed(0);
       text = '🚬  SMOKING DETECTED ($percent%)';
-    } else if (_state.hasEating || _state.isChewing) {
+    } else if (currentKey == 'eating') {
       bg = const Color(0xFFDC2626);
       if (_state.eatingConfidence > 0) {
         final percent = (_state.eatingConfidence * 100).toStringAsFixed(0);
@@ -7401,28 +7401,20 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       } else {
         text = '🍔  EATING DETECTED';
       }
-    } else if (_state.hasDrinking) {
+    } else if (currentKey == 'drinking') {
       bg = const Color(0xFFEA580C);
       final percent = (_state.drinkingConfidence * 100).toStringAsFixed(0);
       text = '🥤  DRINKING DETECTED ($percent%)';
     } else if (currentKey == 'overspeed') {
       bg = const Color(0xFFDC2626);
       text = '⚠️  OVERSPEED DETECTED';
-    } else if (_state.drowsinessLevel == DrowsinessLevel.drowsy) {
+    } else if (currentKey == 'drowsy') {
       bg = const Color(0xFFD97706);
       text = '⚠  DROWSINESS DETECTED';
-    } else if (_state.distractionStatus == DistractionStatus.distracted) {
+    } else if (currentKey == 'distracted') {
       bg = const Color(0xFFEAB308);
       fg = Colors.black;
       text = '⚠  DISTRACTION DETECTED EYES ON THE ROAD';
-    } else if (currentKey == 'unauthorized' ||
-        (_state.authStatus == AuthStatus.unauthorized &&
-            !_state.isUnknownDriver)) {
-      bg = const Color(0xFFDC2626);
-      text = '⚠  DRIVER CHANGED';
-    } else if (_state.authStatus == AuthStatus.multipleFaces) {
-      bg = const Color(0xFFEA580C);
-      text = '⚠  MULTIPLE PEOPLE DETECTED ';
     }
 
     if (bg == null || text == null) return const SizedBox.shrink();

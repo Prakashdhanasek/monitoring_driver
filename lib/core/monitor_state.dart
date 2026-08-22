@@ -73,6 +73,7 @@ class MonitorState {
   // MAR (sunglasses mode)
   double mar = 0.0;
   DateTime? yawningSince;
+  List<DateTime> yawnTimestamps = [];
 
   // Head pose
   double yaw = 0.0;
@@ -179,6 +180,7 @@ class MonitorState {
     perclosExceededSince = null;
     yoloYawnDetectedSince = null;
     sunglassesHeadDropSince = null;
+    yawnTimestamps.clear();
     drowsyAlertCount = 0;
     continuousDrowsySince = null;
     continuousRecoverySince = null;
