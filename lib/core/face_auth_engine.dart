@@ -267,6 +267,10 @@ class FaceAuthEngine {
         // Time-based: We no longer trigger 'unauthorized' on a simple no-match
         // because it falsely triggers if the driver's face is partially obscured.
         _unmatchedSince ??= DateTime.now();
+        if (DateTime.now().difference(_unmatchedSince!).inSeconds >= 5) {
+          state.authStatus = AuthStatus.unauthorized;
+          state.authenticatedTrackingId = null;
+        }
       } else {
         _consecutiveMiss++;
         if (_consecutiveMiss >= 20) {

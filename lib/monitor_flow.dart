@@ -297,7 +297,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
 
   bool _isDriverChangedActive() {
     // Suppress Driver Changed alerts if the vehicle is parked or slow.
-    if (_state.vehicleSpeed <= 10.0) return false;
+    // if (_state.vehicleSpeed <= 10.0) return false;
 
     // Only trigger Driver Changed if the trip session started as a verified registered driver.
     // Unknown driver trips should never trigger Driver Changed alerts.
@@ -3467,8 +3467,10 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
 
   Future<void> _handleAlertSounds(CameraImage? currentImage) async {
     final now = DateTime.now();
-    final phone = _state.reportPhoneViolation;
-    final smoke = _state.reportCigaretteViolation;
+    // Use realtime boolean states rather than event flags for TTS,
+    // so the voice warning triggers instantly to match the visual banner!
+    final phone = _state.hasPhone;
+    final smoke = _state.hasCigarette;
 
     bool loud = false;
     bool soft = false;
@@ -3573,7 +3575,8 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       _lastVoiceAlertAt.remove('seatbelt');
     }
 
-    if (_state.vehicleSpeed > 10.0) {
+    if (_state.vehicleSpeed >= 0.0) {
+      // Changed from > 10.0 for testing
       if (_state.drowsinessLevel == DrowsinessLevel.asleep) {
         if (_checkFrontendCooldown('Sleepiness')) loud = true;
 
@@ -3714,6 +3717,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       }
     } else {
       // Vehicle is slow/parked (<= 10.0 km/h)
+      // Removed suppression of cyclic timers as incidents are now tracked at all speeds
       // Safely reset cyclic timers and suppress stored incidents
       _seatbeltAlertStart = null;
       _seatbeltPhaseStart = null;
@@ -3735,7 +3739,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     }
 
     // --- Unified TTS Logic based on Banner Priority ---
-    if (_state.vehicleSpeed > 10.0 &&
+    if (_state.vehicleSpeed >= 0.0 &&
         currentBannerKey != null &&
         currentBannerKey != 'harsh') {
       final cooldownLabel = _kBannerToCooldownLabel[currentBannerKey];
@@ -3806,7 +3810,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   /// Called by front/rear cam overlay when YOLO detects objects.
   /// Shows an on-screen alert banner + plays sound. Does NOT report to API.
   void _onCamObjectDetected(List<dynamic> detections) {
-    if (detections.isEmpty || _state.vehicleSpeed <= 10.0) return;
+    if (detections.isEmpty) return; // Removed || _state.vehicleSpeed <= 10.0
     final now = DateTime.now();
 
     // Build alert text from detected labels
@@ -7383,7 +7387,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   // important active state: unauthorized / multiple / asleep / phone /
   // cigarette / seatbelt / drowsy / distraction. Hidden when all is well.
   Widget _monitorBanner() {
-    if (_state.vehicleSpeed <= 10.0) return const SizedBox.shrink();
+    // if (_state.vehicleSpeed <= 10.0) return const SizedBox.shrink();
     final phone = _state.hasPhone;
     final smoke = _state.hasCigarette;
 
@@ -7473,8 +7477,8 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   }
 
   String? _getMonitorBannerKey(bool phone, bool smoke) {
-    if (_state.vehicleSpeed <= 10.0)
-      return null; // Suppress all banners when parked
+    // if (_state.vehicleSpeed <= 10.0)
+    //   return null; // Suppress all banners when parked
 
     if (_driverChangedBannerAt != null &&
         DateTime.now().difference(_driverChangedBannerAt!).inSeconds < 5) {
@@ -7517,8 +7521,8 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   }
 
   Widget _seatbeltIndicator() {
-    if (_state.vehicleSpeed <= 10.0 && !_state.ignitionIsOn)
-      return const SizedBox.shrink();
+    // if (_state.vehicleSpeed <= 10.0 && !_state.ignitionIsOn)
+    //   return const SizedBox.shrink();
     final on = _state.seatbeltBuckled;
     if (on) return const SizedBox.shrink();
     final bg = on ? const Color(0xFF16A34A) : const Color(0xFFDC2626);
@@ -7554,7 +7558,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   // Shows "RESTRICTED AREA" for RestrictedEntry zones and
   // "OUT OF BOUNDARY" for PermittedZone exits.
   Widget _boundaryBanner() {
-    if (_state.vehicleSpeed <= 10.0) return const SizedBox.shrink();
+    // if (_state.vehicleSpeed <= 10.0) return const SizedBox.shrink();
     if (!_outsideBoundary) return const SizedBox.shrink();
 
     final bool isRestricted = _geofenceViolationType == 'RestrictedEntry';

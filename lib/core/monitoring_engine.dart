@@ -16,7 +16,7 @@ class MonitoringEngine {
   static const double kEarVarianceThreshold = 0.005;
   static const double kSunglassesEarHigh = 0.33;
   static const double kOneEyeEarLow = 0.10;
-  static const double kBlinkResetSeconds = 0.5;
+  static const double kBlinkResetSeconds = 0.15;
 
   // Replaced static kYawThreshold with instance getters for dynamic speed contexts
   double get _dynamicYawThreshold {
@@ -110,6 +110,8 @@ class MonitoringEngine {
       if (state.drowsinessLevel != DrowsinessLevel.asleep) {
         state.drowsinessLevel = DrowsinessLevel.drowsy;
       }
+      state.yawnTimestamps.clear();
+      state.microSleepTimestamps.clear();
       state.continuousDrowsySince ??= now;
       state.continuousRecoverySince = null;
     } else {
@@ -373,8 +375,11 @@ class MonitoringEngine {
       state.continuousDistractedSince ??= now;
       state.continuousForwardSince = null;
 
-      if (now.difference(state.continuousDistractedSince!).inMilliseconds >=
-          _dynamicDistractionDurationMs) {
+      bool instantDistraction = state.yaw.abs() >= 75.0;
+
+      if (instantDistraction ||
+          now.difference(state.continuousDistractedSince!).inMilliseconds >=
+              _dynamicDistractionDurationMs) {
         state.distractionStatus = DistractionStatus.distracted;
 
         // Add strike = state.lastDistractionStrikeCooldown;
