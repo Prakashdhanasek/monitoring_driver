@@ -208,7 +208,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   String? _tripId;
   double _overspeedThreshold = 0; // km/h from API (0 = disabled)
 
-  // Overtaking grace window — brief overspeed during overtaking is tolerated
+  // Overtaking grace window - brief overspeed during overtaking is tolerated
   DateTime? _overspeedSince;
   double _overspeedPeakKmh = 0;
   static const int _kOvertakingGraceSeconds = 10;
@@ -297,7 +297,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
 
   bool _isDriverChangedActive() {
     // Suppress Driver Changed alerts if the vehicle is parked or slow.
-    // if (_state.vehicleSpeed <= 10.0) return false;
+    if (_state.vehicleSpeed <= 10.0) return false;
 
     // Only trigger Driver Changed if the trip session started as a verified registered driver.
     // Unknown driver trips should never trigger Driver Changed alerts.
@@ -334,7 +334,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       return;
     }
 
-    if (_state.vehicleSpeed > 20.0 || _accelSpeedEstimateKmH >= 20.0) {
+    if (_state.vehicleSpeed > 10.0 || _accelSpeedEstimateKmH >= 10.0) {
       _consecutiveSpeedTicks++;
     } else {
       _consecutiveSpeedTicks = 0;
@@ -342,10 +342,10 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
 
     final bool isVehicleMoving =
         _consecutiveSpeedTicks >= 1 ||
-        _state.vehicleSpeed > 20.0 ||
-        _accelSpeedEstimateKmH >= 20.0;
+        _state.vehicleSpeed > 10.0 ||
+        _accelSpeedEstimateKmH >= 10.0;
 
-    // Transition to monitoring ONLY when vehicle is actually moving (> 20 km/h)
+    // Transition to monitoring ONLY when vehicle is actually moving (> 10 km/h)
     if (isVehicleMoving && !_isRefreshingDrivers) {
       debugPrint(
         '[Flow] Verification fallback triggered (speed=${_state.vehicleSpeed}km/h) — transitioning to Phase.monitoring.',
@@ -594,16 +594,16 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
               _state.vehicleSpeed = _accelSpeedEstimateKmH;
             }
 
-            // If Trip Completed screen is active and vehicle starts moving >= 20.0 km/h:
+            // If Trip Completed screen is active and vehicle starts moving >= 10.0 km/h:
             if (_tripCompleted &&
-                (_accelSpeedEstimateKmH >= 20.0 ||
-                    _state.vehicleSpeed > 20.0)) {
+                (_accelSpeedEstimateKmH >= 10.0 ||
+                    _state.vehicleSpeed > 10.0)) {
               _startReverification().then(
                 (_) => _checkVerifyingPhaseFallback(),
               );
             } else if (_phase == Phase.verifying &&
-                (_state.vehicleSpeed > 20.0 ||
-                    _accelSpeedEstimateKmH >= 20.0)) {
+                (_state.vehicleSpeed > 10.0 ||
+                    _accelSpeedEstimateKmH >= 10.0)) {
               _checkVerifyingPhaseFallback();
             }
           },
@@ -1838,7 +1838,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
         _lastGpsPos = position;
         _lastGpsTime = now;
 
-        if (_phase == Phase.verifying && speedKmH > 20.0) {
+        if (_phase == Phase.verifying && speedKmH > 10.0) {
           _checkVerifyingPhaseFallback();
         }
         _state.gpsLat = position.latitude;
@@ -1858,7 +1858,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
           position.speed > 0 ? position.speed : 0.0,
           position.heading,
         );
-        if (_tripCompleted && speedKmH >= 20.0) {
+        if (_tripCompleted && speedKmH >= 10.0) {
           _startReverification().then((_) => _checkVerifyingPhaseFallback());
         } else {
           _checkVerifyingPhaseFallback();
@@ -2027,7 +2027,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
               final elapsedMs = DateTime.now()
                   .difference(_unmatchedFaceSince!)
                   .inMilliseconds;
-              if (_state.vehicleSpeed > 20.0 || elapsedMs >= 10000) {
+              if (_state.vehicleSpeed > 10.0 || elapsedMs >= 10000) {
                 _verifyingStartedAt = null;
                 _unmatchedFaceSince = null;
                 _capturedFace = _captureFaceJpeg(image, targetWidth: 480);
@@ -2053,7 +2053,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
 
         case Phase.monitoring:
           if (_tripCompleted) {
-            if (_state.vehicleSpeed > 20.0 || _accelSpeedEstimateKmH >= 20.0) {
+            if (_state.vehicleSpeed > 10.0 || _accelSpeedEstimateKmH >= 10.0) {
               _startReverification().then(
                 (_) => _checkVerifyingPhaseFallback(),
               );
@@ -2517,8 +2517,34 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       _tts.speak(AlertMessages.welcome(_tts.currentLang, driverName));
     } else {
       _state.isUnknownDriver = true;
-      driverId = '—';
+      driverId = '-';
       driverName = 'Unknown Driver';
+
+      // CRITICAL FIX: Fetch vehicle data for Unknown Drivers to enable Overspeed Detection!
+      try {
+        final deviceId = _settings.getDeviceId();
+        if (deviceId != null && deviceId.isNotEmpty) {
+          final liveDrivers = await _driversService.fetchDriversFromApiOnly(deviceId);
+          if (liveDrivers != null && liveDrivers.isNotEmpty) {
+            final firstDriver = liveDrivers.first;
+            final assignedVehiclesList = firstDriver['assignedVehicles'] as List<dynamic>?;
+            if (assignedVehiclesList != null && assignedVehiclesList.isNotEmpty) {
+              final firstVehicle = assignedVehiclesList.first as Map<String, dynamic>;
+              _vehicleId = firstVehicle['vehicleId'] as String?;
+              _vehicleRegNo = firstVehicle['vehicleRegistrationNumber'] as String?;
+              final threshold = firstVehicle['overspeedThreshold'];
+              if (threshold != null) {
+                _overspeedThreshold = (threshold is num)
+                    ? threshold.toDouble()
+                    : (double.tryParse(threshold.toString()) ?? 0);
+              }
+              debugPrint('[Flow] Unknown Driver -> Inherited Device Vehicle: \ (Overspeed limit: \)');
+            }
+          }
+        }
+      } catch (e) {
+        debugPrint('[Flow] Failed to fetch device vehicle for Unknown Driver:');
+      }
     }
 
     _driverId = driverId;
@@ -2527,7 +2553,8 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     // If face matched DB driver, mark as matched verified driver
     if (!isMatched) {
       _driverName = 'Unknown Driver';
-      _driverId = '—';
+      _driverId = '-';
+      _state.isUnknownDriver = true;
       _state.isUnknownDriver = true;
     } else {
       _state.isUnknownDriver = false;
@@ -3575,22 +3602,25 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       _lastVoiceAlertAt.remove('seatbelt');
     }
 
-    if (_state.vehicleSpeed >= 0.0) {
-      // Changed from > 10.0 for testing
-      if (_state.drowsinessLevel == DrowsinessLevel.asleep) {
+    if (_state.vehicleSpeed > 10.0) {
+      if (_state.drowsinessLevel == DrowsinessLevel.asleep ||
+          _state.hasSleepWarning) {
         if (_checkFrontendCooldown('Sleepiness')) loud = true;
 
-        if (_checkCooldown('Sleepiness')) {
+        if (_state.drowsinessLevel == DrowsinessLevel.asleep &&
+            _checkCooldown('Sleepiness')) {
           _reportIncident(
             'Sleepiness',
             _getRiskLevel('Sleepiness', 'Critical'),
             1.0,
           );
         }
-      } else if (_state.drowsinessLevel == DrowsinessLevel.drowsy) {
+      } else if (_state.drowsinessLevel == DrowsinessLevel.drowsy ||
+          _state.hasHeadDropWarning) {
         if (_checkFrontendCooldown('Drowsiness')) soft = true;
 
-        if (_checkCooldown('Drowsiness')) {
+        if (_state.drowsinessLevel == DrowsinessLevel.drowsy &&
+            _checkCooldown('Drowsiness')) {
           _reportIncident(
             'Drowsiness',
             _getRiskLevel('Drowsiness', 'Critical'),
@@ -3717,7 +3747,6 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       }
     } else {
       // Vehicle is slow/parked (<= 10.0 km/h)
-      // Removed suppression of cyclic timers as incidents are now tracked at all speeds
       // Safely reset cyclic timers and suppress stored incidents
       _seatbeltAlertStart = null;
       _seatbeltPhaseStart = null;
@@ -3739,7 +3768,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     }
 
     // --- Unified TTS Logic based on Banner Priority ---
-    if (_state.vehicleSpeed >= 0.0 &&
+    if (_state.vehicleSpeed > 10.0 &&
         currentBannerKey != null &&
         currentBannerKey != 'harsh') {
       final cooldownLabel = _kBannerToCooldownLabel[currentBannerKey];
@@ -3810,7 +3839,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   /// Called by front/rear cam overlay when YOLO detects objects.
   /// Shows an on-screen alert banner + plays sound. Does NOT report to API.
   void _onCamObjectDetected(List<dynamic> detections) {
-    if (detections.isEmpty) return; // Removed || _state.vehicleSpeed <= 10.0
+    if (detections.isEmpty || _state.vehicleSpeed <= 10.0) return;
     final now = DateTime.now();
 
     // Build alert text from detected labels
@@ -7387,7 +7416,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   // important active state: unauthorized / multiple / asleep / phone /
   // cigarette / seatbelt / drowsy / distraction. Hidden when all is well.
   Widget _monitorBanner() {
-    // if (_state.vehicleSpeed <= 10.0) return const SizedBox.shrink();
+    if (_state.vehicleSpeed <= 10.0) return const SizedBox.shrink();
     final phone = _state.hasPhone;
     final smoke = _state.hasCigarette;
 
@@ -7477,8 +7506,8 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   }
 
   String? _getMonitorBannerKey(bool phone, bool smoke) {
-    // if (_state.vehicleSpeed <= 10.0)
-    //   return null; // Suppress all banners when parked
+    if (_state.vehicleSpeed <= 10.0)
+      return null; // Suppress all banners when parked
 
     if (_driverChangedBannerAt != null &&
         DateTime.now().difference(_driverChangedBannerAt!).inSeconds < 5) {
@@ -7491,7 +7520,8 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
     }
 
     if (phone && !_isBannerInCooldown('Phone Usage')) return 'phone';
-    if (_state.drowsinessLevel == DrowsinessLevel.asleep &&
+    if ((_state.drowsinessLevel == DrowsinessLevel.asleep ||
+            _state.hasSleepWarning) &&
         !_isBannerInCooldown('Sleepiness'))
       return 'asleep';
     if (smoke && !_isBannerInCooldown('Smoking')) return 'smoke';
@@ -7500,7 +7530,8 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
       return 'eating';
     if (_state.hasDrinking && !_isBannerInCooldown('Drinking'))
       return 'drinking';
-    if (_state.drowsinessLevel == DrowsinessLevel.drowsy &&
+    if ((_state.drowsinessLevel == DrowsinessLevel.drowsy ||
+            _state.hasHeadDropWarning) &&
         !_isBannerInCooldown('Drowsiness'))
       return 'drowsy';
     // Overspeed banner only after grace window expires
@@ -7521,8 +7552,8 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   }
 
   Widget _seatbeltIndicator() {
-    // if (_state.vehicleSpeed <= 10.0 && !_state.ignitionIsOn)
-    //   return const SizedBox.shrink();
+    if (_state.vehicleSpeed <= 10.0 && !_state.ignitionIsOn)
+      return const SizedBox.shrink();
     final on = _state.seatbeltBuckled;
     if (on) return const SizedBox.shrink();
     final bg = on ? const Color(0xFF16A34A) : const Color(0xFFDC2626);
@@ -7558,7 +7589,7 @@ class _MonitorFlowState extends State<MonitorFlow> with WidgetsBindingObserver {
   // Shows "RESTRICTED AREA" for RestrictedEntry zones and
   // "OUT OF BOUNDARY" for PermittedZone exits.
   Widget _boundaryBanner() {
-    // if (_state.vehicleSpeed <= 10.0) return const SizedBox.shrink();
+    if (_state.vehicleSpeed <= 10.0) return const SizedBox.shrink();
     if (!_outsideBoundary) return const SizedBox.shrink();
 
     final bool isRestricted = _geofenceViolationType == 'RestrictedEntry';

@@ -42,7 +42,6 @@ class FaceAuthEngine {
 
   int _consecutiveMatch = 0;
   int _consecutiveMiss = 0;
-  DateTime? _unmatchedSince;
   static const int kMatchFrames = 3;
   static const int kMissFrames = 5;
 
@@ -152,11 +151,10 @@ class FaceAuthEngine {
         face.trackingId == state.authenticatedTrackingId) {
       _consecutiveMiss = 0;
       _consecutiveMatch = kMatchFrames;
-      _unmatchedSince = null;
       return;
     }
 
-    // Skip FaceNet for extreme head turns (yaw, pitch, roll > 25°)
+    // Skip FaceNet for extreme head turns (yaw, pitch, roll > 25°).
     // so checking side mirrors never triggers false unauthorized states.
     if (state.authStatus == AuthStatus.authenticated) {
       final yaw = face.headEulerAngleY ?? 0.0;
@@ -164,6 +162,7 @@ class FaceAuthEngine {
       final roll = face.headEulerAngleZ ?? 0.0;
 
       if (yaw.abs() > 25.0 || pitch.abs() > 25.0 || roll.abs() > 25.0) {
+        _consecutiveMiss = 0;
         return;
       }
     }
@@ -230,7 +229,6 @@ class FaceAuthEngine {
     if (minDist < kAuthThreshold && isActiveDriverMatch) {
       _consecutiveMatch++;
       _consecutiveMiss = 0;
-      _unmatchedSince = null;
       lastMatchedLabel = bestLabel;
 
       final requiredMatchFrames = 3;
@@ -248,7 +246,6 @@ class FaceAuthEngine {
       // A DIFFERENT enrolled driver positively matched
       _consecutiveMiss++;
       _consecutiveMatch = 0;
-      _unmatchedSince = null;
       lastMatchedLabel = null;
 
       final requiredMisses = state.authStatus == AuthStatus.authenticated
@@ -263,14 +260,12 @@ class FaceAuthEngine {
       _consecutiveMatch = 0;
       lastMatchedLabel = null;
 
-      if (state.authStatus == AuthStatus.authenticated) {
-        // Time-based: We no longer trigger 'unauthorized' on a simple no-match
-        // because it falsely triggers if the driver's face is partially obscured.
-        _unmatchedSince ??= DateTime.now();
-        if (DateTime.now().difference(_unmatchedSince!).inSeconds >= 5) {
-          state.authStatus = AuthStatus.unauthorized;
-          state.authenticatedTrackingId = null;
-        }
+      // Relaxed distance for ALREADY authenticated drivers (up to 1.15) to prevent false Driver Changed
+      // when lighting fluctuates but they are technically still the closest match in the DB.
+      if (state.authStatus == AuthStatus.authenticated &&
+          minDist <= 1.15 &&
+          isActiveDriverMatch) {
+        _consecutiveMiss = 0;
       } else {
         _consecutiveMiss++;
         if (_consecutiveMiss >= 20) {
@@ -290,7 +285,6 @@ class FaceAuthEngine {
     lastMatchedLabel = null;
     _consecutiveMatch = 0;
     _consecutiveMiss = 0;
-    _unmatchedSince = null;
     await _enrollFromReferencePhotos();
   }
 
@@ -299,7 +293,6 @@ class FaceAuthEngine {
     lastMatchedLabel = null;
     _consecutiveMatch = 0;
     _consecutiveMiss = 0;
-    _unmatchedSince = null;
   }
 
   /// Synchronously clears all enrolled face data so [processAuth] cannot
@@ -315,7 +308,6 @@ class FaceAuthEngine {
     lastMatchedLabel = null;
     _consecutiveMatch = 0;
     _consecutiveMiss = 0;
-    _unmatchedSince = null;
   }
 
   Future<void> clearCache() async {
@@ -327,7 +319,6 @@ class FaceAuthEngine {
     lastMatchedLabel = null;
     _consecutiveMatch = 0;
     _consecutiveMiss = 0;
-    _unmatchedSince = null;
   }
   // ── MobileFaceNet Model Loading ────────────────────────────────────────────
 

@@ -53,6 +53,8 @@ class MonitorState {
   List<double> calibrationEarValues = [];
 
   // Drowsiness timer & PERCLOS
+  bool hasHeadDropWarning = false;
+  bool hasSleepWarning = false;
   DateTime? eyesClosedSince;
   DateTime? eyesOpenSince;
   DateTime? perclosExceededSince;

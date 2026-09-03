@@ -87,11 +87,19 @@ class MonitoringEngine {
         isDrowsyCurrentFrame = true;
       }
 
-      // Condition 3: Head Drop (sustained for 1.5 seconds)
+      // Condition 3: Head Drop (sustained for 6 seconds for API, 3 seconds for UI banner)
       if (state.headDropSince != null) {
-        if (now.difference(state.headDropSince!).inMilliseconds >= 1500) {
+        final ms = now.difference(state.headDropSince!).inMilliseconds;
+        if (ms >= 6000) {
           isDrowsyCurrentFrame = true;
+          state.hasHeadDropWarning = false;
+        } else if (ms >= 3000) {
+          state.hasHeadDropWarning = true;
+        } else {
+          state.hasHeadDropWarning = false;
         }
+      } else {
+        state.hasHeadDropWarning = false;
       }
 
       // Condition 4: PERCLOS > 0.35 (just in case they fall asleep without dropping head)
@@ -133,11 +141,22 @@ class MonitoringEngine {
   // ── 5-second sleep by eyes ───────────────────────────────────────────────
 
   void _checkSleepByEyes(DateTime now) {
-    if (state.eyesClosedSince == null) return;
-    if (now.difference(state.eyesClosedSince!).inMilliseconds < 4000) return;
+    if (state.eyesClosedSince == null) {
+      state.hasSleepWarning = false;
+      return;
+    }
 
-    // Eyes closed >= 4s — always keep asleep level
-    state.drowsinessLevel = DrowsinessLevel.asleep;
+    final closedMs = now.difference(state.eyesClosedSince!).inMilliseconds;
+    if (closedMs >= 6000) {
+      state.drowsinessLevel = DrowsinessLevel.asleep;
+      state.hasSleepWarning = false;
+    } else if (closedMs >= 4000) {
+      state.hasSleepWarning = true;
+      return;
+    } else {
+      state.hasSleepWarning = false;
+      return;
+    }
 
     final recentAlert = state.recentAlerts.any(
       (a) =>
